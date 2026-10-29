@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}Semáforo: Seguimiento de Avance al Día | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <!-- Cabecera Institucional Oficial Metodología APG -->
+  <div class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+      <div>
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <span class="badge text-white fw-bold px-2 py-1 shadow-sm" style="background-color: var(--carmesi-la-serena);">
+            <i class="bi bi-traffic-light me-1"></i> Control Metodología APG Municipal
+          </span>
+          <span class="badge bg-white text-danger font-monospace">Trimestre: {{ comunal.periodo_nombre }}</span>
+        </div>
+        <h3 class="fw-black mb-0 text-white text-uppercase tracking-tight">Semáforo: Seguimiento de Avance al Día</h3>
+        <small class="text-white-50">Control proporcional de avance diario según metas trimestrales y umbrales de seguridad comunal.</small>
+      </div>
+
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <!-- Filtro Delegación -->
+        <form method="GET" class="d-flex align-items-center gap-2 bg-white p-1 px-2 rounded border shadow-sm ms-md-2">
+          <i class="bi bi-funnel text-danger"></i>
+          <label class="small fw-bold text-secondary text-uppercase mb-0">Delegación:</label>
+          <select name="delegacion_id" class="form-select form-select-sm bg-white text-dark border-0 fw-semibold" onchange="this.form.submit()">
+            <option value="" {% if not delegacion_seleccionada %}selected{% endif %}>Todas las Delegaciones (6)</option>
+            {% for d in delegaciones %}
+              <option value="{{ d.id }}" {% if delegacion_seleccionada == d.id %}selected{% endif %}>
+                {{ d.nombre }} ({{ d.codigo }})
+              </option>
+            {% endfor %}
+          </select>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fila de Parámetros de Control y Tarjeta Explicativa Oficial -->
+  <div class="row g-3">
+    <!-- Columna Izquierda: Tarjetas de Control Temporal -->
+    <div class="col-12 col-lg-7">
+      <div class="card p-3 h-100 shadow-sm border-0">
+        <h6 class="fw-bold text-dark text-uppercase small mb-3">
+          <i class="bi bi-sliders text-danger me-1"></i> Parámetros de Medición Proporcional Diaria
+        </h6>
+        <div class="row g-2 text-center">
+          <div class="col-4 col-sm-2">
+            <div class="p-2 rounded bg-light border">
+              <span class="text-secondary small d-block" style="font-size: 0.68rem;">DÍAS TRIM.</span>
+              <strong class="text-dark fs-6">{{ comunal.info_tiempo.dias_totales }}</strong>
+            </div>
+          </div>
+          <div class="col-4 col-sm-2">
+            <div class="p-2 rounded bg-light border">
+              <span class="text-secondary small d-block" style="font-size: 0.68rem;">DÍAS TRANS.</span>
+              <strong class="text-dark fs-6">{{ comunal.info_tiempo.dias_transcurridos }}</strong>
+            </div>
+          </div>
+          <div class="col-4 col-sm-2">
+            <div class="p-2 rounded bg-light border">
+              <span class="text-secondary small d-block" style="font-size: 0.68rem;">% DIARIO</span>
+              <strong class="text-dark fs-6">{{ comunal.info_tiempo.pct_diario_esperado }}%</strong>
+            </div>
+          </div>
+          <div class="col-6 col-sm-3">
+            <div class="p-2 rounded bg-light border border-warning-subtle">
+              <span class="text-secondary small d-block fw-bold" style="font-size: 0.68rem;">OBJETIVO AL DÍA</span>
+              <strong class="text-warning fs-5">{{ meta_esperada_pct }}%</strong>
+            </div>
+          </div>
+          <div class="col-6 col-sm-3">
+            <div class="p-2 rounded bg-light border border-danger-subtle">
+              <span class="text-secondary small d-block fw-bold" style="font-size: 0.68rem;">{{ umbral_ambar }}% (UMBRAL ÁMBAR)</span>
+              <strong class="text-danger fs-5">{{ umbral_60_dia }}%</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-3 pt-2 border-top d-flex justify-content-between align-items-center small text-secondary">
+          <span>
+            Fecha de cálculo: {{ comunal.info_tiempo.fecha_corte|date:"d/m/Y" }} · Días corridos del trimestre.
+          </span>
+          <span class="fw-semibold">
+            Promedio Comunal: 
+            <strong class="text-dark">{{ promedio_avance }}%</strong>
+            {% if color_promedio == 'VERDE' %}
+              <span class="badge badge-verde ms-1">Verde</span>
+            {% elif color_promedio == 'AMBAR' %}
+              <span class="badge badge-ambar ms-1">Ámbar</span>
+            {% else %}
+              <span class="badge badge-rojo ms-1">Rojo</span>
+            {% endif %}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Columna Derecha: Tarjeta Explicativa Oficial -->
+    <div class="col-12 col-lg-5">
+      <div class="card p-3 h-100 shadow-sm border border-secondary-subtle bg-light">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <div class="p-1 px-2 rounded bg-danger text-white fs-6">
+            <i class="bi bi-info-circle-fill"></i>
+          </div>
+          <h6 class="fw-bold mb-0 text-dark">Definición Metodológica del Semáforo</h6>
+        </div>
+        <p class="small text-secondary mb-2" style="font-size: 0.86rem; line-height: 1.6;">
+          El semáforo compara el avance con la meta proporcional esperada para la fecha actual, calculada con los días corridos del trimestre vigente.
+        </p>
+        <div class="d-flex gap-2 pt-1 border-top" style="font-size: 0.72rem;">
+          <span class="badge badge-verde px-2 py-1"><i class="bi bi-circle-fill me-1"></i> &ge; {{ umbral_verde }}% del objetivo (Verde)</span>
+          <span class="badge badge-ambar px-2 py-1"><i class="bi bi-circle-fill me-1"></i> &ge; {{ umbral_ambar }}% del objetivo (Ámbar)</span>
+          <span class="badge badge-rojo px-2 py-1"><i class="bi bi-circle-fill me-1"></i> &lt; {{ umbral_ambar }}% del objetivo (Rojo)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if not periodo_configurado %}
+    <div class="alert alert-warning d-flex justify-content-between align-items-center gap-3 mb-0" role="status">
+      <span>No hay un período guardado para este trimestre. Las fechas y los días se calculan automáticamente; se aplican los umbrales iniciales de {{ umbral_verde }}% verde y {{ umbral_ambar }}% ámbar.</span>
+      {% if request.user.is_staff %}
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <!-- TABLA MAESTRA: SEMAFORO Y SEGUIMIENTO DE AVANCE AL DIA -->
+  <div class="card shadow-sm border-0 overflow-hidden">
+    <div class="card-header bg-white p-3 border-bottom d-flex justify-content-between align-items-center">
+      <div>
+        <h5 class="fw-bold mb-0 text-dark d-flex align-items-center gap-2">
+          <i class="bi bi-table text-danger"></i>
+          Tabla Maestra de Semáforo y Cumplimiento Individual
+        </h5>
+        <small class="text-secondary">Monitoreo de avance real ponderado vs meta acumulada al día de hoy.</small>
+      </div>
+      <span class="badge bg-secondary font-monospace">{{ funcionarios_semaforo|length }} Colaboradores Evaluados</span>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0 small">
+        <thead class="bg-light text-secondary text-uppercase border-bottom" style="font-size: 0.76rem; letter-spacing: 0.05rem;">
+          <tr>
+            <th class="ps-4 py-3" style="min-width: 180px;">Área / Cargo</th>
+            <th class="py-3" style="min-width: 200px;">Responsable</th>
+            <th class="py-3 text-center" style="min-width: 140px;">Objetivo al Día de Hoy</th>
+            <th class="py-3 text-center text-warning" style="min-width: 110px;">{{ umbral_ambar }}% (Umbral)</th>
+            <th class="py-3 text-center fw-bold text-dark" style="min-width: 120px;">Avance Real</th>
+            <th class="py-3 text-center" style="min-width: 130px;">Semáforo</th>
+            <th class="py-3 text-center" style="min-width: 120px;">Delegación</th>
+            <th class="text-end pe-4 py-3" style="min-width: 110px;">Ficha</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in funcionarios_semaforo %}
+            <tr>
+              <td class="ps-4 py-2">
+                <div class="fw-bold text-dark">{{ f.area }}</div>
+              </td>
+              <td class="py-2">
+                <span class="fw-semibold text-dark">{{ f.responsable }}</span>
+              </td>
+              <td class="text-center text-secondary fw-semibold">
+                {{ f.objetivo_al_dia }}%
+              </td>
+              <td class="text-center text-warning fw-semibold">
+                {{ f.umbral_60 }}%
+              </td>
+              <td class="text-center fw-bold fs-6 text-dark">
+                {{ f.avance_real }}%
+              </td>
+              <td class="text-center">
+                {% if f.color_semaforo == 'VERDE' %}
+                  <span class="badge badge-verde px-3 py-1 shadow-xs"><i class="bi bi-circle-fill me-1 small"></i> Verde</span>
+                {% elif f.color_semaforo == 'AMBAR' %}
+                  <span class="badge badge-ambar px-3 py-1 shadow-xs"><i class="bi bi-circle-fill me-1 small"></i> Ámbar</span>
+                {% else %}
+                  <span class="badge badge-rojo px-3 py-1 shadow-xs"><i class="bi bi-circle-fill me-1 small"></i> Rojo</span>
+                {% endif %}
+              </td>
+              <td class="text-center">
+                <span class="badge bg-secondary font-monospace">{{ f.delegacion }}</span>
+              </td>
+              <td class="text-end pe-4">
+                <a href="{% url 'web_personal' %}?id={{ f.id }}" class="btn btn-sm btn-outline-danger py-0 px-2 fw-semibold">
+                  <i class="bi bi-eye"></i> Ver
+                </a>
+              </td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="8" class="text-center py-4 text-secondary">
+                No hay funcionarios registrados para los filtros seleccionados.
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="table-light fw-bold border-top border-2">
+          <tr>
+            <td class="ps-4 text-uppercase text-dark" colspan="2">PROMEDIO CONSOLIDADO</td>
+            <td class="text-center text-secondary">{{ meta_esperada_pct }}%</td>
+            <td class="text-center text-warning">{{ umbral_60_dia }}%</td>
+            <td class="text-center text-dark fs-6">{{ promedio_avance }}%</td>
+            <td class="text-center">
+              {% if color_promedio == 'VERDE' %}
+                <span class="badge badge-verde px-3 py-1"><i class="bi bi-circle-fill me-1 small"></i> Verde</span>
+              {% elif color_promedio == 'AMBAR' %}
+                <span class="badge badge-ambar px-3 py-1"><i class="bi bi-circle-fill me-1 small"></i> Ámbar</span>
+              {% else %}
+                <span class="badge badge-rojo px-3 py-1"><i class="bi bi-circle-fill me-1 small"></i> Rojo</span>
+              {% endif %}
+            </td>
+            <td class="text-center text-secondary" colspan="2">Consolidado La Serena</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

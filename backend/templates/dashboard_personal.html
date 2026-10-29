@@ -1,0 +1,895 @@
+{% extends "base.html" %}
+{% block title %}{% if funcionario %}Ficha de {{ funcionario.get_full_name|default:funcionario.username }}{% else %}Dashboard Personal{% endif %} | Matriz SGR{% endblock %}
+
+{% block content %}
+{% if funcionario %}
+<div class="d-flex flex-column gap-4">
+  <div class="card p-3 shadow-sm border-0 d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-3">
+    <div>
+      <span class="badge px-2 py-1 fw-bold text-uppercase" style="background-color: var(--carmesi-suave); color: var(--carmesi-la-serena); border: 1px solid #FCA5A5;">
+        Ficha Personal del Funcionario
+      </span>
+      <span class="text-secondary small ms-2">Evaluación por período y desglose de avance por ítem</span>
+    </div>
+    <form method="GET" action="{% url 'web_personal' %}" class="d-flex flex-wrap align-items-center gap-2">
+      {% if request.user.rol == 'ADMINISTRADOR' or request.user.rol == 'SUPERVISOR' %}
+      <label for="funcionarioPeriodo" class="small fw-bold text-secondary text-uppercase mb-0 text-nowrap">Funcionario:</label>
+      <select id="funcionarioPeriodo" name="id" class="form-select form-select-sm border fw-semibold" style="min-width: 200px;">
+        {% for f in todos_funcionarios %}
+          <option value="{{ f.id }}" {% if funcionario and funcionario.id == f.id %}selected{% endif %}>
+            {{ f.get_full_name|default:f.username }} ({{ f.delegacion.codigo|default:"SGR" }})
+          </option>
+        {% endfor %}
+      </select>
+      {% endif %}
+      <label for="periodoPersonal" class="small fw-bold text-secondary text-uppercase mb-0 text-nowrap">Período:</label>
+      <select id="periodoPersonal" name="periodo" class="form-select form-select-sm border fw-semibold" style="min-width: 230px;">
+        {% if not periodo_configurado %}
+        <option value="actual" {% if periodo_seleccionado == 'actual' %}selected{% endif %}>
+          {{ nombre_periodo_activo }} (sin configurar)
+        </option>
+        {% endif %}
+        {% for p in periodos_disponibles %}
+        <option value="{{ p.pk }}" {% if periodo_seleccionado == p.pk|stringformat:"s" %}selected{% endif %}>
+          {{ p.nombre }} ({{ p.fecha_inicio|date:"d/m/Y" }} - {{ p.fecha_termino|date:"d/m/Y" }})
+        </option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn btn-sm btn-outline-danger">Consultar</button>
+    </form>
+  </div>
+
+  <!-- Banner de Identidad del Funcionario y Semáforo Personal (Rojo Carmesí La Serena) -->
+  <div class="card sgr-page-header sgr-image-header p-4 p-md-4 border-0 shadow-sm rounded-4 overflow-hidden">
+    <div class="row align-items-center g-4">
+      <div class="col-12 col-md-7">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <span class="badge px-3 py-1 fw-bold shadow-sm" style="background-color: #5C0000; color: #FEE2E2; border: 1px solid rgba(255,255,255,0.25);">
+            {{ metricas.delegacion }} ({{ metricas.delegacion_codigo }})
+          </span>
+          <span class="small font-monospace" style="color: #FDE68A;"><i class="bi bi-calendar3 me-1"></i> Período: {{ nombre_periodo_panel }}</span>
+        </div>
+        <h2 class="fw-black text-white mb-2" style="letter-spacing: -0.5px;">{{ metricas.nombre_completo }}</h2>
+        <div class="d-flex flex-wrap gap-3 small text-white opacity-90 mt-2">
+          <span><i class="bi bi-person-badge me-1" style="color: #FDE68A;"></i> Cargo: <strong class="text-white">{{ metricas.cargo }}</strong></span>
+          <span><i class="bi bi-calendar-check me-1" style="color: #FDE68A;"></i> Días Transcurridos: <strong class="text-white">{{ metricas.dias_transcurridos }} / {{ metricas.dias_totales }}</strong></span>
+          <span><i class="bi bi-activity me-1" style="color: #FDE68A;"></i> Total Actividades: <strong class="text-white">{{ metricas.total_actividades }}</strong></span>
+        </div>
+      </div>
+
+      {% if periodo_configurado and metas_configuradas %}
+      <div class="col-12 col-md-5">
+        <div class="card p-4 rounded-4 text-center shadow border-0 bg-white">
+          <div class="small text-uppercase fw-bold text-secondary" style="font-size: 0.75rem; letter-spacing: 0.05rem;">Cumplimiento Ponderado Personal</div>
+          <div class="display-5 fw-black my-1" style="color: var(--carmesi-la-serena);">{{ metricas.total_ponderado_pct }}%</div>
+          <div class="small text-secondary mb-3">
+            Meta esperada al día: <strong class="text-dark">{{ metricas.meta_esperada_pct }}%</strong>
+          </div>
+          <div>
+            {% if metricas.semaforo_global == 'VERDE' %}
+              <span class="badge badge-verde fs-6 px-3 py-2 w-100 shadow-sm"><i class="bi bi-check-circle-fill me-1"></i> Semáforo Óptimo (Verde)</span>
+            {% elif metricas.semaforo_global == 'AMBAR' %}
+              <span class="badge badge-ambar fs-6 px-3 py-2 w-100 shadow-sm"><i class="bi bi-exclamation-triangle-fill me-1"></i> Semáforo en Alerta (Ámbar)</span>
+            {% else %}
+              <span class="badge badge-rojo fs-6 px-3 py-2 w-100 shadow-sm"><i class="bi bi-x-circle-fill me-1"></i> Semáforo Crítico (Rojo)</span>
+            {% endif %}
+          </div>
+        </div>
+        {% else %}
+        <div class="col-12 col-md-5">
+          <div class="alert alert-warning mb-0" role="alert">
+            {% if not periodo_configurado %}
+              <strong>Trimestre actual sin configurar.</strong>
+              El conteo usa el trimestre calendario actual. Configura sus metas para calcular el cumplimiento ponderado y el semáforo.
+            {% else %}
+              <strong>Metas del trimestre sin configurar para este funcionario.</strong>
+              Configura sus ítems de medición para calcular el cumplimiento ponderado y el semáforo.
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>
+
+  {% if periodo_configurado and metas_configuradas %}
+  <!-- Matriz de Ponderación por Ítems de Medición -->
+  <div class="card shadow-sm border-0 overflow-hidden">
+    <div class="card-header bg-light p-3 border-bottom d-flex justify-content-between align-items-center">
+      <div>
+        <h5 class="fw-bold mb-0 text-dark d-flex align-items-center gap-2">
+          <i class="bi bi-file-earmark-check-fill text-danger"></i>
+          Matriz de Cumplimiento por Ítems Medibles
+        </h5>
+        <small class="text-secondary">Avance validado del período, porcentaje de cumplimiento y aporte ponderado.</small>
+      </div>
+      <div class="small text-secondary">
+        Meta esperada del día: <strong class="text-dark">{{ metricas.meta_esperada_pct }}%</strong>
+      </div>
+    </div>
+    <div class="px-3 py-2 small bg-light border-bottom text-secondary">
+      Cumplimiento por ítem = (actividades con evidencia aprobada / meta del ítem) x 100.
+      Aporte ponderado = ponderador x mínimo(cumplimiento, {{ periodo.tope_cumplimiento }}%) / 100.
+      El total es la suma de los aportes ponderados.
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0 small">
+        <thead class="bg-light text-secondary text-uppercase border-bottom" style="font-size: 0.75rem; letter-spacing: 0.05rem;">
+          <tr>
+            <th class="ps-4 pe-3 py-3 text-nowrap" style="min-width: 250px;">Ítem de Medición</th>
+            <th class="text-center px-4 py-3 text-nowrap" style="min-width: 140px;">Meta Trimestre</th>
+            <th class="text-center px-4 py-3 text-nowrap" style="min-width: 120px;">Ponderador</th>
+            <th class="text-center px-4 py-3 text-nowrap" style="min-width: 150px;">Avance Aprobado</th>
+            <th class="text-center px-4 py-3 text-nowrap" style="min-width: 130px;">En Revisión</th>
+            <th class="text-center px-4 py-3 text-nowrap" style="min-width: 130px;">Rechazadas</th>
+            <th class="text-center px-4 py-3 text-nowrap" style="min-width: 140px;">% Cumplimiento</th>
+            <th class="text-center px-4 py-3 text-nowrap" style="min-width: 150px;">Aporte Ponderado</th>
+            <th class="text-end ps-3 pe-4 py-3 text-nowrap" style="min-width: 130px;">Semáforo</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for it in metricas.items %}
+            <tr>
+              <td class="ps-4 pe-3 py-3">
+                <div class="fw-bold text-dark">{{ it.nombre }}</div>
+                <small class="text-secondary">{{ it.unidad }}</small>
+                <a class="d-block small mt-1" href="{% url 'web_personal' %}?id={{ funcionario.pk }}&periodo={{ periodo.pk }}&item={{ it.item_id }}#historial-actividades">
+                  Ver actividades fuente ({{ it.avance_aprobado }})
+                </a>
+              </td>
+              <td class="text-center px-4 py-3 fw-semibold text-secondary">{{ it.meta }} {{ it.unidad }}</td>
+              <td class="text-center px-4 py-3 fw-bold text-dark">{{ it.ponderador }}%</td>
+              <td class="text-center px-4 py-3 fw-bold text-success fs-6">{{ it.avance_aprobado }}</td>
+              <td class="text-center px-4 py-3 text-secondary">
+                {% if it.evidencias_pendientes > 0 %}
+                  <span class="text-warning fw-bold">{{ it.evidencias_pendientes }}</span>
+                {% else %}0{% endif %}
+              </td>
+              <td class="text-center px-4 py-3 text-secondary">
+                {% if it.evidencias_rechazadas > 0 %}
+                  <span class="text-danger fw-bold">{{ it.evidencias_rechazadas }}</span>
+                {% else %}0{% endif %}
+              </td>
+              <td class="text-center px-4 py-3 fw-bold text-dark">{{ it.cumplimiento_pct }}%</td>
+              <td class="text-center px-4 py-3 fw-bold text-danger fs-6 bg-light">{{ it.aporte_ponderado }}%</td>
+              <td class="text-end ps-3 pe-4 py-3">
+                {% if it.semaforo == 'VERDE' %}
+                  <span class="badge badge-verde">Verde</span>
+                {% elif it.semaforo == 'AMBAR' %}
+                  <span class="badge badge-ambar">Ámbar</span>
+                {% else %}
+                  <span class="badge badge-rojo">Rojo</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="bg-light fw-bold border-top">
+          <tr>
+            <td colspan="7" class="text-end text-uppercase text-secondary small py-3 pe-4">Puntaje Total Ponderado Personal:</td>
+            <td class="text-center text-danger fs-5 py-3 px-4">{{ metricas.total_ponderado_pct }}%</td>
+            <td class="text-end pe-4 py-3">
+              {% if metricas.semaforo_global == 'VERDE' %}
+                <span class="badge badge-verde">Verde</span>
+              {% elif metricas.semaforo_global == 'AMBAR' %}
+                <span class="badge badge-ambar">Ámbar</span>
+              {% else %}
+                <span class="badge badge-rojo">Rojo</span>
+              {% endif %}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card p-4 shadow-sm border-0">
+    <h5 class="fw-bold mb-2 text-dark">Matriz de Cumplimiento por Ítems Medibles</h5>
+    <p class="text-secondary mb-0">Configura el período actual y sus ítems de medición para consultar esta matriz.</p>
+  </div>
+  {% endif %}
+
+  <!-- Segunda Tabla: Historial de Actividades y Evidencias Registradas (Todo en Uno) -->
+  <div id="historial-actividades" class="card shadow-sm border-0 overflow-hidden">
+    <div class="card-header bg-light p-3 border-bottom d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2">
+      <div>
+        <h5 class="fw-bold mb-0 text-dark d-flex align-items-center gap-2">
+          <i class="bi bi-card-checklist text-danger"></i>
+          Actividades y Evidencias del Período
+        </h5>
+        <small class="text-secondary">Período: {{ periodo.fecha_inicio|date:"d/m/Y" }} - {{ periodo.fecha_termino|date:"d/m/Y" }}. Las actividades fuente muestran sus evidencias y estado de revisión.</small>
+      </div>
+      {% if item_origen %}
+      <div class="d-flex align-items-center gap-2">
+        <span class="badge bg-danger-subtle text-danger border">Ítem: {{ item_origen.nombre_item }}</span>
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'web_personal' %}?id={{ funcionario.pk }}&periodo={{ periodo.pk }}#historial-actividades">Quitar filtro</a>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0 small">
+        <thead class="bg-light text-secondary text-uppercase border-bottom" style="font-size: 0.75rem; letter-spacing: 0.05rem;">
+          <tr>
+            <th class="ps-4 pe-2 py-3" style="min-width: 105px;">Fecha Actividad</th>
+            <th class="px-2 py-3" style="min-width: 140px;">Contacto / Vecino</th>
+            <th class="px-2 py-3" style="min-width: 180px;">Ítem a Medir</th>
+            <th class="px-2 py-3" style="min-width: 220px;">Problema y Acción Realizada</th>
+            <th class="px-2 py-3 text-center" style="min-width: 120px;">Verificador (Foto)</th>
+            <th class="text-center px-2 py-3" style="min-width: 120px;">Punto Validado (Check)</th>
+            <th class="text-center px-2 py-3" style="min-width: 130px;">Tubo de Trabajo</th>
+            <th class="text-end ps-2 pe-4 py-3" style="min-width: 90px;">Acción</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for act in actividades %}
+            <tr id="actividad-{{ act.id }}">
+              <td class="ps-4 pe-2 py-3 text-nowrap">
+                <div class="fw-bold text-dark">{{ act.fecha_actividad|date:"d/m/Y" }}</div>
+                <small class="text-secondary font-monospace">{{ act.fecha_registro|date:"H:i" }} hrs</small>
+              </td>
+              <td class="px-2 py-3">
+                <div class="fw-bold text-dark text-truncate" style="max-width: 150px;" title="{{ act.contacto_nombre|default:act.solicitante }}">
+                  {{ act.contacto_nombre|default:act.solicitante|default:"Vecino La Serena" }}
+                </div>
+                {% if act.contacto_telefono %}
+                  <small class="text-secondary d-block font-monospace"><i class="bi bi-telephone-fill me-1" style="font-size: 0.7rem;"></i>{{ act.contacto_telefono }}</small>
+                {% endif %}
+              </td>
+              <td class="px-2 py-3">
+                <span class="badge bg-light text-dark border mb-1">
+                  {{ act.item_medicion.nombre_item|default:"Actividad General" }}
+                </span>
+                {% if act.item_medicion %}
+                  <small class="text-secondary d-block" style="font-size: 0.72rem;">Ponderador: {{ act.item_medicion.ponderador }}%</small>
+                {% endif %}
+              </td>
+              <td class="px-2 py-3">
+                <div class="text-dark fw-semibold text-truncate" style="max-width: 260px;" title="{{ act.actividad_solicitud|default:act.solicitud_problema }}">
+                  {{ act.actividad_solicitud|default:act.solicitud_problema|default:"Atención vecinal" }}
+                </div>
+                {% if act.accion_ejecutada %}
+                  <small class="text-secondary d-block text-truncate" style="max-width: 260px;" title="{{ act.accion_ejecutada }}">
+                    <i class="bi bi-arrow-right-short text-danger"></i> {{ act.accion_ejecutada }}
+                  </small>
+                {% endif %}
+                <small class="text-muted d-block text-truncate" style="font-size: 0.72rem; max-width: 260px;" title="{{ act.direccion }}">
+                  <i class="bi bi-geo-alt text-danger me-1"></i> {{ act.direccion|default:"La Serena" }}
+                </small>
+              </td>
+              <td class="px-2 py-3 text-center">
+                {% for evidencia in act.evidencias.all %}
+                  <div class="d-inline-flex flex-column align-items-center gap-1 m-1">
+                    <img src="{{ evidencia.get_foto_url }}" class="rounded border shadow-xs" style="width: 44px; height: 44px; object-fit: cover; cursor: pointer;" alt="Foto de evidencia" onerror="this.onerror=null; this.src='/static/img/evidencia_terreno_placeholder.svg';" onclick="abrirModalFoto('{{ evidencia.get_foto_url }}', '{{ evidencia.codigo_verificador }}', '{{ evidencia.get_estado_display }}', '{{ act.item_medicion.nombre_item|default:'Actividad' }}')" title="Clic para ampliar fotografía">
+                    <span class="font-monospace text-secondary fw-bold" style="font-size: 0.68rem;">{{ evidencia.codigo_verificador }}</span>
+                  </div>
+                {% empty %}
+                  <span class="text-secondary small">Sin foto</span>
+                {% endfor %}
+              </td>
+              <td class="text-center px-2 py-3">
+                {% for evidencia in act.evidencias.all %}
+                  <div class="mb-1">
+                    {% if evidencia.estado == 'APROBADA' %}
+                      <span class="badge bg-success-subtle text-success border border-success fw-bold px-2 py-1">
+                        <i class="bi bi-check2-circle me-1"></i> Aprobada
+                      </span>
+                    {% elif evidencia.estado == 'PENDIENTE' %}
+                      <span class="badge bg-warning-subtle text-warning-emphasis border border-warning fw-bold px-2 py-1">
+                        <i class="bi bi-hourglass-split me-1"></i> En Revisión
+                      </span>
+                    {% else %}
+                      <span class="badge bg-danger-subtle text-danger border border-danger fw-bold px-2 py-1">
+                        <i class="bi bi-x-circle me-1"></i> Rechazada
+                      </span>
+                    {% endif %}
+                  </div>
+                {% empty %}
+                  <span class="badge bg-secondary text-white">N/A</span>
+                {% endfor %}
+              </td>
+              <td class="text-center px-2 py-3">
+                {% if act.compromiso_agenda %}
+                  <a href="{% url 'web_tubo' %}?delegacion_id={{ act.delegacion_id }}#compromiso-{{ act.compromiso_agenda.id }}" class="badge bg-danger-subtle text-danger border border-danger text-decoration-none px-2 py-1 d-inline-block" title="Ver en Tubo de Trabajo colectivo">
+                    <i class="bi bi-link-45deg"></i> #{{ act.compromiso_agenda.id }}
+                    {% if act.compromiso_agenda.estado_tablero == 'COMPLETADO' %}Completado
+                    {% elif act.compromiso_agenda.estado_tablero == 'VENCIDO' %}Vencido
+                    {% elif act.compromiso_agenda.estado_tablero == 'REPROGRAMADO' %}Reprogramado
+                    {% elif act.compromiso_agenda.estado_tablero == 'EN_PROCESO' %}En proceso
+                    {% else %}{{ act.compromiso_agenda.get_estado_display }}{% endif %}
+                  </a>
+                {% else %}
+                  <span class="text-muted small">-</span>
+                {% endif %}
+              </td>
+              <td class="text-end ps-2 pe-4 py-3 text-nowrap">
+                <button type="button" class="btn btn-outline-primary btn-sm p-1"
+                        data-actividad-id="{{ act.id }}" data-bs-toggle="modal"
+                        data-bs-target="#modalAgregarEvidencia" title="Agregar solo evidencia a esta actividad">
+                  <i class="bi bi-camera-fill"></i> Evidencia
+                </button>
+                {% if act.evidencia %}
+                  <button type="button" class="btn btn-outline-secondary btn-sm p-1" onclick="abrirModalFoto('{{ act.evidencia.get_foto_url }}', '{{ act.evidencia.codigo_verificador }}', '{{ act.evidencia.get_estado_display }}', '{{ act.item_medicion.nombre_item|default:'Actividad' }}')" title="Ver evidencia completa">
+                    <i class="bi bi-eye"></i>
+                  </button>
+                {% endif %}
+              </td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="8" class="text-center text-secondary py-4">
+                <i class="bi bi-inbox fs-3 d-block text-muted mb-2"></i>
+                {% if item_origen %}
+                No hay actividades fuente para este ítem en el período seleccionado.
+                {% else %}
+                No hay actividades registradas por este funcionario en el período seleccionado.
+                {% endif %}
+                <div class="mt-2">
+                  <a href="{% url 'web_registrar_actividad_diaria' %}" class="btn btn-danger btn-sm">
+                    <i class="bi bi-plus-circle me-1"></i> Registrar actividad
+                  </a>
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if pagina_actividades.paginator.num_pages > 1 %}
+    <nav class="p-3 border-top d-flex justify-content-between align-items-center" aria-label="Paginación de actividades fuente">
+      <span class="small text-secondary">
+        Página {{ pagina_actividades.number }} de {{ pagina_actividades.paginator.num_pages }}
+      </span>
+      <div class="btn-group btn-group-sm">
+        {% if pagina_actividades.has_previous %}
+        <a class="btn btn-outline-secondary" href="?id={{ funcionario.pk }}&periodo={{ periodo.pk }}{% if item_origen %}&item={{ item_origen.pk }}{% endif %}&pagina={{ pagina_actividades.previous_page_number }}#historial-actividades">Anterior</a>
+        {% endif %}
+        {% if pagina_actividades.has_next %}
+        <a class="btn btn-outline-secondary" href="?id={{ funcionario.pk }}&periodo={{ periodo.pk }}{% if item_origen %}&item={{ item_origen.pk }}{% endif %}&pagina={{ pagina_actividades.next_page_number }}#historial-actividades">Siguiente</a>
+        {% endif %}
+      </div>
+    </nav>
+    {% endif %}
+  </div>
+
+  <!-- Tubo de Trabajo del Funcionario y Continuidad -->
+  <div class="row g-3">
+    <div class="col-12 col-md-6">
+      <div class="card p-4 h-100 shadow-sm border-0">
+        <h6 class="fw-bold text-dark d-flex align-items-center gap-2 mb-3">
+          <i class="bi bi-card-checklist text-danger"></i>
+          Compromisos Asignados en Tubo de Trabajo
+        </h6>
+        <div class="row g-2 text-center mb-3">
+          <div class="col-4">
+            <div class="bg-light p-2 rounded border">
+              <div class="small text-secondary">Total</div>
+              <div class="fs-4 fw-bold text-dark">{{ metricas.compromisos.total }}</div>
+            </div>
+          </div>
+          <div class="col-4">
+            <div class="bg-light p-2 rounded border">
+              <div class="small text-secondary">Realizados</div>
+              <div class="fs-4 fw-bold text-success">{{ metricas.compromisos.realizados }}</div>
+            </div>
+          </div>
+          <div class="col-4">
+            <div class="bg-light p-2 rounded border">
+              <div class="small text-secondary">Pendientes</div>
+              <div class="fs-4 fw-bold text-warning">{{ metricas.compromisos.pendientes }}</div>
+            </div>
+          </div>
+        </div>
+        <div class="d-flex justify-content-between small text-secondary">
+          <span>Tasa de resolución:</span>
+          <strong class="text-dark">{{ metricas.compromisos.porcentaje_realizado }}%</strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-md-6">
+      <div class="card p-4 h-100 shadow-sm border-0">
+        <h6 class="fw-bold text-dark d-flex align-items-center gap-2 mb-3">
+          <i class="bi bi-clock-history text-success"></i>
+          Actividad y Frecuencia de Uso
+        </h6>
+        <div class="space-y-2 small text-secondary">
+          <div class="d-flex justify-content-between py-2 border-bottom">
+            <span>Promedio diario:</span>
+            <strong class="text-dark">{{ metricas.promedio_diario }} actividades/día</strong>
+          </div>
+          <div class="d-flex justify-content-between py-2 border-bottom">
+            <span>Días sin registrar actividad:</span>
+            <strong class="{% if metricas.dias_sin_ingreso and metricas.dias_sin_ingreso > 2 %}text-danger fw-bold{% else %}text-success{% endif %}">
+              {% if metricas.dias_sin_ingreso != None %}{{ metricas.dias_sin_ingreso }} día(s){% else %}N/A{% endif %}
+            </strong>
+          </div>
+          <div class="d-flex justify-content-between py-2">
+            <span>Estado de conexión:</span>
+            <span class="badge bg-success-subtle text-success border border-success">Activo en plataforma</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="modalAgregarEvidencia" tabindex="-1" aria-labelledby="modalAgregarEvidenciaLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <form id="formAgregarEvidencia" method="POST" enctype="multipart/form-data" class="modal-content">
+      {% csrf_token %}
+      <div class="modal-header text-white" style="background-color: var(--carmesi-la-serena);">
+        <h5 class="modal-title fw-bold" id="modalAgregarEvidenciaLabel">Agregar evidencia</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-secondary">Esta operación solo agrega evidencias. No modifica los datos de la actividad.</p>
+        <label class="form-label fw-bold" for="inputEvidenciasAdicionales">Fotografías</label>
+        <input id="inputEvidenciasAdicionales" type="file" name="fotos" accept="image/*" multiple class="form-control" required>
+        <div id="previewEvidenciasAdicionales" class="d-flex flex-wrap gap-2 mt-3"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="submit" class="btn btn-danger fw-bold">Guardar evidencia</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% comment %}
+<!-- Modal de registro anterior: ahora se gestiona desde Actividad Diaria. -->
+<div class="modal fade" id="modalRegistroActividad" tabindex="-1" aria-labelledby="modalRegistroActividadLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+    <form method="POST" action="{% url 'web_registrar_actividad_personal' %}" enctype="multipart/form-data" class="modal-content border-0 shadow-lg" style="max-height: 90vh;">
+      {% csrf_token %}
+      <input type="hidden" name="funcionario_id" value="{{ funcionario.id }}">
+
+      <div class="modal-header text-white flex-shrink-0" style="background: linear-gradient(135deg, #800000 0%, #B30000 100%);">
+        <div>
+          <h5 class="modal-title fw-bold" id="modalRegistroActividadLabel">
+            <i class="bi bi-journal-plus me-2"></i>Ventana Personal de Registro de Actividad
+          </h5>
+          <small class="text-white-50">Registro Todo en Uno: Actividad Diaria + Evidencia Fotográfica + Compromiso en Tubo de Trabajo</small>
+        </div>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+
+      <div class="modal-body p-4 bg-light" style="overflow-y: auto; max-height: calc(90vh - 135px);">
+        {% if activity_error %}
+          <div class="alert alert-danger py-2 small" role="alert">{{ activity_error }}</div>
+        {% endif %}
+        <!-- SECCIÓN 1: DATOS DE LA ACTIVIDAD -->
+        <div class="card p-3 mb-3 border-0 shadow-sm bg-white">
+          <div class="d-flex align-items-center gap-2 mb-3 pb-2 border-bottom">
+            <span class="badge px-2 py-1 fw-bold text-white rounded-circle" style="background-color: var(--carmesi-la-serena); width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;">1</span>
+            <div>
+              <h6 class="fw-bold text-dark mb-0">Datos de la Actividad Municipal</h6>
+              <small class="text-secondary">Fecha de atención, ítem a medir y detalle de la solicitud vecinal</small>
+            </div>
+          </div>
+
+          <div class="row g-3">
+            <div class="col-12 col-md-5">
+              <label class="form-label small fw-bold text-dark mb-1">Fecha de la Actividad <span class="text-danger">*</span></label>
+              <input type="date" name="fecha_actividad" id="inpFechaActividad" class="form-control form-control-sm fw-semibold" value="{% if activity_form_data.fecha_actividad %}{{ activity_form_data.fecha_actividad }}{% else %}{{ hoy|date:'Y-m-d' }}{% endif %}" min="2025-01-01" max="{{ hoy|date:'Y-m-d' }}" onchange="validarFechaNoFutura(this)" required>
+              <div id="fechaErrorMsg" class="text-danger small mt-1 d-none" style="font-size: 0.72rem;">
+                <i class="bi bi-exclamation-triangle-fill me-1"></i>La fecha no puede ser futura ni superar el día de hoy.
+              </div>
+            </div>
+            <div class="col-12 col-md-7">
+              <label class="form-label small fw-bold text-dark mb-1">Ítem a Medir / Función del Cargo <span class="text-danger">*</span></label>
+              <select name="item_medicion_id" class="form-select form-select-sm fw-semibold" {% if items_funcionario %}required{% endif %}>
+                {% for it in items_funcionario %}
+                  <option value="{{ it.id }}" {% if activity_form_data.item_medicion_id == it.id|stringformat:'s' %}selected{% endif %}>
+                    {{ it.nombre_item }} (Ponderador: {{ it.ponderador }}% | Meta: {{ it.meta_cuantitativa }})
+                  </option>
+                {% empty %}
+                  <option value="">Atención General de Terreno</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-12 col-md-6">
+              <label class="form-label small fw-bold text-dark mb-1">RUN del solicitante <span class="text-danger">*</span></label>
+              <input type="text" name="solicitante_run" id="solicitanteRun" value="{{ activity_form_data.solicitante_run|default:'' }}" class="form-control form-control-sm" placeholder="Ej: 11.111.111-1" inputmode="text" maxlength="12" pattern="(?:\d|\d{2})\.\d{3}\.\d{3}-[\dkK]" title="Usa el formato 11.111.111-1 y un dígito verificador válido." oninput="validarRunSolicitante(this, false)" onblur="validarRunSolicitante(this, true)" required>
+              <div id="solicitanteRunError" class="invalid-feedback">Ingresa un RUN válido con puntos, guion y dígito verificador.</div>
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="form-label small fw-bold text-dark mb-1">Tipo de solicitante <span class="text-danger">*</span></label>
+              <select name="tipo_solicitante" class="form-select form-select-sm" required>
+                <option value="">Selecciona...</option>
+                <option value="VECINO" {% if activity_form_data.tipo_solicitante == 'VECINO' %}selected{% endif %}>Persona natural</option>
+                <option value="DIRIGENTE" {% if activity_form_data.tipo_solicitante == 'DIRIGENTE' %}selected{% endif %}>Dirigente vecinal</option>
+                <option value="INSTITUCION" {% if activity_form_data.tipo_solicitante == 'INSTITUCION' %}selected{% endif %}>Junta de vecinos / Organización</option>
+                <option value="INTERNO" {% if activity_form_data.tipo_solicitante == 'INTERNO' %}selected{% endif %}>Unidad interna municipal</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label small fw-bold text-dark mb-1">Nombre <span class="text-danger">*</span></label>
+              <input type="text" name="solicitante_nombre" value="{{ activity_form_data.solicitante_nombre|default:'' }}" class="form-control form-control-sm" required>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label small fw-bold text-dark mb-1">Apellido paterno <span class="text-danger">*</span></label>
+              <input type="text" name="solicitante_apellido_paterno" value="{{ activity_form_data.solicitante_apellido_paterno|default:'' }}" class="form-control form-control-sm" required>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label small fw-bold text-dark mb-1">Apellido materno <span class="text-danger">*</span></label>
+              <input type="text" name="solicitante_apellido_materno" value="{{ activity_form_data.solicitante_apellido_materno|default:'' }}" class="form-control form-control-sm" required>
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="form-label small fw-bold text-dark mb-1">Correo electrónico <span class="text-danger">*</span></label>
+              <input type="email" name="solicitante_correo" id="solicitanteCorreo" value="{{ activity_form_data.solicitante_correo|default:'' }}" class="form-control form-control-sm" maxlength="254" required>
+              <div id="solicitanteCorreoError" class="invalid-feedback">Ingresa un correo electrónico válido.</div>
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="form-label small fw-bold text-dark mb-1">Teléfono de contacto</label>
+              <div class="input-group input-group-sm">
+                <span class="input-group-text">+56</span>
+                <input type="tel" name="contacto_telefono" id="solicitanteTelefono" value="{{ activity_form_data.contacto_telefono|default:'' }}" class="form-control" placeholder="9 1234 5678 (móvil) o 2 2345 6789 (fijo)" inputmode="numeric" maxlength="20" title="Ingresa solo los 9 dígitos nacionales: 9 para móvil o prefijo fijo chileno válido.">
+              </div>
+              <small class="form-text text-muted">Solo números; máximo 9 dígitos. El prefijo +56 se agrega automáticamente.</small>
+              <div id="solicitanteTelefonoError" class="invalid-feedback">Ingresa 9 dígitos válidos: móvil iniciado en 9 o prefijo fijo chileno válido.</div>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label small fw-bold text-dark mb-1">Ubicación / Dirección en La Serena <span class="text-danger">*</span></label>
+              <input type="text" name="direccion" value="{{ activity_form_data.direccion|default:'' }}" class="form-control form-control-sm" placeholder="Ej: Pasaje Los Aromos 345, La Antena" required>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label small fw-bold text-dark mb-1">Problema / Solicitud Detectada <span class="text-danger">*</span></label>
+              <input type="text" name="solicitud_problema" value="{{ activity_form_data.solicitud_problema|default:'' }}" class="form-control form-control-sm" placeholder="Ej: Falla en luminarias y poda preventiva de árboles en multicancha" required>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label small fw-bold text-dark mb-1">Acción Ejecutada por el Funcionario <span class="text-danger">*</span></label>
+              <textarea name="accion_ejecutada" class="form-control form-control-sm" rows="2" placeholder="Ej: Se acude a terreno, se inspecciona el estado con la directiva vecinal..." required>{{ activity_form_data.accion_ejecutada|default:'' }}</textarea>
+            </div>
+          </div>
+        </div>
+
+        <!-- SECCIÓN 2: EVIDENCIA FOTOGRÁFICA Y CÓDIGO VERIFICADOR -->
+        <div class="card p-3 mb-3 border-0 shadow-sm bg-white">
+          <div class="d-flex align-items-center gap-2 mb-3 pb-2 border-bottom">
+            <span class="badge px-2 py-1 fw-bold text-white rounded-circle" style="background-color: var(--carmesi-la-serena); width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;">2</span>
+            <div>
+              <h6 class="fw-bold text-dark mb-0">Evidencia Fotográfica de Respaldo</h6>
+              <small class="text-secondary">Generación automática de Código Verificador para validación Check</small>
+            </div>
+          </div>
+
+          <div class="row g-3 align-items-center">
+            <div class="col-12 col-md-7">
+              <label class="form-label small fw-bold text-dark mb-1">Subir Fotografía de Terreno / Respaldo</label>
+              <input type="file" name="fotos" id="inpFotoModal" accept="image/*" multiple class="form-control form-control-sm">
+              <small class="text-muted d-block mt-1" style="font-size: 0.72rem;">Puedes seleccionar varias fotografías. Antes de guardar podrás quitar cualquiera.</small>
+            </div>
+            <div class="col-12 col-md-5 text-center">
+              <div id="previewContainerModal" class="border rounded p-2 bg-light d-flex flex-wrap gap-2 justify-content-center" style="min-height: 110px;"></div>
+            </div>
+          </div>
+
+          <div class="alert alert-light border small mt-3 mb-0 py-2 d-flex align-items-center gap-2">
+            <i class="bi bi-shield-check text-success fs-5"></i>
+            <div>
+              Al registrar la fecha y guardar, se generará el <strong>Código Verificador oficial</strong> (ej: <code>{{ funcionario.delegacion.codigo|default:'SGR' }}-EVA-...</code>) quedando el punto en estado <strong>"En Revisión"</strong> para validación del Delegado/Jefatura.
+            </div>
+          </div>
+        </div>
+
+        <!-- SECCIÓN 3: ¿DERIVA EN COMPROMISO A FUTURO EN TUBO DE TRABAJO? -->
+        <div class="card p-3 border-0 shadow-sm bg-white">
+          <div class="d-flex justify-content-between align-items-center mb-2 pb-2 border-bottom">
+            <div class="d-flex align-items-center gap-2">
+              <span class="badge px-2 py-1 fw-bold text-white rounded-circle" style="background-color: var(--carmesi-la-serena); width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;">3</span>
+              <div>
+                <h6 class="fw-bold text-dark mb-0">Tubo de Trabajo Colectivo (Agenda a Futuro)</h6>
+                <small class="text-secondary">¿La atención derivó en un compromiso que requiere seguimiento?</small>
+              </div>
+            </div>
+            <div class="form-check form-switch fs-5">
+              <input class="form-check-input" type="checkbox" role="switch" id="switchGeneraCompromiso" name="genera_compromiso" onchange="toggleSeccionCompromiso(this)" {% if activity_form_data.genera_compromiso %}checked{% endif %}>
+            </div>
+          </div>
+
+          <div id="seccionCompromisoCollapse" class="d-none mt-2 pt-2">
+            <div class="alert alert-warning py-2 small mb-3 border-warning">
+              <i class="bi bi-exclamation-circle-fill me-1"></i> Este compromiso se vinculará directamente a esta actividad y se sincronizará en la <strong>Agenda Colectiva de la Delegación</strong> ({% url 'web_tubo' %}) donde todo el equipo podrá monitorearlo.
+            </div>
+
+            <div class="row g-3">
+              <div class="col-12 col-md-6">
+                <label class="form-label small fw-bold text-dark mb-1">Fecha Comprometida de Solución <span class="text-danger">*</span></label>
+                <input type="date" name="compromiso_fecha" id="compFechaInp" value="{{ activity_form_data.compromiso_fecha|default:'' }}" class="form-control form-control-sm" min="{{ periodo.fecha_inicio|date:'Y-m-d' }}" max="{{ periodo.fecha_termino|date:'Y-m-d' }}">
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label small fw-bold text-dark mb-1">Territorio / Sector <span class="text-danger">*</span></label>
+                <select name="compromiso_territorio" class="form-select form-select-sm">
+                  {% for territorio in territorios %}<option value="{{ territorio }}" {% if activity_form_data.compromiso_territorio == territorio %}selected{% endif %}>{{ territorio }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label small fw-bold text-dark mb-1">Área o Unidad Municipal de Apoyo <span class="text-danger">*</span></label>
+                <select name="compromiso_area_apoyo" class="form-select form-select-sm">
+                  {% for a in areas_apoyo %}
+                    <option value="{{ a }}" {% if activity_form_data.compromiso_area_apoyo == a %}selected{% endif %}>{{ a }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label small fw-bold text-dark mb-1">Origen del Requerimiento</label>
+                <input type="text" class="form-control form-control-sm" value="EXT (Vecinal en Terreno)" readonly>
+              </div>
+              <div class="col-12">
+                <label class="form-label small fw-bold text-dark mb-1">Detalle del Compromiso con el Vecino <span class="text-danger">*</span></label>
+                <textarea name="compromiso_descripcion" class="form-control form-control-sm" rows="2" placeholder="Detalle qué se comprometió a gestionar o reparar y los plazos acordados...">{{ activity_form_data.compromiso_descripcion|default:'' }}</textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer bg-light p-3 border-top flex-shrink-0 d-flex justify-content-between">
+        <button type="button" class="btn btn-outline-secondary btn-sm px-3" data-bs-dismiss="modal">
+          <i class="bi bi-x-circle me-1"></i> Cancelar
+        </button>
+        <button type="submit" class="btn btn-danger btn-sm fw-bold px-4 shadow-sm" style="background-color: var(--carmesi-la-serena); border-color: var(--carmesi-la-serena);">
+          <i class="bi bi-check2-circle me-1"></i> Guardar Registro Completo (Todo en Uno)
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endcomment %}
+
+<!-- Modal para Visualizar Foto y Verificador Completo -->
+<div class="modal fade" id="modalVerFoto" tabindex="-1" aria-labelledby="modalVerFotoLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content border-0 shadow-lg rounded-4 overflow-hidden">
+      <div class="modal-header p-3 text-white border-0" style="background: linear-gradient(135deg, #800000 0%, #B30000 100%);">
+        <div>
+          <h6 class="modal-title fw-bold mb-0 text-white" id="modalVerFotoLabel">
+            <i class="bi bi-camera-fill me-2 text-warning"></i>Respaldo Fotográfico de Terreno
+          </h6>
+          <small class="text-white-50">Código Verificador: <span id="modalFotoCodigo" class="font-monospace text-warning fw-bold"></span></small>
+        </div>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+      </div>
+      <div class="modal-body p-3 text-center bg-light" style="min-height: 320px; display: flex; align-items: center; justify-content: center;">
+        <img id="modalFotoImg" src="/static/img/evidencia_terreno_placeholder.svg" class="img-fluid rounded border shadow-sm" style="max-height: 480px; min-height: 260px; width: 100%; object-fit: contain;" alt="Evidencia de terreno" onerror="this.onerror=null; this.src='/static/img/evidencia_terreno_placeholder.svg';">
+      </div>
+      <div class="modal-footer bg-white p-3 border-top d-flex justify-content-between align-items-center">
+        <div class="small">
+          <span class="text-secondary fw-semibold">Ítem:</span> <strong id="modalFotoItem" class="text-dark"></strong> &nbsp;|&nbsp;
+          <span class="text-secondary fw-semibold">Estado Check:</span> <span id="modalFotoEstado" class="badge bg-secondary"></span>
+        </div>
+        <button type="button" class="btn btn-sm btn-secondary px-3 fw-semibold" data-bs-dismiss="modal">
+          <i class="bi bi-x-circle me-1"></i> Cerrar
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function validarRunSolicitante(input, mostrarError) {
+    const raw = input.value.trim();
+    input.setCustomValidity('');
+    input.classList.remove('is-invalid');
+    if (!raw) {
+      if (mostrarError) {
+        input.setCustomValidity('El RUN del solicitante es obligatorio.');
+        input.classList.add('is-invalid');
+      }
+      return false;
+    }
+
+    const compact = raw.replace(/\./g, '');
+    const runParts = compact.match(/^(\d{7,8})-([\dkK])$/);
+    if (!runParts) {
+      if (mostrarError) {
+        input.setCustomValidity('Ingresa el RUN con puntos, guion y dígito verificador.');
+        input.classList.add('is-invalid');
+      }
+      return false;
+    }
+
+    const body = runParts[1];
+    const dv = runParts[2].toUpperCase();
+    let total = 0;
+    let multiplier = 2;
+    for (let i = body.length - 1; i >= 0; i--) {
+      total += Number(body[i]) * multiplier;
+      multiplier = multiplier === 7 ? 2 : multiplier + 1;
+    }
+    const remainder = 11 - (total % 11);
+    const expected = remainder === 10 ? 'K' : remainder === 11 ? '0' : String(remainder);
+    if (dv !== expected) {
+      if (mostrarError) {
+        input.setCustomValidity('El dígito verificador del RUN no es válido.');
+        input.classList.add('is-invalid');
+      }
+      return false;
+    }
+
+    if (mostrarError) {
+      const groupedBody = body.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+      input.value = `${groupedBody}-${dv}`;
+      input.classList.remove('is-invalid');
+    }
+    return true;
+  }
+
+  function validarTelefonoSolicitante(input, mostrarError) {
+    input.setCustomValidity('');
+    const raw = input.value.trim();
+    let digits = raw.replace(/\D/g, '');
+    if (digits.startsWith('56') && digits.length > 9) digits = digits.slice(2);
+    const valid = !raw || (
+      digits.length === 9 &&
+      '2345679'.includes(digits[0]) &&
+      new Set(digits).size > 1
+    );
+    input.setCustomValidity(valid ? '' : 'Ingresa 9 dígitos con prefijo chileno válido; no se aceptan números repetidos.');
+    input.classList.toggle('is-invalid', !valid && mostrarError);
+    return valid;
+  }
+
+  function limitarTelefonoSolicitante(input) {
+    let digits = input.value.replace(/\D/g, '');
+    if (digits.startsWith('56') && digits.length > 9) digits = digits.slice(2);
+    digits = digits.slice(0, 9);
+    input.value = digits.length > 5
+      ? `${digits[0]} ${digits.slice(1, 5)} ${digits.slice(5)}`
+      : digits.length > 1
+        ? `${digits[0]} ${digits.slice(1)}`
+        : digits;
+    validarTelefonoSolicitante(input, true);
+  }
+
+  function normalizarTelefonoSolicitante(input) {
+    if (input.value.trim()) limitarTelefonoSolicitante(input);
+  }
+
+  function validarCorreoSolicitante(input, mostrarError) {
+    input.setCustomValidity('');
+    const valid = input.checkValidity();
+    input.setCustomValidity(valid ? '' : 'Ingresa un correo electrónico válido.');
+    input.classList.toggle('is-invalid', !valid && mostrarError);
+    return valid;
+  }
+
+  function validarFechaNoFutura(inp) {
+    const hoyStr = '{{ hoy|date:"Y-m-d" }}';
+    const errDiv = document.getElementById('fechaErrorMsg');
+    if (inp.value > hoyStr) {
+      if (errDiv) errDiv.classList.remove('d-none');
+      inp.setCustomValidity('La fecha de la actividad no puede ser posterior a hoy.');
+    } else if (errDiv) {
+      errDiv.classList.add('d-none');
+      inp.setCustomValidity('');
+    }
+  }
+
+  function toggleSeccionCompromiso(chk) {
+    const sec = document.getElementById('seccionCompromisoCollapse');
+    const compFecha = document.getElementById('compFechaInp');
+    if (chk.checked) {
+      sec.classList.remove('d-none');
+      compFecha.required = true;
+      sec.querySelector('[name="compromiso_descripcion"]').required = true;
+    } else {
+      sec.classList.add('d-none');
+      compFecha.required = false;
+      sec.querySelector('[name="compromiso_descripcion"]').required = false;
+    }
+  }
+
+  function setupPhotoPicker(inputId, previewId) {
+    const input = document.getElementById(inputId);
+    const preview = document.getElementById(previewId);
+    if (!input || !preview) return;
+    let files = [];
+
+    function render() {
+      preview.replaceChildren();
+      files.forEach((file, index) => {
+        const card = document.createElement('div');
+        card.className = 'position-relative border rounded p-1';
+        const img = document.createElement('img');
+        img.alt = file.name;
+        img.className = 'rounded';
+        img.style.cssText = 'width:72px;height:72px;object-fit:cover';
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn btn-danger btn-sm position-absolute top-0 end-0 p-0 px-1';
+        remove.setAttribute('aria-label', 'Quitar ' + file.name);
+        remove.textContent = '×';
+        remove.addEventListener('click', () => {
+          files.splice(index, 1);
+          updateInput();
+          render();
+        });
+        const reader = new FileReader();
+        reader.onload = event => { img.src = event.target.result; };
+        reader.readAsDataURL(file);
+        card.append(img, remove);
+        preview.append(card);
+      });
+    }
+
+    function updateInput() {
+      const transfer = new DataTransfer();
+      files.forEach(file => transfer.items.add(file));
+      input.files = transfer.files;
+    }
+
+    input.addEventListener('change', () => {
+      files = files.concat(Array.from(input.files || []));
+      updateInput();
+      render();
+    });
+  }
+
+  let modalVerFotoInstance = null;
+  function abrirModalFoto(imgUrl, codigo, estado, item) {
+    const imgEl = document.getElementById('modalFotoImg');
+    imgEl.onerror = function() {
+      this.onerror = null;
+      this.src = '/static/img/evidencia_terreno_placeholder.svg';
+    };
+    imgEl.src = imgUrl || '/static/img/evidencia_terreno_placeholder.svg';
+    document.getElementById('modalFotoCodigo').textContent = codigo || 'SGR-FOTO';
+    document.getElementById('modalFotoEstado').textContent = estado || 'En Revisión';
+    document.getElementById('modalFotoItem').textContent = item || 'Actividad';
+
+    const modalEl = document.getElementById('modalVerFoto');
+    if (!modalVerFotoInstance) {
+      modalVerFotoInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
+    }
+    modalVerFotoInstance.show();
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const evidenceModal = document.getElementById('modalAgregarEvidencia');
+    const evidenceForm = document.getElementById('formAgregarEvidencia');
+    if (evidenceModal && evidenceForm) {
+      evidenceModal.addEventListener('show.bs.modal', event => {
+        const button = event.relatedTarget;
+        evidenceForm.action = `/personal/actividades/${button.dataset.actividadId}/evidencias/`;
+      });
+    }
+    setupPhotoPicker('inpFotoModal', 'previewContainerModal');
+    setupPhotoPicker('inputEvidenciasAdicionales', 'previewEvidenciasAdicionales');
+    const fechaActividad = document.getElementById('inpFechaActividad');
+    if (fechaActividad) validarFechaNoFutura(fechaActividad);
+    const commitmentToggle = document.getElementById('switchGeneraCompromiso');
+    if (commitmentToggle && commitmentToggle.checked) toggleSeccionCompromiso(commitmentToggle);
+    const activityForm = document.querySelector('form[action*="registrar-actividad"]');
+    if (activityForm) {
+      const runInput = document.getElementById('solicitanteRun');
+      const emailInput = document.getElementById('solicitanteCorreo');
+      const phoneInput = document.getElementById('solicitanteTelefono');
+      activityForm.addEventListener('submit', event => {
+        const runValid = validarRunSolicitante(runInput, true);
+        const emailValid = validarCorreoSolicitante(emailInput, true);
+        const phoneValid = validarTelefonoSolicitante(phoneInput, true);
+        if (!runValid || !emailValid || !phoneValid || !activityForm.checkValidity()) {
+          event.preventDefault();
+          activityForm.reportValidity();
+        }
+      });
+      emailInput.addEventListener('input', () => validarCorreoSolicitante(emailInput, true));
+      phoneInput.addEventListener('input', () => limitarTelefonoSolicitante(phoneInput));
+      phoneInput.addEventListener('blur', () => normalizarTelefonoSolicitante(phoneInput));
+      limitarTelefonoSolicitante(phoneInput);
+    }
+  });
+</script>
+{% else %}
+<div class="alert alert-info shadow-sm" role="status">
+  No hay funcionarios activos para mostrar en el dashboard personal.
+</div>
+{% endif %}
+{% endblock %}

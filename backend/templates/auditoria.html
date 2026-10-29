@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Auditoría | Matriz SGR{% endblock %}
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <div class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <div class="d-flex align-items-center gap-2 mb-1">
+      <span class="badge bg-white text-danger text-uppercase fw-bold">Seguridad & Trazabilidad</span>
+      <span class="text-white-50 small">Control de Integridad y Trazabilidad Municipal</span>
+    </div>
+    <h3 class="fw-black mb-0 text-white">Registro Inmutable de Auditoría</h3>
+    <small class="text-white-50">Historial detallado de todas las operaciones críticas: usuario, acción, fecha, valores anteriores y nuevos.</small>
+  </div>
+  <div class="card border-0 shadow-sm overflow-hidden">
+    <div class="table-responsive">
+      <table class="table table-dark table-hover align-middle mb-0 small">
+        <thead class="text-secondary text-uppercase border-secondary" style="font-size: 0.75rem;">
+          <tr>
+            <th class="ps-3">Fecha y Hora</th>
+            <th>Usuario</th>
+            <th>Acción</th>
+            <th>Entidad</th>
+            <th>ID Registro</th>
+            <th>Detalles de Cambio</th>
+            <th class="pe-3">IP Origen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in registros %}
+            <tr>
+              <td class="ps-3 text-secondary font-monospace">{{ r.fecha|date:"d/m/Y H:i:s" }}</td>
+              <td class="fw-bold text-light">{{ r.usuario.get_full_name|default:r.usuario.username|default:"Sistema" }}</td>
+              <td>
+                <span class="badge {% if r.accion == 'CREAR' %}bg-success{% elif r.accion == 'VALIDAR_EVIDENCIA' %}bg-light text-dark border{% elif r.accion == 'CAMBIO_ESTADO' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
+                  {{ r.accion }}
+                </span>
+              </td>
+              <td class="text-light">{{ r.entidad }}</td>
+              <td class="font-monospace text-warning">#{{ r.identificador_registro }}</td>
+              <td class="text-secondary font-monospace" style="font-size: 0.7rem;">
+                {% if r.valor_anterior %}Ant: {{ r.valor_anterior }} | {% endif %}
+                Nuevo: {{ r.valor_nuevo }}
+              </td>
+              <td class="pe-3 text-secondary">{{ r.ip_origen|default:"127.0.0.1" }}</td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="7" class="text-center py-4 text-secondary">No hay eventos de auditoría registrados aún.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

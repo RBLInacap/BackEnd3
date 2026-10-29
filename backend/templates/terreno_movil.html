@@ -1,0 +1,508 @@
+{% extends "base.html" %}
+{% block title %}Evidencias de Terreno | Matriz SGR{% endblock %}
+
+{% block content %}
+<!-- Dependencias de Mapas Leaflet (OpenStreetMap) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+<div class="row justify-content-center">
+  <div class="col-12 col-md-9 col-lg-7">
+    <div class="d-flex flex-column gap-3">
+      <!-- Encabezado Institucional de Evidencias de Terreno -->
+      <div class="card p-3 shadow-sm border-0 d-flex flex-row justify-content-between align-items-center bg-white">
+        <div>
+          <span class="badge text-uppercase fw-bold text-white px-2 py-1" style="background-color: var(--carmesi-la-serena);">
+            <i class="bi bi-camera-fill me-1"></i> Registro en Terreno
+          </span>
+          <h4 class="fw-bold mb-0 text-dark mt-2">Evidencias de Terreno</h4>
+          <small class="text-secondary">Levantamiento operativo y fotográfico in situ</small>
+        </div>
+        <div class="text-end bg-light p-2 rounded border">
+          <small class="text-secondary d-block" style="font-size: 0.75rem;">Funcionario Responsable:</small>
+          <strong class="text-dark small d-block">{{ request.user.get_full_name|default:request.user.username }}</strong>
+          <span class="badge bg-secondary-subtle text-dark mt-1" style="font-size: 0.7rem;">{{ request.user.delegacion.nombre|default:"Comunal" }}</span>
+        </div>
+      </div>
+
+      <!-- Formulario de Registro de Evidencias -->
+      <form id="form-terreno" method="POST" enctype="multipart/form-data" class="d-flex flex-column gap-3">
+        {% csrf_token %}
+        <input type="hidden" name="latitud" id="gps-latitud" value="-29.9027">
+        <input type="hidden" name="longitud" id="gps-longitud" value="-71.2519">
+
+        <div class="card p-3 shadow-sm border bg-white">
+          <label for="actividad-existente" class="form-label fw-bold text-dark">Actividad asociada</label>
+          <select id="actividad-existente" name="actividad_id" class="form-select" onchange="seleccionarActividadExistente(this)">
+            <option value="">Crear nueva actividad</option>
+            {% for actividad in actividades_existentes %}
+              <option value="{{ actividad.id }}"
+                      data-direccion="{{ actividad.direccion|default:''|escape }}"
+                      data-lat="{{ actividad.latitud|default:'' }}"
+                      data-lng="{{ actividad.longitud|default:'' }}"
+                      data-accion="{{ actividad.accion_ejecutada|default:actividad.accion|default:''|escape }}"
+                      data-item-name="{% if actividad.item_medicion_id %}{{ actividad.item_medicion.nombre_item|escape }}{% elif actividad.item_id %}{{ actividad.item.nombre_item|escape }}{% endif %}"
+                      data-item-id="{% if actividad.item_medicion_id %}{{ actividad.item_medicion_id }}{% elif actividad.item_id %}{{ actividad.item_id }}{% endif %}">
+                #{{ actividad.id }} · {{ actividad.fecha_actividad|date:"d/m/Y" }} · {{ actividad.actividad_solicitud|default:actividad.solicitud_problema|truncatechars:70 }}
+              </option>
+            {% endfor %}
+          </select>
+          <small id="activity-link-help" class="text-secondary mt-1">Al elegir una actividad existente, sus datos se mostrarán como referencia y solo se adjuntarán fotos.</small>
+        </div>
+
+        <!-- SECCIÓN 1: TAREA O ÍTEM DE MEDICIÓN -->
+        <div class="card p-3 shadow-sm border bg-white" id="activity-task-section">
+          <div class="d-flex align-items-center gap-2 mb-3 pb-2 border-bottom">
+            <div class="rounded-circle d-flex align-items-center justify-content-center text-white fw-bold" style="width: 28px; height: 28px; background-color: var(--carmesi-la-serena); font-size: 0.85rem;">1</div>
+            <div>
+              <h6 class="fw-bold text-dark mb-0">Seleccione la Tarea o Problema Atendido</h6>
+              <small class="text-secondary">Corresponde a las metas operativas de tu cargo</small>
+            </div>
+          </div>
+
+          <div class="d-flex flex-column gap-2" id="grupo-items">
+            <div id="selected-activity-item-reference" class="alert alert-info py-2 mb-0 small d-none">
+              Ítem asociado a la actividad: <strong id="selected-activity-item-name"></strong>
+            </div>
+            {% for it in items_medicion %}
+              <label class="btn btn-outline-light text-start p-3 d-flex justify-content-between align-items-center item-btn border text-dark" style="cursor: pointer; transition: all 0.2s ease;">
+                <div>
+                  <div class="fw-bold text-dark">{{ it.nombre_item }}</div>
+                  <small class="text-secondary d-block mt-1">
+                    <span class="badge bg-light text-secondary border me-1">Ponderador: {{ it.ponderador }}%</span>
+                    <span class="badge bg-light text-secondary border">Meta Período: {{ it.meta_cuantitativa }}</span>
+                  </small>
+                </div>
+                <input type="radio" name="item_medicion" value="{{ it.id }}" class="form-check-input ms-3" {% if forloop.first %}checked{% endif %} onchange="seleccionarItem(this)">
+              </label>
+            {% empty %}
+              <div class="alert alert-info py-2 mb-0 small">
+                No hay ítems configurados para este período. Se registrará como actividad general de terreno.
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+
+        <!-- SECCIÓN 2: DIRECCIÓN, GEOLOCALIZACIÓN Y DETALLE -->
+        <div class="card p-3 shadow-sm border bg-white" id="activity-location-section">
+          <div class="d-flex align-items-center gap-2 mb-3 pb-2 border-bottom">
+            <div class="rounded-circle d-flex align-items-center justify-content-center text-white fw-bold" style="width: 28px; height: 28px; background-color: var(--carmesi-la-serena); font-size: 0.85rem;">2</div>
+            <div>
+              <h6 class="fw-bold text-dark mb-0">Ubicación y Detalle de la Actividad</h6>
+              <small class="text-secondary">Ubicación física, geolocalización in situ y descripción del trabajo</small>
+            </div>
+          </div>
+
+          <div class="row g-3">
+            <div class="col-12">
+              <label for="inp-direccion" class="form-label fw-bold text-dark small mb-1">
+                <i class="bi bi-geo-alt-fill text-danger me-1"></i> Dirección (Calle, Número o Sector) <span class="text-danger">*</span>
+              </label>
+              <div class="input-group">
+                <input type="text" id="inp-direccion" name="direccion" class="form-control" placeholder="Ej: Balmaceda 1234, La Serena / Sector El Milagro" required onkeydown="if(event.key==='Enter'){event.preventDefault(); buscarDireccionEnMapa();}">
+                <button type="button" id="btn-buscar-calle" class="btn btn-outline-secondary fw-semibold btn-sm d-flex align-items-center gap-1" onclick="buscarDireccionEnMapa()" title="Localizar dirección en el mapa">
+                  <i class="bi bi-search"></i> Buscar
+                </button>
+                <button type="button" class="btn btn-outline-danger fw-semibold btn-sm d-flex align-items-center gap-1" onclick="obtenerUbicacionGPS()" title="Detectar posición actual mediante GPS">
+                  <i class="bi bi-crosshair"></i> Mi GPS
+                </button>
+              </div>
+              <div id="geocode-feedback" class="small mt-1 d-none"></div>
+              <div class="form-text small text-secondary">Indique la calle, número o sector; el mapa se centrará y posicionará el marcador automáticamente.</div>
+            </div>
+
+            <!-- Mapa Interactivo Leaflet -->
+            <div class="col-12">
+              <div class="d-flex justify-content-between align-items-center mb-1">
+                <label class="form-label fw-bold text-dark small mb-0">
+                  <i class="bi bi-map-fill text-danger me-1"></i> Punto de Intervención (La Serena)
+                </label>
+                <span id="gps-coords-badge" class="badge bg-secondary font-monospace" style="font-size: 0.72rem;">
+                  Lat: -29.9027, Lng: -71.2519
+                </span>
+              </div>
+              <div id="map-terreno" style="height: 220px; border-radius: 8px; border: 1px solid #cbd5e1; z-index: 1;"></div>
+              <small class="text-secondary d-block mt-1" style="font-size: 0.72rem;">
+                <i class="bi bi-info-circle me-1"></i>Haz clic en el mapa o arrastra el marcador para fijar las coordenadas exactas de la evidencia.
+              </small>
+            </div>
+
+            <div class="col-12">
+              <label for="inp-detalle" class="form-label fw-bold text-dark small mb-1">
+                <i class="bi bi-card-text text-danger me-1"></i> Detalle de la Acción Ejecutada
+              </label>
+              <textarea id="inp-detalle" name="accion_ejecutada" class="form-control" rows="2" placeholder="Describa brevemente la labor efectuada en terreno..."></textarea>
+            </div>
+          </div>
+        </div>
+
+        <!-- SECCIÓN 3: EVIDENCIAS FOTOGRÁFICAS -->
+        <div class="card p-3 shadow-sm border bg-white">
+          <div class="d-flex align-items-center justify-content-between mb-3 pb-2 border-bottom">
+            <div class="d-flex align-items-center gap-2">
+              <div class="rounded-circle d-flex align-items-center justify-content-center text-white fw-bold" style="width: 28px; height: 28px; background-color: var(--carmesi-la-serena); font-size: 0.85rem;">3</div>
+              <div>
+                <h6 class="fw-bold text-dark mb-0">Evidencias Fotográficas</h6>
+                <small class="text-secondary">Adjunte las fotografías que respaldan el cumplimiento</small>
+              </div>
+            </div>
+            <span class="badge bg-light text-secondary border">Puedes adjuntar varias fotografías</span>
+          </div>
+
+          <input type="file" id="input-fotos-terreno" name="fotos" accept="image/*" capture="environment" multiple class="form-control" required>
+          <div id="preview-fotos-terreno" class="d-flex flex-wrap gap-2 mt-3"></div>
+        </div>
+
+        <!-- BOTÓN DE CONFIRMACIÓN Y ENVÍO -->
+        <div class="card p-3 shadow-sm border bg-white">
+          <button type="submit" id="btn-enviar" class="btn text-white btn-lg w-100 py-3 fw-bold text-uppercase shadow-sm" style="background-color: var(--carmesi-la-serena); border-color: var(--carmesi-la-serena);">
+            <i class="bi bi-cloud-arrow-up-fill me-2"></i> Enviar Evidencias a Validación
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+  let map, marker;
+  let currentLat = -29.9027;
+  let currentLng = -71.2519;
+
+  function initMap() {
+    if (typeof L === 'undefined') return;
+    map = L.map('map-terreno').setView([currentLat, currentLng], 14);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri &mdash; Fuentes: Esri, DeLorme, NAVTEQ, USGS, METI'
+    }).addTo(map);
+
+    marker = L.marker([currentLat, currentLng], { draggable: true }).addTo(map);
+
+    marker.on('dragend', function() {
+      const pos = marker.getLatLng();
+      updateCoords(pos.lat, pos.lng);
+      programarBusquedaDireccionCercana(pos.lat, pos.lng);
+    });
+
+    map.on('click', function(e) {
+      marker.setLatLng(e.latlng);
+      updateCoords(e.latlng.lat, e.latlng.lng);
+      programarBusquedaDireccionCercana(e.latlng.lat, e.latlng.lng);
+    });
+    const activitySelect = document.getElementById('actividad-existente');
+    if (activitySelect && activitySelect.value) {
+      seleccionarActividadExistente(activitySelect);
+    }
+  }
+
+  let geocodeTimeout = null;
+  let reverseGeocodeTimeout = null;
+  let reverseGeocodeRequestId = 0;
+  let addressEditVersion = 0;
+  let autoFilledAddress = '';
+  function programarBusquedaDireccionCercana(lat, lng) {
+    window.clearTimeout(reverseGeocodeTimeout);
+    const requestId = ++reverseGeocodeRequestId;
+    const editVersion = addressEditVersion;
+    const input = document.getElementById('inp-direccion');
+    if (autoFilledAddress && input.value === autoFilledAddress) {
+      input.value = '';
+      autoFilledAddress = '';
+    }
+    reverseGeocodeTimeout = window.setTimeout(() => {
+      buscarDireccionCercana(lat, lng, requestId, editVersion);
+    }, 1100);
+  }
+
+  async function buscarDireccionCercana(lat, lng, requestId, editVersion) {
+    const input = document.getElementById('inp-direccion');
+    const feedback = document.getElementById('geocode-feedback');
+    if (feedback) {
+      feedback.className = 'small mt-1 text-muted d-block';
+      feedback.textContent = 'Buscando la dirección más cercana...';
+    }
+    try {
+      const params = new URLSearchParams({ lat: String(lat), lng: String(lng) });
+      const response = await fetch(`/api/geocodificar/?${params}`);
+      const data = await response.json();
+      if (requestId !== reverseGeocodeRequestId || editVersion !== addressEditVersion) return;
+      if (!response.ok) {
+        throw new Error(data.error || 'No fue posible buscar la dirección cercana.');
+      }
+      if (!data.encontrado) {
+        if (feedback) {
+          feedback.className = 'small mt-1 text-warning-emphasis d-block';
+          feedback.textContent = 'No se encontró una dirección cercana. Puedes escribirla manualmente.';
+        }
+        return;
+      }
+
+      input.value = data.direccion_encontrada;
+      autoFilledAddress = data.direccion_encontrada;
+      if (feedback) {
+        feedback.className = 'small mt-1 text-success fw-semibold d-block';
+        feedback.textContent = data.numero_encontrado
+          ? `Dirección cercana encontrada: ${data.direccion_encontrada}`
+          : `Calle cercana encontrada (sin número disponible): ${data.direccion_encontrada}`;
+      }
+    } catch (error) {
+      if (requestId !== reverseGeocodeRequestId || editVersion !== addressEditVersion) return;
+      if (feedback) {
+        feedback.className = 'small mt-1 text-warning-emphasis d-block';
+        feedback.textContent = 'No se pudo obtener la dirección automáticamente. Puedes escribirla manualmente.';
+      }
+    }
+  }
+
+  function buscarDireccionEnMapa() {
+    const input = document.getElementById('inp-direccion');
+    const feedback = document.getElementById('geocode-feedback');
+    const btn = document.getElementById('btn-buscar-calle');
+    const query = (input ? input.value : '').trim();
+    if (!query || query.length < 3) return;
+
+    if (feedback) {
+      feedback.className = 'small mt-1 text-muted d-block';
+      feedback.innerHTML = '<span class="spinner-border spinner-border-sm me-1 text-danger"></span> Localizando dirección en el mapa...';
+    }
+    if (btn) btn.disabled = true;
+
+    fetch(`/api/geocodificar/?q=${encodeURIComponent(query)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (btn) btn.disabled = false;
+        if (data.encontrado && data.lat && data.lng) {
+          updateCoords(data.lat, data.lng);
+          if (map && marker) {
+            marker.setLatLng([data.lat, data.lng]);
+            map.setView([data.lat, data.lng], 16);
+            marker.bindPopup(`<b>${query}</b><br><small class="text-secondary">${data.direccion_encontrada}</small>`).openPopup();
+          }
+          if (feedback) {
+            feedback.className = 'small mt-1 text-success fw-semibold d-block';
+            feedback.innerHTML = `<i class="bi bi-check2-circle me-1"></i> Punto localizado en el mapa: Lat ${data.lat.toFixed(4)}, Lng ${data.lng.toFixed(4)}`;
+          }
+        } else {
+          if (feedback) {
+            feedback.className = 'small mt-1 text-warning-emphasis d-block';
+            feedback.innerHTML = '<i class="bi bi-info-circle me-1"></i> No se encontró el número exacto. Puedes hacer clic en el mapa para ajustar el marcador.';
+          }
+        }
+      })
+      .catch(err => {
+        if (btn) btn.disabled = false;
+        if (feedback) {
+          feedback.className = 'small mt-1 text-secondary d-block';
+          feedback.innerHTML = '<i class="bi bi-geo-alt me-1"></i> Puedes hacer clic en el mapa para fijar las coordenadas exactas.';
+        }
+      });
+  }
+
+  function updateCoords(lat, lng) {
+    currentLat = lat;
+    currentLng = lng;
+    document.getElementById('gps-latitud').value = lat;
+    document.getElementById('gps-longitud').value = lng;
+    const badge = document.getElementById('gps-coords-badge');
+    if (badge) {
+      badge.innerText = `Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}`;
+    }
+  }
+
+  function obtenerUbicacionGPS() {
+    const feedback = document.getElementById('geocode-feedback');
+    if (!navigator.geolocation) {
+      feedback.className = 'small mt-1 text-danger d-block';
+      feedback.textContent = 'Tu navegador no soporta geolocalización GPS.';
+      return;
+    }
+    const badge = document.getElementById('gps-coords-badge');
+    if (badge) badge.innerText = 'Obteniendo GPS...';
+
+    navigator.geolocation.getCurrentPosition(
+      function(pos) {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        updateCoords(lat, lng);
+        programarBusquedaDireccionCercana(lat, lng);
+        if (map && marker) {
+          map.setView([lat, lng], 16);
+          marker.setLatLng([lat, lng]);
+          marker.bindPopup('<b>Tu ubicación GPS actual</b>').openPopup();
+        }
+        feedback.className = 'small mt-1 text-success d-block';
+        feedback.textContent = 'Ubicación GPS capturada correctamente.';
+      },
+      function() {
+        feedback.className = 'small mt-1 text-warning-emphasis d-block';
+        feedback.textContent = 'No se pudo acceder al GPS. Puedes hacer clic en el mapa para ubicar el marcador.';
+        if (badge) badge.innerText = `Lat: ${currentLat.toFixed(4)}, Lng: ${currentLng.toFixed(4)}`;
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }
+
+  function seleccionarItem(radio) {
+    document.querySelectorAll('.item-btn').forEach(b => {
+      b.classList.remove('active', 'border-danger', 'bg-danger-subtle');
+    });
+    const parentLabel = radio.closest('.item-btn');
+    if (parentLabel) {
+      parentLabel.classList.add('active', 'border-danger', 'bg-danger-subtle');
+    }
+  }
+
+  function seleccionarActividadExistente(select) {
+    const option = select.options[select.selectedIndex];
+    const existing = Boolean(select.value);
+    const locationSection = document.getElementById('activity-location-section');
+    window.clearTimeout(reverseGeocodeTimeout);
+    reverseGeocodeRequestId++;
+    autoFilledAddress = '';
+    const itemRadios = document.querySelectorAll('input[name="item_medicion"]');
+    itemRadios.forEach(radio => {
+      radio.checked = existing && radio.value === option.dataset.itemId;
+      radio.disabled = existing;
+    });
+    if (!existing && itemRadios.length) {
+      itemRadios[0].checked = true;
+    }
+    const selectedItem = document.querySelector('input[name="item_medicion"]:checked');
+    if (selectedItem) {
+      seleccionarItem(selectedItem);
+    } else {
+      document.querySelectorAll('.item-btn').forEach(button => {
+        button.classList.remove('active', 'border-danger', 'bg-danger-subtle');
+      });
+    }
+    const itemReference = document.getElementById('selected-activity-item-reference');
+    const itemReferenceName = document.getElementById('selected-activity-item-name');
+    itemReference.classList.toggle('d-none', !existing || Boolean(selectedItem));
+    itemReferenceName.textContent = existing
+      ? option.dataset.itemName || 'Actividad general sin ítem medible'
+      : '';
+
+    const address = document.getElementById('inp-direccion');
+    address.readOnly = existing;
+    document.getElementById('inp-detalle').readOnly = existing;
+    locationSection.querySelectorAll('button').forEach(button => { button.disabled = existing; });
+    if (marker && marker.dragging) marker.dragging.enable();
+
+    if (existing) {
+      address.value = option.dataset.direccion || '';
+      document.getElementById('inp-detalle').value = option.dataset.accion || '';
+      const lat = Number(option.dataset.lat);
+      const lng = Number(option.dataset.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng) && lat && lng) {
+        updateCoords(lat, lng);
+        if (map && marker) {
+          marker.setLatLng([lat, lng]);
+          map.setView([lat, lng], 16);
+        }
+      } else {
+        currentLat = -29.9027;
+        currentLng = -71.2519;
+        document.getElementById('gps-latitud').value = '';
+        document.getElementById('gps-longitud').value = '';
+        document.getElementById('gps-coords-badge').textContent = 'Coordenadas no registradas';
+        if (map && marker) {
+          marker.setLatLng([currentLat, currentLng]);
+          map.setView([currentLat, currentLng], 14);
+        }
+      }
+    } else {
+      address.value = '';
+      document.getElementById('inp-detalle').value = '';
+      updateCoords(-29.9027, -71.2519);
+      if (map && marker) {
+        marker.setLatLng([currentLat, currentLng]);
+        map.setView([currentLat, currentLng], 14);
+      }
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('inp-direccion').addEventListener('input', () => {
+      addressEditVersion++;
+      autoFilledAddress = '';
+    });
+    const checkedRadio = document.querySelector('input[name="item_medicion"]:checked');
+    if (checkedRadio) {
+      seleccionarItem(checkedRadio);
+    }
+    setTimeout(initMap, 200);
+
+    const photosInput = document.getElementById('input-fotos-terreno');
+    const photosPreview = document.getElementById('preview-fotos-terreno');
+    let photos = [];
+    function renderPhotoPreviews() {
+      photosPreview.replaceChildren();
+      photos.forEach((photo, index) => {
+        const card = document.createElement('div');
+        card.className = 'position-relative border rounded p-1';
+        const image = document.createElement('img');
+        image.alt = photo.name;
+        image.className = 'rounded';
+        image.style.cssText = 'width:90px;height:90px;object-fit:cover';
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn btn-danger btn-sm position-absolute top-0 end-0 p-0 px-1';
+        remove.setAttribute('aria-label', 'Quitar ' + photo.name);
+        remove.textContent = '×';
+        remove.addEventListener('click', () => {
+          photos.splice(index, 1);
+          updatePhotoInput();
+          renderPhotoPreviews();
+        });
+        const reader = new FileReader();
+        reader.onload = event => { image.src = event.target.result; };
+        reader.readAsDataURL(photo);
+        card.append(image, remove);
+        photosPreview.append(card);
+      });
+    }
+    function updatePhotoInput() {
+      const transfer = new DataTransfer();
+      photos.forEach(photo => transfer.items.add(photo));
+      photosInput.files = transfer.files;
+    }
+    photosInput.addEventListener('change', () => {
+      photos = photos.concat(Array.from(photosInput.files || []));
+      updatePhotoInput();
+      renderPhotoPreviews();
+    });
+
+    document.getElementById('actividad-existente').addEventListener('change', event => {
+      seleccionarActividadExistente(event.target);
+    });
+    const submitButton = document.getElementById('btn-enviar');
+    document.getElementById('form-terreno').addEventListener('submit', event => {
+      if (!photosInput.files.length) {
+        event.preventDefault();
+        photosInput.setCustomValidity('Adjunta al menos una fotografía.');
+        photosInput.reportValidity();
+        return;
+      }
+      photosInput.setCustomValidity('');
+      submitButton.disabled = true;
+      submitButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Guardando...';
+    });
+
+    const inpDir = document.getElementById('inp-direccion');
+    if (inpDir) {
+      inpDir.addEventListener('blur', function() {
+        if (!this.readOnly && this.value.trim().length >= 4) {
+          buscarDireccionEnMapa();
+        }
+      });
+      inpDir.addEventListener('input', function() {
+        clearTimeout(geocodeTimeout);
+        if (!this.readOnly && this.value.trim().length >= 6) {
+          geocodeTimeout = setTimeout(buscarDireccionEnMapa, 1000);
+        }
+      });
+    }
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Iniciar Sesión | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center py-4">
+  <div class="col-12 col-md-8 col-lg-5">
+    <div class="card shadow-lg border-0 rounded-4 overflow-hidden">
+      <!-- Cabecera Roja Municipal -->
+      <div class="card-header bg-municipal text-white text-center py-4 border-0">
+        <div class="bg-white rounded-3 d-inline-flex p-0 mb-2 shadow overflow-hidden" style="width: 80px; height: 80px; align-items: center; justify-content: center;">
+          <img src="/static/img/logo_la_serena.png" alt="Logo Municipalidad de La Serena" style="width: 100%; height: 100%; object-fit: cover;">
+        </div>
+        <h4 class="fw-black text-uppercase mb-0 tracking-wide">Municipalidad de La Serena</h4>
+        <small class="text-white-50 text-uppercase fw-bold" style="letter-spacing: 1px;">Sistema de Gestión de Resultados (SGR)</small>
+      </div>
+
+      <div class="card-body p-4 bg-white">
+        {% if error %}
+          <div class="alert alert-danger d-flex align-items-center gap-2 small py-2">
+            <i class="bi bi-exclamation-triangle-fill"></i>
+            <div>{{ error }}</div>
+          </div>
+        {% endif %}
+
+        {% if show_2fa %}
+          <!-- Paso 2FA para Rodrigo / Funcionarios con 2FA -->
+          <form method="POST" action="{% url 'web_verificar_2fa' %}">
+            {% csrf_token %}
+            <input type="hidden" name="user_id" value="{{ user_id }}">
+            <div class="text-center p-3 bg-light border border-danger-subtle rounded-3 mb-3">
+              <i class="bi bi-shield-lock text-danger fs-2"></i>
+              <h6 class="fw-bold mt-2 text-dark">Autenticación de Dos Factores (2FA)</h6>
+              <p class="text-secondary small mb-0">Ingrese el código numérico de seguridad generado por su aplicación autenticadora.</p>
+            </div>
+            <div class="mb-3">
+              <input type="text" name="code" class="form-control form-control-lg text-center font-monospace fw-bold fs-4" placeholder="000000" maxlength="6" required autofocus autocomplete="one-time-code">
+            </div>
+            <button type="submit" class="btn btn-danger w-100 fw-bold py-2 shadow-sm">
+              <i class="bi bi-check-circle me-1"></i> Confirmar Código 2FA
+            </button>
+            <a href="{% url 'web_login' %}" class="btn btn-sm btn-link text-muted mt-2 d-block text-center text-decoration-none small">
+              <i class="bi bi-arrow-left"></i> Volver a usuario y contraseña
+            </a>
+          </form>
+        {% else %}
+          <form method="POST" action="{% url 'web_login' %}">
+            {% csrf_token %}
+            <div class="mb-3">
+              <label class="form-label text-uppercase fw-bold small text-secondary">Usuario Institucional</label>
+              <div class="input-group">
+                <span class="input-group-text bg-light border-secondary-subtle"><i class="bi bi-person text-secondary"></i></span>
+                <input type="text" name="username" id="inp-usr" value="{{ username_val|default:'' }}" class="form-control border-secondary-subtle" required placeholder="ej. pablo.cuadra">
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-uppercase fw-bold small text-secondary">Contraseña</label>
+              <div class="input-group password-input-group">
+                <span class="input-group-text bg-light border-secondary-subtle"><i class="bi bi-lock text-secondary"></i></span>
+                <input type="password" name="password" id="inp-pwd" class="form-control border-secondary-subtle border-end-0" required placeholder="••••••••••••">
+                <button type="button" class="input-group-text bg-white border-secondary-subtle border-start-0 text-secondary password-visibility-toggle" id="toggle-password"
+                        aria-label="Mostrar contraseña" aria-pressed="false"
+                        aria-controls="inp-pwd">
+                  <i class="bi bi-eye" aria-hidden="true"></i>
+                </button>
+              </div>
+            </div>
+
+            <button type="submit" class="btn btn-danger w-100 py-2 fw-bold text-uppercase shadow-sm mt-2" style="background-color: var(--carmesi-la-serena); border-color: var(--carmesi-la-serena);">
+              <i class="bi bi-box-arrow-in-right me-2"></i> Iniciar Sesión
+            </button>
+            <div class="text-center mt-3">
+              <a href="{% url 'password_reset' %}" class="small text-danger text-decoration-none">
+                ¿Olvidaste tu contraseña?
+              </a>
+            </div>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+<style>
+  #inp-pwd::-ms-reveal,
+  #inp-pwd::-ms-clear {
+    display: none;
+  }
+  .password-visibility-toggle {
+    cursor: pointer;
+    transition: background-color .15s ease-in-out;
+  }
+  .password-visibility-toggle:hover {
+    color: #64748B !important;
+    background-color: #FFFFFF !important;
+    border-color: #CBD5E1 !important;
+  }
+  .password-visibility-toggle:focus,
+  .password-visibility-toggle:focus-visible {
+    color: #64748B !important;
+    background-color: #FFFFFF !important;
+    border-color: #CBD5E1 !important;
+    box-shadow: none !important;
+    outline: none;
+  }
+</style>
+<script>
+  document.getElementById('toggle-password').addEventListener('click', function () {
+    const passwordInput = document.getElementById('inp-pwd');
+    const isVisible = passwordInput.type === 'text';
+    const icon = this.querySelector('i');
+
+    passwordInput.type = isVisible ? 'password' : 'text';
+    this.setAttribute('aria-pressed', String(!isVisible));
+    this.setAttribute('aria-label', isVisible ? 'Mostrar contraseña' : 'Ocultar contraseña');
+    icon.classList.toggle('bi-eye', isVisible);
+    icon.classList.toggle('bi-eye-slash', !isVisible);
+  });
+</script>
+{% endblock %}

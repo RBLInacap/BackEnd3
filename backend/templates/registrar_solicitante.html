@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Registrar Solicitante | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="container py-3" style="max-width: 900px;">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <div>
+      <span class="badge text-bg-danger mb-2">Actividad Diaria</span>
+      <h2 class="fw-bold mb-1">Registrar solicitante</h2>
+      <p class="text-secondary mb-0">Guarda sus datos para poder seleccionarlo al registrar una actividad.</p>
+    </div>
+    <a href="{% url 'web_registrar_actividad_diaria' %}" class="btn btn-outline-danger">
+      <i class="bi bi-journal-plus me-1"></i> Ir a registrar actividad
+    </a>
+  </div>
+
+  <form method="post" id="solicitanteForm" class="card border-0 shadow-sm p-4" novalidate>
+    {% csrf_token %}
+    {% if form.non_field_errors %}
+      <div class="alert alert-danger" role="alert">{{ form.non_field_errors|join:' ' }}</div>
+    {% endif %}
+    {% if messages %}
+      {% for message in messages %}<div class="alert alert-{{ message.tags|default:'info' }} py-2">{{ message }}</div>{% endfor %}
+    {% endif %}
+    <div class="row g-3">
+      <div class="col-12 col-md-6">
+        <label class="form-label fw-semibold" for="solicitanteRun">RUN <span class="text-danger">*</span></label>
+        <input id="solicitanteRun" name="run" class="form-control {% if form.run.errors %}is-invalid{% endif %}" value="{{ form_data.run|default:'' }}" placeholder="12.345.678-5" maxlength="12" required aria-describedby="runError">
+        <div id="runError" data-error-for="run" class="invalid-feedback {% if form.run.errors %}d-block{% endif %}">{% if form.run.errors %}{{ form.run.errors|join:' ' }}{% endif %}</div>
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label fw-semibold" for="tipoSolicitante">Tipo de solicitante <span class="text-danger">*</span></label>
+        <select id="tipoSolicitante" name="tipo_solicitante" class="form-select {% if form.tipo_solicitante.errors %}is-invalid{% endif %}" required aria-describedby="tipoError">
+          <option value="">Selecciona...</option>
+          {% for value, label in tipo_solicitante_choices %}
+            <option value="{{ value }}" {% if form_data.tipo_solicitante == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <div id="tipoError" data-error-for="tipo_solicitante" class="invalid-feedback {% if form.tipo_solicitante.errors %}d-block{% endif %}">{% if form.tipo_solicitante.errors %}{{ form.tipo_solicitante.errors|join:' ' }}{% endif %}</div>
+      </div>
+      <div class="col-12 col-md-4">
+        <label class="form-label fw-semibold" for="nombre">Nombre <span class="text-danger">*</span></label>
+        <input id="nombre" name="nombre" class="form-control {% if form.nombre.errors %}is-invalid{% endif %}" value="{{ form_data.nombre|default:'' }}" maxlength="100" required aria-describedby="nombreError">
+        <div id="nombreError" data-error-for="nombre" class="invalid-feedback {% if form.nombre.errors %}d-block{% endif %}">{% if form.nombre.errors %}{{ form.nombre.errors|join:' ' }}{% endif %}</div>
+      </div>
+      <div class="col-12 col-md-4">
+        <label class="form-label fw-semibold" for="apellidoPaterno">Apellido paterno <span class="text-danger">*</span></label>
+        <input id="apellidoPaterno" name="apellido_paterno" class="form-control {% if form.apellido_paterno.errors %}is-invalid{% endif %}" value="{{ form_data.apellido_paterno|default:'' }}" maxlength="100" required aria-describedby="apellidoPaternoError">
+        <div id="apellidoPaternoError" data-error-for="apellido_paterno" class="invalid-feedback {% if form.apellido_paterno.errors %}d-block{% endif %}">{% if form.apellido_paterno.errors %}{{ form.apellido_paterno.errors|join:' ' }}{% endif %}</div>
+      </div>
+      <div class="col-12 col-md-4">
+        <label class="form-label fw-semibold" for="apellidoMaterno">Apellido materno <span class="text-danger">*</span></label>
+        <input id="apellidoMaterno" name="apellido_materno" class="form-control {% if form.apellido_materno.errors %}is-invalid{% endif %}" value="{{ form_data.apellido_materno|default:'' }}" maxlength="100" required aria-describedby="apellidoMaternoError">
+        <div id="apellidoMaternoError" data-error-for="apellido_materno" class="invalid-feedback {% if form.apellido_materno.errors %}d-block{% endif %}">{% if form.apellido_materno.errors %}{{ form.apellido_materno.errors|join:' ' }}{% endif %}</div>
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label fw-semibold" for="correo">Correo electrónico <span class="text-danger">*</span></label>
+        <input id="correo" name="correo" type="email" class="form-control {% if form.correo.errors %}is-invalid{% endif %}" value="{{ form_data.correo|default:'' }}" maxlength="254" required aria-describedby="correoError">
+        <div id="correoError" data-error-for="correo" class="invalid-feedback {% if form.correo.errors %}d-block{% endif %}">{% if form.correo.errors %}{{ form.correo.errors|join:' ' }}{% endif %}</div>
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label fw-semibold" for="telefono">Teléfono</label>
+        <div class="input-group">
+          <span class="input-group-text">+56</span>
+          <input id="telefono" name="telefono" type="tel" class="form-control {% if form.telefono.errors %}is-invalid{% endif %}" value="{{ form_data.telefono|default:'' }}" placeholder="9 1234 5678" inputmode="numeric" maxlength="20" aria-describedby="telefonoError">
+        </div>
+        <small class="text-muted">Opcional. Se aceptan hasta 9 dígitos nacionales válidos.</small>
+        <div id="telefonoError" data-error-for="telefono" class="invalid-feedback {% if form.telefono.errors %}d-block{% endif %}">{% if form.telefono.errors %}{{ form.telefono.errors|join:' ' }}{% endif %}</div>
+      </div>
+    </div>
+    <div class="d-flex justify-content-end gap-2 mt-4">
+      <a href="{% url 'web_registrar_actividad_diaria' %}" class="btn btn-light">Cancelar</a>
+      <button class="btn btn-danger fw-semibold" type="submit"><i class="bi bi-person-plus me-1"></i> Guardar solicitante</button>
+    </div>
+  </form>
+</div>
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const run = document.getElementById('solicitanteRun');
+    const phone = document.getElementById('telefono');
+    const form = document.getElementById('solicitanteForm');
+    function showError(field, message) {
+      const target = document.querySelector(`[data-error-for="${field.name}"]`);
+      field.classList.toggle('is-invalid', Boolean(message));
+      if (target) {
+        target.textContent = message;
+        target.classList.toggle('d-block', Boolean(message));
+      }
+      return !message;
+    }
+    function validateRun() {
+      const parts = run.value.trim().match(/^(\d\.\d{3}\.\d{3}|\d{2}\.\d{3}\.\d{3})-([\dkK])$/);
+      if (!parts) {
+        return showError(run, 'Ingresa el RUN con puntos y guion, por ejemplo 12.345.678-5.');
+      }
+      const body = run.value.trim().split('-')[0].replace(/\./g, '');
+      if (body.startsWith('0')) {
+        return showError(run, 'El RUN no puede comenzar con cero.');
+      }
+      let total = 0;
+      let factor = 2;
+      for (let i = body.length - 1; i >= 0; i--) {
+        total += Number(body[i]) * factor;
+        factor = factor === 7 ? 2 : factor + 1;
+      }
+      const remainder = 11 - total % 11;
+      const dv = remainder === 10 ? 'K' : remainder === 11 ? '0' : String(remainder);
+      if (parts[2].toUpperCase() === dv) {
+        run.value = `${body.replace(/\B(?=(\d{3})+(?!\d))/g, '.')}-${dv}`;
+        return showError(run, '');
+      } else {
+        return showError(run, 'El dígito verificador del RUN no es válido.');
+      }
+    }
+    function formatPhone() {
+      let digits = phone.value.replace(/\D/g, '');
+      if (digits.startsWith('56') && digits.length > 9) digits = digits.slice(2);
+      digits = digits.slice(0, 9);
+      phone.value = digits.length > 5 ? `${digits[0]} ${digits.slice(1, 5)} ${digits.slice(5)}` : digits;
+      const valid = !digits || (digits.length === 9 && '2345679'.includes(digits[0]) && new Set(digits).size > 1);
+      return showError(phone, valid ? '' : 'Ingresa un teléfono chileno válido de 9 dígitos.');
+    }
+    function validateRequiredField(field) {
+      const value = field.value.trim();
+      if (!value) return showError(field, 'Este campo es obligatorio.');
+      if (field.type === 'email' && field.validity.typeMismatch) {
+        return showError(field, 'Ingresa un correo electrónico válido.');
+      }
+      return showError(field, '');
+    }
+    run.addEventListener('input', () => showError(run, ''));
+    run.addEventListener('blur', validateRun);
+    phone.addEventListener('input', formatPhone);
+    form.querySelectorAll('[required]').forEach(field => {
+      if (field !== run) {
+        field.addEventListener('input', () => validateRequiredField(field));
+        field.addEventListener('change', () => validateRequiredField(field));
+      }
+    });
+    form.addEventListener('submit', event => {
+      const runValid = validateRun();
+      const phoneValid = formatPhone();
+      const requiredValid = Array.from(form.querySelectorAll('[required]'))
+        .filter(field => field !== run)
+        .map(validateRequiredField)
+        .every(Boolean);
+      if (!runValid || !phoneValid || !requiredValid) {
+        event.preventDefault();
+        form.querySelector('.is-invalid')?.focus();
+      }
+    });
+  });
+</script>
+{% endblock %}

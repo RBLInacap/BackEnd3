@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Desactivar registro | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-lg-7">
+    <section class="card shadow-sm border-0">
+      <div class="card-body p-4">
+        <h1 class="h4">Desactivar registro</h1>
+        <p>¿Confirmas desactivar <strong>{{ object }}</strong>?</p>
+        <div class="alert alert-info" role="status">
+          No se eliminará físicamente. El registro y sus relaciones históricas se conservarán, y dejará de aparecer en los mantenedores activos.
+        </div>
+        <form method="post">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-danger">Confirmar desactivación</button>
+          <a href="{{ cancel_url }}" class="btn btn-outline-secondary">Cancelar</a>
+        </form>
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <section class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <span class="badge bg-white text-danger text-uppercase align-self-start">Administración SGR</span>
+    <h1 class="h3 fw-bold text-white mt-2 mb-0">{{ title }}</h1>
+    <p class="text-white-50 mb-0">Los períodos desactivados se conservan para mantener el historial.</p>
+  </section>
+
+  <section class="card shadow-sm border-0">
+    <div class="card-body d-flex flex-column flex-md-row justify-content-between gap-3">
+      <form method="get" class="d-flex gap-2 flex-grow-1" role="search">
+        <label for="period-search" class="visually-hidden">Buscar período</label>
+        <input id="period-search" type="search" name="q" value="{{ search_term }}"
+               class="form-control" placeholder="Buscar período">
+        <button type="submit" class="btn btn-outline-danger">Buscar</button>
+        {% if search_term %}
+          <a href="{% url 'mantenedor_periodos_list' %}" class="btn btn-outline-secondary">Limpiar</a>
+        {% endif %}
+      </form>
+      <a href="{{ create_url }}" class="btn btn-danger text-nowrap">
+        <i class="bi bi-plus-circle me-1"></i> Crear período
+      </a>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th scope="col">Nombre</th>
+            <th scope="col">Año</th>
+            <th scope="col">Trimestre</th>
+            <th scope="col">Inicio</th>
+            <th scope="col">Término</th>
+            <th scope="col">Días</th>
+            <th scope="col">Estado</th>
+            <th scope="col" class="text-end">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in object_list %}
+          <tr>
+            <th scope="row">{{ item.nombre }}</th>
+            <td>{{ item.anio|default:"—" }}</td>
+            <td>{{ item.trimestre|default:"—" }}</td>
+            <td>{{ item.fecha_inicio|date:"d/m/Y" }}</td>
+            <td>{{ item.fecha_termino|date:"d/m/Y" }}</td>
+            <td>{{ item.dias_computables }}</td>
+            <td>
+              {% if item.cerrado %}
+                <span class="badge text-bg-secondary">Cerrado</span>
+              {% else %}
+                <span class="badge text-bg-success">Abierto</span>
+              {% endif %}
+            </td>
+            <td class="text-end text-nowrap">
+              <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
+              <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="8" class="text-center text-secondary py-4">
+              {% if search_term %}No se encontraron períodos para esa búsqueda.{% else %}No hay períodos activos.{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include "mantenedores/pagination.html" %}
+  </section>
+</div>
+{% endblock %}

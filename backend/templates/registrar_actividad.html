@@ -1,0 +1,358 @@
+{% extends "base.html" %}
+{% block title %}Registrar Actividad | Matriz SGR{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<div class="container py-3" style="max-width: 1050px;">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <div>
+      <span class="badge text-bg-danger mb-2">Actividad Diaria</span>
+      <h2 class="fw-bold mb-1">Registrar actividad</h2>
+      <p class="text-secondary mb-0">Selecciona un solicitante registrado y completa los datos de la atención.</p>
+    </div>
+    <a href="{% url 'web_registrar_solicitante' %}" class="btn btn-outline-danger">
+      <i class="bi bi-person-plus me-1"></i> Registrar solicitante
+    </a>
+  </div>
+
+  {% if messages %}
+    {% for message in messages %}<div class="alert alert-{{ message.tags|default:'info' }} py-2">{{ message }}</div>{% endfor %}
+  {% endif %}
+  {% if activity_error %}<div class="alert alert-danger" role="alert">{{ activity_error }}</div>{% endif %}
+  {% if not funcionarios %}
+    <div class="alert alert-warning">No hay funcionarios activos disponibles para registrar actividades.</div>
+  {% elif not solicitantes %}
+    <div class="alert alert-info">Primero debes <a href="{% url 'web_registrar_solicitante' %}">registrar un solicitante</a>.</div>
+  {% endif %}
+
+  <form method="post" action="{% url 'web_registrar_actividad_diaria' %}" enctype="multipart/form-data" class="card border-0 shadow-sm p-4">
+    {% csrf_token %}
+    {% if request.user.rol == 'ADMINISTRATIVO' %}
+      <input type="hidden" name="funcionario_id" value="{{ request.user.id }}">
+    {% else %}
+      <div class="mb-3">
+        <label class="form-label fw-semibold" for="funcionarioId">Funcionario responsable <span class="text-danger">*</span></label>
+        <select class="form-select" id="funcionarioId" name="funcionario_id" required>
+          <option value="">Selecciona...</option>
+          {% for f in funcionarios %}
+            <option value="{{ f.id }}" {% if funcionario.id == f.id %}selected{% endif %}>{{ f.get_full_name|default:f.username }} ({{ f.delegacion.codigo|default:"SGR" }})</option>
+          {% endfor %}
+        </select>
+      </div>
+    {% endif %}
+    <div class="row g-3">
+      <div class="col-12 col-md-4">
+        <label class="form-label fw-semibold" for="fechaActividad">Fecha de actividad <span class="text-danger">*</span></label>
+        <input id="fechaActividad" type="date" name="fecha_actividad" class="form-control" value="{% if activity_form_data.fecha_actividad %}{{ activity_form_data.fecha_actividad }}{% else %}{{ hoy|date:'Y-m-d' }}{% endif %}" max="{{ hoy|date:'Y-m-d' }}" required>
+      </div>
+      <div class="col-12 col-md-8">
+        <label class="form-label fw-semibold" for="itemMedicion">Ítem de medición <span class="text-danger">*</span></label>
+        <select id="itemMedicion" name="item_medicion_id" class="form-select" {% if items_funcionario %}required{% endif %}>
+          {% for item in items_funcionario %}
+            <option value="{{ item.id }}" {% if activity_form_data.item_medicion_id == item.id|stringformat:'s' %}selected{% endif %}>{{ item.nombre_item }} (Meta: {{ item.meta_cuantitativa }}, ponderador: {{ item.ponderador }}%)</option>
+          {% empty %}<option value="">Atención General de Terreno</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-12">
+        <label class="form-label fw-semibold" for="catalogoServicio">Servicio entregado</label>
+        <select id="catalogoServicio" name="catalogo_servicio_id" class="form-select">
+          <option value="">Sin servicio de catálogo</option>
+          {% for servicio in catalogos_servicios %}
+            <option value="{{ servicio.pk }}" {% if activity_form_data.catalogo_servicio_id == servicio.pk|stringformat:'s' %}selected{% endif %}>
+              {{ servicio.codigo }} — {{ servicio.nombre }}{% if servicio.area %} ({{ servicio.area }}){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-12">
+        <label class="form-label fw-semibold" for="solicitanteId">Solicitante <span class="text-danger">*</span></label>
+        <select id="solicitanteId" name="solicitante_id" class="form-select" required>
+          <option value="">Selecciona por RUN o nombre...</option>
+          {% for solicitante in solicitantes %}
+            <option value="{{ solicitante.id }}" {% if selected_requester.id == solicitante.id or activity_form_data.solicitante_id == solicitante.id|stringformat:'s' %}selected{% endif %}>
+              {{ solicitante.run }} — {{ solicitante.nombre }} {{ solicitante.apellido_paterno }} {{ solicitante.apellido_materno }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-12">
+        <label class="form-label fw-semibold" for="direccion">Dirección o sector <span class="text-danger">*</span></label>
+        <div class="input-group">
+          <input id="direccion" name="direccion" class="form-control" maxlength="255" value="{{ activity_form_data.direccion|default:'' }}" placeholder="Dirección donde se realizó la atención" required>
+          <button type="button" id="btn-buscar-direccion" class="btn btn-outline-secondary" onclick="buscarDireccionActividad()">Buscar</button>
+          <button type="button" id="btn-ubicacion-actual" class="btn btn-outline-danger" onclick="obtenerUbicacionActividad()">Mi GPS</button>
+        </div>
+        <input type="hidden" name="latitud" id="actividad-latitud" value="{{ activity_form_data.latitud|default:'' }}">
+        <input type="hidden" name="longitud" id="actividad-longitud" value="{{ activity_form_data.longitud|default:'' }}">
+        <div id="actividad-geocode-feedback" class="small mt-1 text-secondary" aria-live="polite"></div>
+        <div class="d-flex justify-content-between align-items-center mt-2">
+          <small class="text-secondary">Busca la dirección, usa Mi GPS o ajusta el punto directamente en el mapa.</small>
+          <span id="actividad-coordenadas" class="badge bg-secondary font-monospace">Ubicación no capturada</span>
+        </div>
+        <div id="mapa-actividad" class="mt-2" style="height: 220px; border-radius: 8px; border: 1px solid #cbd5e1;"></div>
+      </div>
+      <div class="col-12">
+        <label class="form-label fw-semibold" for="problema">Problema o solicitud detectada <span class="text-danger">*</span></label>
+        <textarea id="problema" name="solicitud_problema" class="form-control" rows="2" required>{{ activity_form_data.solicitud_problema|default:'' }}</textarea>
+      </div>
+      <div class="col-12">
+        <label class="form-label fw-semibold" for="accion">Acción ejecutada <span class="text-danger">*</span></label>
+        <textarea id="accion" name="accion_ejecutada" class="form-control" rows="3" required>{{ activity_form_data.accion_ejecutada|default:'' }}</textarea>
+      </div>
+      <div class="col-12">
+        <label class="form-label fw-semibold" for="fotos">Fotografías de respaldo</label>
+        <input id="fotos" name="fotos" type="file" accept="image/*" multiple class="form-control">
+        <small class="text-muted">Puedes adjuntar varias imágenes y quitar cualquiera antes de guardar.</small>
+        <div id="photoPreview" class="d-flex flex-wrap gap-2 mt-3"></div>
+      </div>
+      <div class="col-12">
+        <h5 class="fw-semibold mb-1">Compromiso para el Tubo de Trabajo</h5>
+        <p class="text-secondary small mb-0">Cada actividad puede incluir un compromiso de seguimiento opcional en el mismo registro.</p>
+      </div>
+      <div class="col-12">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" name="crear_compromiso" id="crearCompromiso"
+                 value="on" {% if activity_form_data.crear_compromiso %}checked{% endif %}>
+          <label class="form-check-label fw-semibold" for="crearCompromiso">
+            Crear un compromiso asociado a esta actividad
+          </label>
+        </div>
+      </div>
+      <div class="col-12 col-md-4">
+        <label class="form-label fw-semibold" for="compromisoFecha">Fecha de compromiso</label>
+        <input id="compromisoFecha" type="date" name="compromiso_fecha" class="form-control" value="{{ activity_form_data.compromiso_fecha|default:'' }}" min="{{ periodo.fecha_inicio|date:'Y-m-d' }}" max="{{ periodo.fecha_termino|date:'Y-m-d' }}">
+      </div>
+      <div class="col-12 col-md-4">
+        <label class="form-label fw-semibold" for="territorio">Territorio</label>
+        <select id="territorio" name="compromiso_territorio" class="form-select">
+          <option value="">Selecciona un territorio...</option>
+          {% for territorio in territorios %}<option value="{{ territorio }}" {% if activity_form_data.compromiso_territorio == territorio %}selected{% endif %}>{{ territorio }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-12 col-md-4">
+        <label class="form-label fw-semibold" for="areaApoyo">Área de apoyo</label>
+        <select id="areaApoyo" name="compromiso_area_apoyo" class="form-select">
+          <option value="">Selecciona un área...</option>
+          {% for area in areas_apoyo %}<option value="{{ area }}" {% if activity_form_data.compromiso_area_apoyo == area %}selected{% endif %}>{{ area }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-12">
+        <label class="form-label fw-semibold" for="compromisoDescripcion">Descripción del compromiso</label>
+        <textarea id="compromisoDescripcion" name="compromiso_descripcion" class="form-control" rows="2">{{ activity_form_data.compromiso_descripcion|default:'' }}</textarea>
+      </div>
+    </div>
+    <div class="d-flex justify-content-end gap-2 mt-4">
+      <a href="{% url 'web_personal' %}" class="btn btn-light">Volver al dashboard personal</a>
+      <button class="btn btn-danger fw-semibold" type="submit" {% if not funcionarios or not solicitantes %}disabled{% endif %}>
+        <i class="bi bi-check2-circle me-1"></i> Guardar actividad
+      </button>
+    </div>
+  </form>
+</div>
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const checkbox = document.getElementById('crearCompromiso');
+    const fields = [
+      document.getElementById('compromisoFecha'),
+      document.getElementById('territorio'),
+      document.getElementById('areaApoyo'),
+      document.getElementById('compromisoDescripcion'),
+    ];
+    const updateCommitmentFields = () => {
+      fields.forEach(field => {
+        field.disabled = !checkbox.checked;
+        field.required = checkbox.checked;
+      });
+    };
+    checkbox.addEventListener('change', updateCommitmentFields);
+    updateCommitmentFields();
+  });
+
+  let activityMap;
+  let activityMarker;
+  let activityCurrentLat = -29.9027;
+  let activityCurrentLng = -71.2519;
+  let activityGeocodeTimeout;
+  let activityReverseGeocodeTimeout;
+  let activityRequestId = 0;
+  let activityAddressEditVersion = 0;
+  let activityAutoFilledAddress = '';
+
+  function mostrarFeedbackUbicacion(message, className = 'small mt-1 text-secondary') {
+    const feedback = document.getElementById('actividad-geocode-feedback');
+    feedback.className = className;
+    feedback.textContent = message;
+  }
+
+  function actualizarCoordenadasActividad(lat, lng) {
+    activityCurrentLat = lat;
+    activityCurrentLng = lng;
+    document.getElementById('actividad-latitud').value = lat;
+    document.getElementById('actividad-longitud').value = lng;
+    document.getElementById('actividad-coordenadas').textContent =
+      `Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}`;
+  }
+
+  function programarDireccionCercanaActividad(lat, lng) {
+    window.clearTimeout(activityReverseGeocodeTimeout);
+    const requestId = ++activityRequestId;
+    const editVersion = activityAddressEditVersion;
+    const input = document.getElementById('direccion');
+    if (activityAutoFilledAddress && input.value === activityAutoFilledAddress) {
+      input.value = '';
+      activityAutoFilledAddress = '';
+    }
+    activityReverseGeocodeTimeout = window.setTimeout(async () => {
+      mostrarFeedbackUbicacion('Buscando la dirección más cercana...');
+      try {
+        const params = new URLSearchParams({ lat: String(lat), lng: String(lng) });
+        const response = await fetch(`/api/geocodificar/?${params}`);
+        const data = await response.json();
+        if (requestId !== activityRequestId || editVersion !== activityAddressEditVersion) return;
+        if (!response.ok) throw new Error(data.error || 'No fue posible buscar la dirección.');
+        if (!data.encontrado) {
+          mostrarFeedbackUbicacion('No se encontró una dirección cercana. Puedes escribirla manualmente.', 'small mt-1 text-warning');
+          return;
+        }
+        input.value = data.direccion_encontrada;
+        activityAutoFilledAddress = data.direccion_encontrada;
+        mostrarFeedbackUbicacion(`Dirección cercana encontrada: ${data.direccion_encontrada}`, 'small mt-1 text-success');
+      } catch (error) {
+        if (requestId === activityRequestId && editVersion === activityAddressEditVersion) {
+          mostrarFeedbackUbicacion('No se pudo obtener la dirección automáticamente. Puedes escribirla manualmente.', 'small mt-1 text-warning');
+        }
+      }
+    }, 1100);
+  }
+
+  function moverMarcadorActividad(lat, lng, buscarDireccion = true) {
+    actualizarCoordenadasActividad(lat, lng);
+    if (activityMarker) activityMarker.setLatLng([lat, lng]);
+    if (activityMap) activityMap.setView([lat, lng], 16);
+    if (buscarDireccion) programarDireccionCercanaActividad(lat, lng);
+  }
+
+  function buscarDireccionActividad() {
+    const query = document.getElementById('direccion').value.trim();
+    if (query.length < 3) return;
+    const button = document.getElementById('btn-buscar-direccion');
+    button.disabled = true;
+    mostrarFeedbackUbicacion('Localizando dirección en el mapa...');
+    fetch(`/api/geocodificar/?q=${encodeURIComponent(query)}`)
+      .then(response => response.json())
+      .then(data => {
+        if (data.encontrado && Number.isFinite(Number(data.lat)) && Number.isFinite(Number(data.lng))) {
+          moverMarcadorActividad(Number(data.lat), Number(data.lng), false);
+          mostrarFeedbackUbicacion(`Punto localizado: ${data.direccion_encontrada || query}`, 'small mt-1 text-success');
+        } else {
+          mostrarFeedbackUbicacion('No se encontró la dirección. Puedes ajustar el punto en el mapa.', 'small mt-1 text-warning');
+        }
+      })
+      .catch(() => mostrarFeedbackUbicacion('No se pudo localizar la dirección. Puedes ajustar el punto en el mapa.', 'small mt-1 text-warning'))
+      .finally(() => { button.disabled = false; });
+  }
+
+  function obtenerUbicacionActividad() {
+    if (!navigator.geolocation) {
+      mostrarFeedbackUbicacion('Tu navegador no soporta geolocalización.', 'small mt-1 text-danger');
+      return;
+    }
+    const button = document.getElementById('btn-ubicacion-actual');
+    button.disabled = true;
+    mostrarFeedbackUbicacion('Obteniendo ubicación GPS...');
+    navigator.geolocation.getCurrentPosition(
+      position => {
+        moverMarcadorActividad(position.coords.latitude, position.coords.longitude);
+        mostrarFeedbackUbicacion('Ubicación GPS capturada correctamente.', 'small mt-1 text-success');
+        button.disabled = false;
+      },
+      () => {
+        mostrarFeedbackUbicacion('No se pudo acceder al GPS. Puedes ubicar el marcador manualmente.', 'small mt-1 text-warning');
+        button.disabled = false;
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    if (typeof L !== 'undefined') {
+      activityMap = L.map('mapa-actividad').setView([activityCurrentLat, activityCurrentLng], 14);
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 19,
+        attribution: 'Tiles &copy; Esri'
+      }).addTo(activityMap);
+      activityMarker = L.marker([activityCurrentLat, activityCurrentLng], { draggable: true }).addTo(activityMap);
+      activityMarker.on('dragend', () => {
+        const position = activityMarker.getLatLng();
+        moverMarcadorActividad(position.lat, position.lng);
+      });
+      activityMap.on('click', event => moverMarcadorActividad(event.latlng.lat, event.latlng.lng));
+      const savedLat = Number(document.getElementById('actividad-latitud').value);
+      const savedLng = Number(document.getElementById('actividad-longitud').value);
+      if (Number.isFinite(savedLat) && Number.isFinite(savedLng) &&
+          savedLat >= -90 && savedLat <= 90 && savedLng >= -180 && savedLng <= 180 &&
+          document.getElementById('actividad-latitud').value !== '' &&
+          document.getElementById('actividad-longitud').value !== '') {
+        actualizarCoordenadasActividad(savedLat, savedLng);
+        activityMarker.setLatLng([savedLat, savedLng]);
+        activityMap.setView([savedLat, savedLng], 16);
+      }
+    }
+    const addressInput = document.getElementById('direccion');
+    addressInput.addEventListener('input', () => {
+      activityAddressEditVersion++;
+      activityAutoFilledAddress = '';
+      window.clearTimeout(activityGeocodeTimeout);
+      if (addressInput.value.trim().length >= 6) {
+        activityGeocodeTimeout = window.setTimeout(buscarDireccionActividad, 1000);
+      }
+    });
+    addressInput.addEventListener('blur', () => {
+      if (addressInput.value.trim().length >= 4) buscarDireccionActividad();
+    });
+    addressInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        buscarDireccionActividad();
+      }
+    });
+
+    const photoInput = document.getElementById('fotos');
+    const preview = document.getElementById('photoPreview');
+    let files = [];
+    function updatePhotos() {
+      const transfer = new DataTransfer();
+      files.forEach(file => transfer.items.add(file));
+      photoInput.files = transfer.files;
+      preview.replaceChildren();
+      files.forEach((file, index) => {
+        const card = document.createElement('div');
+        card.className = 'position-relative border rounded p-1';
+        const image = document.createElement('img');
+        image.alt = file.name;
+        image.className = 'rounded';
+        image.style.cssText = 'width:76px;height:76px;object-fit:cover';
+        const reader = new FileReader();
+        reader.onload = event => { image.src = event.target.result; };
+        reader.readAsDataURL(file);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn btn-danger btn-sm position-absolute top-0 end-0 p-0 px-1';
+        remove.setAttribute('aria-label', 'Quitar ' + file.name);
+        remove.textContent = '×';
+        remove.addEventListener('click', () => {
+          files.splice(index, 1);
+          updatePhotos();
+        });
+        card.append(image, remove);
+        preview.append(card);
+      });
+    }
+    photoInput.addEventListener('change', () => {
+      files = files.concat(Array.from(photoInput.files || []));
+      updatePhotos();
+    });
+  });
+</script>
+{% endblock %}

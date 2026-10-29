@@ -1,0 +1,68 @@
+# =========================================================================
+# PYTHON & VIRTUAL ENVIRONMENT
+# =========================================================================
+venv/
+env/
+.venv/
+ENV/
+backend/venv/
+__pycache__/
+*.py[cod]
+*.class
+*.so
+.Python
+
+# =========================================================================
+# DJANGO
+# =========================================================================
+*.log
+local_settings.py
+.env
+.env.*
+!.env.example
+datos.json
+staticfiles/
+
+# Base de datos SQLite (se genera en local con migrate y poblar_sgr)
+backend/db.sqlite3
+backend/db.sqlite3-journal
+*.sqlite3
+db.sqlite3
+
+# Archivos subidos por usuarios: no publicar fotos o documentos privados.
+media/
+uploads/
+
+node_modules/
+.next/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =========================================================================
+# IDEs & SISTEMA OPERATIVO
+# =========================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Archivos de bloqueo temporal de Microsoft Office
+~$*.docx
+~$*.xlsx
+~$*.pptx
+
+# =========================================================================
+# ENTREGABLES ACADÉMICOS & DOCUMENTACIÓN INACAP (Se suben a Jira/Moodle)
+# =========================================================================
+*.docx
+*.pdf
+*.drawio
+/Diagrama*.png
+/C00*.png
+
+# Documentos temporales de equipo y notas de trabajo
+kazu_docs/
+REPORTE_REVISION_NOCTURNA.md

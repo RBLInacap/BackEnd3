@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <section class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <span class="badge bg-white text-danger text-uppercase align-self-start">Administración SGR</span>
+    <h1 class="h3 fw-bold text-white mt-2 mb-0">{{ title }}</h1>
+    <p class="text-white-50 mb-0">Los funcionarios inactivos se conservan para mantener el historial.</p>
+  </section>
+  <section class="card shadow-sm border-0">
+    <div class="card-body d-flex flex-column flex-md-row justify-content-between gap-3">
+      <form method="get" class="d-flex gap-2 flex-grow-1" role="search">
+        <label for="funcionario-search" class="visually-hidden">Buscar funcionario</label>
+        <input id="funcionario-search" type="search" name="q" value="{{ search_term }}"
+               class="form-control" placeholder="Buscar por RUN, nombre o correo">
+        <button type="submit" class="btn btn-outline-danger">Buscar</button>
+        {% if search_term %}<a href="{% url 'mantenedor_funcionarios_list' %}" class="btn btn-outline-secondary">Limpiar</a>{% endif %}
+      </form>
+      <a href="{{ create_url }}" class="btn btn-danger text-nowrap"><i class="bi bi-plus-circle me-1"></i> Crear funcionario</a>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th scope="col">RUN</th><th scope="col">Nombre</th><th scope="col">Apellidos</th>
+            <th scope="col">Correo</th><th scope="col">Rol</th><th scope="col" class="text-end">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in object_list %}
+          <tr>
+            <td>{{ item.run|default:"—" }}</td>
+            <td>{{ item.first_name|default:"—" }}</td>
+            <td>{{ item.last_name|default:"—" }}</td>
+            <td>{{ item.email|default:"—" }}</td>
+            <td>{{ item.get_rol_display }}</td>
+            <td class="text-end text-nowrap">
+              <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
+              <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6" class="text-center text-secondary py-4">{% if search_term %}No se encontraron funcionarios.{% else %}No hay funcionarios activos.{% endif %}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include "mantenedores/pagination.html" %}
+  </section>
+</div>
+{% endblock %}

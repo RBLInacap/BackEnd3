@@ -1,0 +1,567 @@
+{% extends "base.html" %}
+{% block title %}Tubo de Trabajo: Agenda Colectiva | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <!-- Cabecera Institucional Oficial -->
+  <div class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+      <div>
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <span class="badge text-white fw-bold px-2 py-1 shadow-sm" style="background-color: var(--carmesi-la-serena);">
+            <i class="bi bi-kanban me-1"></i> Gestión Territorial Operativa
+          </span>
+          <span class="badge bg-white text-danger font-monospace">Ilustre Municipalidad de La Serena</span>
+        </div>
+        <h3 class="fw-black mb-0 text-white text-uppercase tracking-tight">Tubo de Trabajo: Agenda Colectiva</h3>
+        <small class="text-white-50">Registro, seguimiento y gestión de compromisos comunitarios a futuro entre delegados y funcionarios.</small>
+      </div>
+
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <a href="{% url 'web_crear_compromiso' %}" class="btn btn-danger fw-bold d-flex align-items-center gap-1 shadow-sm">
+          <i class="bi bi-plus-circle fs-6"></i> + Nuevo Compromiso
+        </a>
+        <a href="{% url 'web_semaforo' %}" class="btn btn-outline-warning btn-sm fw-semibold d-flex align-items-center gap-1">
+          <i class="bi bi-traffic-light"></i> Ver Semáforo al Día
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <form method="get" class="card card-body border-0 shadow-sm flex-row flex-wrap align-items-end gap-3">
+    <div>
+      <label class="form-label fw-semibold mb-1" for="filtro-periodo">Período de compromisos</label>
+      <select class="form-select" id="filtro-periodo" name="periodo">
+        <option value="todos" {% if periodo_todos %}selected{% endif %}>Todos los períodos</option>
+        {% for opcion_periodo in periodos %}
+          <option value="{{ opcion_periodo.pk }}" {% if periodo_seleccionado.pk == opcion_periodo.pk %}selected{% endif %}>
+            {{ opcion_periodo.nombre }} ({{ opcion_periodo.fecha_inicio|date:"d/m/Y" }}–{{ opcion_periodo.fecha_termino|date:"d/m/Y" }})
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="btn btn-outline-danger">Aplicar filtro</button>
+    {% if periodo_seleccionado %}
+      <span class="small text-secondary">
+        El detalle, vencidos y resumen corresponden al mismo período.
+      </span>
+    {% endif %}
+  </form>
+
+  <!-- Pestañas de Visualización -->
+  <div class="sticky-top bg-body py-1 mb-1" style="top: 62px; z-index: 1020;">
+    <ul class="nav nav-pills bg-white p-2 rounded-3 shadow-sm border gap-2" id="tuboTabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active fw-bold text-uppercase py-2 px-3 small" id="planilla-tab" data-bs-toggle="pill" data-bs-target="#tab-planilla" type="button" role="tab">
+          <i class="bi bi-table me-1"></i> Planilla de Agenda Colectiva
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link fw-bold text-uppercase py-2 px-3 small" id="kanban-tab" data-bs-toggle="pill" data-bs-target="#tab-kanban" type="button" role="tab">
+          <i class="bi bi-kanban me-1"></i> Tablero Kanban
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link fw-bold text-uppercase py-2 px-3 small" id="resumen-tab" data-bs-toggle="pill" data-bs-target="#tab-resumen" type="button" role="tab">
+          <i class="bi bi-bar-chart-steps me-1"></i> Resumen Colectivo Semanal
+        </button>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Contenido de las Pestañas -->
+  <div class="tab-content" id="tuboTabsContent">
+    
+    <!-- PESTAÑA 1: PLANILLA DE AGENDA COLECTIVA -->
+    <div class="tab-pane fade show active" id="tab-planilla" role="tabpanel">
+      <div class="card shadow-sm border-0 overflow-hidden">
+        <div class="card-header bg-white p-3 border-bottom d-flex justify-content-between align-items-center">
+          <div>
+            <h5 class="fw-bold mb-0 text-dark d-flex align-items-center gap-2">
+              <i class="bi bi-file-earmark-spreadsheet text-success"></i>
+              Planilla de Tubo de Trabajo: Agenda Colectiva
+            </h5>
+            <small class="text-secondary">Vista tabular integral de compromisos comunitarios y territoriales de la delegación.</small>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <small class="text-secondary d-none d-lg-inline"><i class="bi bi-arrows-expand me-1 text-danger"></i> Desplazamiento horizontal disponible</small>
+            <span class="badge bg-secondary font-monospace">{{ todos_los_compromisos|length }} Requerimientos Registrados</span>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table table-hover table-striped align-middle mb-0 small" style="font-size: 0.8rem;">
+            <thead class="bg-light text-secondary text-uppercase border-bottom" style="font-size: 0.72rem; letter-spacing: 0.04rem;">
+              <tr>
+                <th class="ps-3 py-3 text-center" style="width: 45px;">N°</th>
+                <th class="py-3 text-center" style="min-width: 85px;">Fecha Solicitud</th>
+                <th class="py-3" style="min-width: 180px; max-width: 250px;">Actividad / Solicitud / Problema</th>
+                <th class="py-3 text-center" style="width: 60px;">INT/EXT</th>
+                <th class="py-3" style="min-width: 130px; max-width: 170px;">Solicitante</th>
+                <th class="py-3" style="min-width: 90px;">Territorio</th>
+                <th class="py-3" style="min-width: 120px;">Responsable</th>
+                <th class="py-3 text-center" style="min-width: 90px;">Fecha Compro.</th>
+                <th class="py-3 text-center" style="width: 50px;">Mes</th>
+                <th class="py-3" style="min-width: 110px;">Área / Persona Apoyo</th>
+                <th class="py-3" style="min-width: 160px; max-width: 220px;">Avance, Observaciones</th>
+                <th class="py-3 text-center" style="min-width: 115px;">Estatus</th>
+                <th class="py-3 text-center" style="width: 50px;">Unidad</th>
+                <th class="py-3 text-end pe-3" style="min-width: 85px;">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for c in todos_los_compromisos %}
+                <tr id="compromiso-{{ c.id }}">
+                  <td class="ps-3 text-center fw-bold text-dark font-monospace">
+                    #{{ c.id }}
+                  </td>
+                  <td class="text-center text-secondary font-monospace">
+                    {{ c.fecha_registro|date:"d/m/Y" }}
+                  </td>
+                  <td>
+                    <div class="fw-semibold text-dark text-wrap" style="max-width: 240px;">
+                      {{ c.descripcion|default:"Sin descripción" }}
+                    </div>
+                  </td>
+                  <td class="text-center">
+                    {% if c.origen == 'EXT' %}
+                      <span class="badge bg-secondary-subtle text-secondary border">EXT</span>
+                    {% else %}
+                      <span class="badge bg-secondary-subtle text-dark border">INT</span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    <div class="text-dark fw-medium text-wrap" style="max-width: 160px;">{{ c.solicitante }}</div>
+                  </td>
+                  <td>
+                    <span class="badge bg-light text-dark border">{{ c.territorio }}</span>
+                  </td>
+                  <td>
+                    <span class="fw-bold text-dark">{{ c.responsable.get_full_name|default:c.responsable.username }}</span>
+                  </td>
+                  <td class="text-center text-nowrap font-monospace">
+                    {{ c.fecha_compromiso|date:"d/m/Y" }}
+                  </td>
+                  <td class="text-center font-monospace">
+                    {{ c.fecha_compromiso.month|default:"-" }}
+                  </td>
+                  <td>
+                    <span class="small text-secondary">{{ c.area_apoyo }}</span>
+                  </td>
+                  <td>
+                    <div class="small text-muted text-wrap" style="max-width: 200px;">
+                      {{ c.observacion|default:"En seguimiento territorial." }}
+                    </div>
+                  </td>
+                  <td class="text-center">
+                    <span class="badge {% if c.estado_tablero == 'COMPLETADO' or c.estado_tablero == 'REALIZADO' %}bg-success{% elif c.estado_tablero == 'VENCIDO' %}bg-danger{% elif c.estado_tablero == 'REPROGRAMADO' %}bg-info text-dark{% elif c.estado_tablero == 'PENDIENTE' %}bg-warning text-dark{% else %}bg-primary{% endif %}">
+                      {% if c.estado_tablero == 'COMPLETADO' or c.estado_tablero == 'REALIZADO' %}Completado{% elif c.estado_tablero == 'VENCIDO' %}Vencido{% elif c.estado_tablero == 'REPROGRAMADO' %}Reprogramado{% elif c.estado_tablero == 'EN_PROCESO' %}En proceso{% else %}{{ c.get_estado_display }}{% endif %}
+                    </span>
+                    {% if c.estado_tablero != 'COMPLETADO' and c.estado_tablero != 'REALIZADO' %}
+                      <form method="POST" action="{% url 'web_cambiar_estado_compromiso' c.id %}" class="mt-1">
+                        {% csrf_token %}
+                        <select name="estado" class="form-select form-select-sm mb-1" aria-label="Cambiar etapa del compromiso" required>
+                          <option value="" selected disabled>Actualizar...</option>
+                          <option value="PENDIENTE">Pendiente</option>
+                          <option value="EN_PROCESO">En proceso</option>
+                          <option value="REPROGRAMADO">Reprogramar</option>
+                          <option value="REALIZADO">Realizado (requiere evidencia aprobada)</option>
+                        </select>
+                        <textarea name="observacion" class="form-control form-control-sm mb-1" rows="2" maxlength="2000" placeholder="Observación obligatoria" required></textarea>
+                        <button type="submit" class="btn btn-sm btn-outline-primary w-100">Guardar cambio y auditoría</button>
+                      </form>
+                    {% endif %}
+                  </td>
+                  <td class="text-center font-monospace fw-semibold text-secondary">
+                    1
+                  </td>
+                  <td class="text-end pe-3 text-nowrap">
+                    <a href="{% url 'web_editar_compromiso' c.id %}" class="btn btn-sm btn-outline-secondary py-0 px-2" title="Editar Requerimiento">
+                      <i class="bi bi-pencil"></i>
+                    </a>
+                    <form method="POST" action="{% url 'web_eliminar_compromiso' c.id %}" class="d-inline" onsubmit="return confirm('¿Seguro que desea eliminar este compromiso #{{ c.id }}?');">
+                      {% csrf_token %}
+                      <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2 ms-1" title="Eliminar Requerimiento">
+                        <i class="bi bi-trash"></i>
+                      </button>
+                    </form>
+                  </td>
+                </tr>
+
+                <!-- Modal Editar Compromiso para cada fila -->
+                <div class="modal fade" id="modalEditarCompromiso{{ c.id }}" tabindex="-1">
+                  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+                    <div class="modal-content bg-white text-dark border shadow">
+                      <div class="modal-header border-bottom">
+                        <h6 class="modal-title fw-bold text-danger">Editar Compromiso #{{ c.id }}</h6>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                      </div>
+                      <form method="POST" action="{% url 'web_editar_compromiso' c.id %}" enctype="multipart/form-data">
+                        {% csrf_token %}
+                        <div class="modal-body small">
+                          <div class="mb-3">
+                            <label class="form-label text-secondary fw-bold text-uppercase">Solicitante</label>
+                            <input type="text" name="solicitante" value="{{ c.solicitante }}" class="form-control" required>
+                          </div>
+                          <div class="mb-3">
+                            <label class="form-label text-secondary fw-bold text-uppercase">Territorio / Sector</label>
+                            <select name="territorio" class="form-select" required>
+                              {% if c.territorio not in territorios %}<option value="{{ c.territorio }}" selected>{{ c.territorio }}</option>{% endif %}
+                              {% for territorio in territorios %}<option value="{{ territorio }}" {% if c.territorio == territorio %}selected{% endif %}>{{ territorio }}</option>{% endfor %}
+                            </select>
+                          </div>
+                          <div class="mb-3">
+                            <label class="form-label text-secondary fw-bold text-uppercase">Fecha Comprometida (período activo)</label>
+                            <input type="date" name="fecha_comprometida" value="{{ c.fecha_compromiso|date:'Y-m-d' }}" min="{{ fecha_min_periodo|date:'Y-m-d' }}" max="{{ fecha_max_periodo|date:'Y-m-d' }}" class="form-control" required>
+                          </div>
+                          <div class="mb-3">
+                            <label class="form-label text-secondary fw-bold text-uppercase">Actividad asociada</label>
+                            <select name="actividad_id" class="form-select">
+                              <option value="">Sin cambios</option>
+                              {% for actividad in actividades %}
+                                <option value="{{ actividad.id }}" {% if c.actividad_id == actividad.id %}selected{% endif %}>#{{ actividad.id }} · {{ actividad.fecha_actividad|date:'d/m/Y' }} · {{ actividad.actividad_solicitud|truncatechars:45 }}</option>
+                              {% endfor %}
+                            </select>
+                          </div>
+                          <div class="mb-3">
+                            <label class="form-label text-secondary fw-bold text-uppercase">Área de Apoyo</label>
+                            <input type="text" name="area_apoyo" value="{{ c.area_apoyo }}" class="form-control">
+                          </div>
+                          <div class="mb-3">
+                            <label class="form-label text-secondary fw-bold text-uppercase">Descripción / Problema</label>
+                            <textarea name="descripcion" rows="2" class="form-control" required>{{ c.descripcion }}</textarea>
+                          </div>
+                          <div class="mb-3">
+                            <label class="form-label text-secondary fw-bold text-uppercase">Avance u Observaciones</label>
+                            <textarea name="observaciones" rows="2" class="form-control">{{ c.observacion|default:'' }}</textarea>
+                          </div>
+                          <div class="mb-3">
+                            <label class="form-label text-secondary fw-bold text-uppercase">Agregar o cambiar fotografías</label>
+                            <input type="file" name="fotos" accept="image/*" multiple class="form-control">
+                            <div class="form-check mt-2">
+                              <input class="form-check-input" type="checkbox" name="reemplazar_fotos" id="reemplazarFotosTabla{{ c.id }}">
+                              <label class="form-check-label" for="reemplazarFotosTabla{{ c.id }}">Reemplazar la foto principal</label>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="modal-footer border-top">
+                          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+                          <button type="submit" class="btn btn-danger btn-sm fw-bold">Actualizar</button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+              {% empty %}
+                <tr>
+                  <td colspan="14" class="text-center py-4 text-secondary">
+                    No hay compromisos registrados en el Tubo de Trabajo.
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- PESTAÑA 2: TABLERO KANBAN -->
+    <div class="tab-pane fade" id="tab-kanban" role="tabpanel">
+      <div class="row g-3">
+        <!-- 1. Ingresado -->
+        <div class="col-12 col-md-6 col-lg-3">
+          <div class="card border-secondary p-3 h-100 bg-light">
+            <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom border-secondary">
+              <h6 class="fw-bold text-dark mb-0"><i class="bi bi-inbox-fill me-1"></i> Ingresado</h6>
+              <span class="badge bg-secondary">{{ ingresados|length }}</span>
+            </div>
+            <div class="d-flex flex-column gap-2">
+              {% for c in ingresados %}
+                {% include "compromiso_card.html" with item=c %}
+              {% empty %}
+                <div class="text-center text-secondary small py-4">Sin compromisos</div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Pendiente -->
+        <div class="col-12 col-md-6 col-lg-3">
+          <div class="card border-warning p-3 h-100 bg-opacity-10 bg-warning">
+            <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom border-secondary">
+              <h6 class="fw-bold text-warning-emphasis mb-0"><i class="bi bi-hourglass-split me-1"></i> Pendiente</h6>
+              <span class="badge bg-warning text-dark">{{ pendientes|length }}</span>
+            </div>
+            <div class="d-flex flex-column gap-2">
+              {% for c in pendientes %}
+                {% include "compromiso_card.html" with item=c %}
+              {% empty %}
+                <div class="text-center text-secondary small py-4">Sin compromisos</div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. En Proceso -->
+        <div class="col-12 col-md-6 col-lg-3">
+          <div class="card border-secondary-subtle p-3 h-100 bg-white">
+            <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom border-secondary">
+              <h6 class="fw-bold text-secondary mb-0"><i class="bi bi-arrow-repeat me-1"></i> En Proceso</h6>
+              <span class="badge bg-dark">{{ en_proceso|length }}</span>
+            </div>
+            <div class="d-flex flex-column gap-2">
+              {% for c in en_proceso %}
+                {% include "compromiso_card.html" with item=c %}
+              {% empty %}
+                <div class="text-center text-secondary small py-4">Sin compromisos</div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Realizado -->
+        <div class="col-12 col-md-6 col-lg-3">
+          <div class="card border-success p-3 h-100 bg-opacity-10 bg-success">
+            <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom border-secondary">
+              <h6 class="fw-bold text-success mb-0"><i class="bi bi-check-all me-1"></i> Realizado</h6>
+              <span class="badge bg-success">{{ realizados|length }}</span>
+            </div>
+            <div class="d-flex flex-column gap-2">
+              {% for c in realizados %}
+                {% include "compromiso_card.html" with item=c %}
+              {% empty %}
+                <div class="text-center text-secondary small py-4">Sin compromisos</div>
+              {% endfor %}
+            </div>
+
+            <!-- 5. Vencidos -->
+            <div class="col-12 col-md-6 col-lg-4">
+              <div class="card border-danger p-3 h-100 bg-opacity-10 bg-danger">
+                <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom border-secondary">
+                  <h6 class="fw-bold text-danger mb-0"><i class="bi bi-exclamation-triangle-fill me-1"></i> Vencidos</h6>
+                  <span class="badge bg-danger">{{ vencidos|length }}</span>
+                </div>
+                <div class="d-flex flex-column gap-2">
+                  {% for c in vencidos %}
+                    {% include "compromiso_card.html" with item=c %}
+                  {% empty %}
+                    <div class="text-center text-secondary small py-4">Sin compromisos vencidos</div>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+
+            <!-- 6. Reprogramados -->
+            <div class="col-12 col-md-6 col-lg-4">
+              <div class="card border-info p-3 h-100 bg-opacity-10 bg-info">
+                <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom border-secondary">
+                  <h6 class="fw-bold text-info-emphasis mb-0"><i class="bi bi-calendar2-week me-1"></i> Reprogramados</h6>
+                  <span class="badge bg-info text-dark">{{ reprogramados|length }}</span>
+                </div>
+                <div class="d-flex flex-column gap-2">
+                  {% for c in reprogramados %}
+                    {% include "compromiso_card.html" with item=c %}
+                  {% empty %}
+                    <div class="text-center text-secondary small py-4">Sin compromisos reprogramados</div>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PESTAÑA 3: RESUMEN COLECTIVO SEMANAL -->
+    <div class="tab-pane fade" id="tab-resumen" role="tabpanel">
+      <div class="card p-4 shadow-sm border-0">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <div>
+            <h5 class="fw-bold mb-0 text-dark d-flex align-items-center gap-2">
+              <i class="bi bi-table text-danger"></i>
+              Plan de Gestión y Seguimiento Semanal (Resumen Colectivo)
+            </h5>
+            <small class="text-secondary">Monitoreo de estado de compromisos asignados por colaborador territorial. Meta institucional: &ge; 80% Realizado.</small>
+          </div>
+          <span class="badge bg-secondary font-monospace">{{ resumen_colaboradores|length }} Colaboradores</span>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0 small">
+            <thead class="bg-light text-secondary text-uppercase border-bottom" style="font-size: 0.75rem; letter-spacing: 0.05rem;">
+              <tr>
+                <th class="ps-3 py-3" style="min-width: 180px;">Colaborador</th>
+                <th class="py-3 text-center" style="min-width: 100px;">Delegación</th>
+                <th class="py-3 text-center text-secondary" style="min-width: 90px;">Ingresado</th>
+                <th class="py-3 text-center text-warning" style="min-width: 90px;">Pendiente</th>
+                <th class="py-3 text-center text-dark" style="min-width: 90px;">En Proceso</th>
+                <th class="py-3 text-center text-danger" style="min-width: 90px;">Vencido</th>
+                <th class="py-3 text-center text-success" style="min-width: 90px;">Realizado</th>
+                <th class="py-3 text-center fw-bold text-dark" style="min-width: 100px;">Total General</th>
+                <th class="py-3 text-center fw-bold" style="min-width: 110px;">% Realizado</th>
+                <th class="py-3 text-center pe-3" style="min-width: 120px;">Estado (&ge;80%)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in resumen_colaboradores %}
+                <tr>
+                  <td class="ps-3 py-2">
+                    <strong class="text-dark">{{ r.nombre }}</strong>
+                  </td>
+                  <td class="text-center">
+                    <span class="badge bg-secondary font-monospace">{{ r.delegacion }}</span>
+                  </td>
+                  <td class="text-center text-secondary fw-bold">{{ r.ingresado }}</td>
+                  <td class="text-center text-warning fw-bold">{{ r.pendiente }}</td>
+                  <td class="text-center text-dark fw-bold">{{ r.en_proceso }}</td>
+                  <td class="text-center text-danger fw-bold">{{ r.vencido }}</td>
+                  <td class="text-center text-success fw-bold">{{ r.realizado }}</td>
+                  <td class="text-center fw-bold text-dark">{{ r.total }}</td>
+                  <td class="text-center fw-bold">
+                    <span class="{% if r.cumple %}text-success{% else %}text-danger{% endif %}">
+                      {{ r.pct_realizado }}%
+                    </span>
+                  </td>
+                  <td class="text-center pe-3">
+                    {% if r.cumple %}
+                      <span class="badge badge-verde"><i class="bi bi-check-circle-fill me-1"></i> Cumple</span>
+                    {% else %}
+                      <span class="badge badge-rojo"><i class="bi bi-exclamation-triangle-fill me-1"></i> Bajo Meta</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% empty %}
+                <tr>
+                  <td colspan="10" class="text-center py-4 text-secondary">
+                    No hay compromisos asignados para calcular el resumen semanal.
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+            {% if resumen_colaboradores %}
+              <tfoot class="table-light fw-bold border-top border-2">
+                <tr>
+                  <td class="ps-3 text-uppercase text-dark" colspan="2">Totales Generales</td>
+                  <td class="text-center text-secondary">{{ totales_colectivos.ingresado }}</td>
+                  <td class="text-center text-warning">{{ totales_colectivos.pendiente }}</td>
+                  <td class="text-center text-dark">{{ totales_colectivos.en_proceso }}</td>
+                  <td class="text-center text-danger">{{ totales_colectivos.vencido }}</td>
+                  <td class="text-center text-success">{{ totales_colectivos.realizado }}</td>
+                  <td class="text-center text-dark">{{ totales_colectivos.total }}</td>
+                  <td class="text-center {% if totales_colectivos.cumple %}text-success{% else %}text-danger{% endif %}">
+                    {{ totales_colectivos.pct_realizado }}%
+                  </td>
+                  <td class="text-center pe-3">
+                    {% if totales_colectivos.cumple %}
+                      <span class="badge badge-verde"><i class="bi bi-check-circle-fill me-1"></i> Cumple</span>
+                    {% else %}
+                      <span class="badge badge-rojo"><i class="bi bi-exclamation-triangle-fill me-1"></i> Bajo Meta</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              </tfoot>
+            {% endif %}
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Nuevo Compromiso -->
+  <div class="modal fade" id="modalNuevoCompromiso" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content bg-white text-dark border shadow">
+        <div class="modal-header border-bottom">
+          <h5 class="modal-title fw-bold text-danger"><i class="bi bi-plus-circle me-1"></i> Registrar Solicitud al Tubo de Trabajo</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <form method="POST" action="{% url 'web_crear_compromiso' %}">
+          {% csrf_token %}
+          <div class="modal-body small">
+            <div class="row g-3 mb-3">
+              <div class="col-md-8">
+                <label class="form-label text-secondary fw-bold text-uppercase">Solicitante (Vecino u Organización)</label>
+                <input type="text" name="solicitante" class="form-control" required placeholder="Ej. Junta de Vecinos El Olivar">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label text-secondary fw-bold text-uppercase">Tipo (INT / EXT)</label>
+                <select name="origen" class="form-select">
+                  <option value="INT" selected>INT (Interno)</option>
+                  <option value="EXT">EXT (Externo / Comunitario)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label class="form-label text-secondary fw-bold text-uppercase">Delegación</label>
+                <select name="delegacion_id" class="form-select" required>
+                  {% for d in delegaciones %}
+                    <option value="{{ d.id }}">{{ d.nombre }} ({{ d.codigo }})</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              <div class="col-md-6">
+                <label class="form-label text-secondary fw-bold text-uppercase">Responsable Asignado</label>
+                <select name="responsable_id" class="form-select" required>
+                  {% for u in usuarios_terreno %}
+                    <option value="{{ u.id }}">{{ u.get_full_name|default:u.username }} ({{ u.delegacion.codigo|default:'Central' }})</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label class="form-label text-secondary fw-bold text-uppercase">Territorio / Sector</label>
+                <select name="territorio" class="form-select" required>
+                  <option value="">Selecciona un sector...</option>
+                  <option>Sector Centro</option><option>El Milagro</option><option>La Pampa</option>
+                  <option>Las Compañías</option><option>La Antena</option><option>Avenida del Mar</option>
+                  <option>Sector Rural</option><option>Otro</option>
+                </select>
+              </div>
+
+              <div class="col-md-6">
+                <label class="form-label text-secondary fw-bold text-uppercase">Fecha Comprometida (período activo)</label>
+                <input type="date" name="fecha_comprometida" min="{{ fecha_min_periodo|date:'Y-m-d' }}" max="{{ fecha_max_periodo|date:'Y-m-d' }}" class="form-control" required>
+              </div>
+            </div>
+
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label class="form-label text-secondary fw-bold text-uppercase">Área de Apoyo</label>
+                <input type="text" name="area_apoyo" value="Operaciones Municipales" class="form-control">
+              </div>
+
+              <div class="col-md-6">
+                <label class="form-label text-secondary fw-bold text-uppercase">Estado Inicial</label>
+                <select name="estado" class="form-select" required>
+                  <option value="INGRESADO">Ingresado</option>
+                  <option value="PENDIENTE" selected>Pendiente</option>
+                  <option value="EN_PROCESO">En Proceso</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-secondary fw-bold text-uppercase">Actividad / Solicitud / Problema</label>
+              <textarea name="descripcion" rows="2" class="form-control" required placeholder="Detalles de la gestión o problemática vecinal..."></textarea>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-secondary fw-bold text-uppercase">Avance u Observaciones</label>
+              <textarea name="observaciones" rows="2" class="form-control" placeholder="Observaciones de derivación o seguimiento..."></textarea>
+            </div>
+          </div>
+          <div class="modal-footer border-top">
+            <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+            <button type="submit" class="btn btn-danger btn-sm fw-bold">Guardar en Tubo de Trabajo</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <section class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <span class="badge bg-white text-danger text-uppercase align-self-start">Administración SGR</span>
+    <h1 class="h3 fw-bold text-white mt-2 mb-0">{{ title }}</h1>
+    <p class="text-white-50 mb-0">Los ítems inactivos se conservan para mantener el historial.</p>
+  </section>
+
+  <section class="card shadow-sm border-0">
+    <div class="card-body d-flex flex-column flex-md-row justify-content-between gap-3">
+      <form method="get" class="d-flex gap-2 flex-grow-1" role="search">
+        <label for="item-search" class="visually-hidden">Buscar ítem</label>
+        <input id="item-search" type="search" name="q" value="{{ search_term }}"
+               class="form-control" placeholder="Buscar por nombre, descripción o unidad">
+        <button type="submit" class="btn btn-outline-danger">Buscar</button>
+        {% if search_term %}
+          <a href="{% url 'mantenedor_items_list' %}" class="btn btn-outline-secondary">Limpiar</a>
+        {% endif %}
+      </form>
+      <a href="{{ create_url }}" class="btn btn-danger text-nowrap">
+        <i class="bi bi-plus-circle me-1"></i> Crear ítem
+      </a>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th scope="col">Nombre</th>
+            <th scope="col">Descripción</th>
+            <th scope="col">Unidad</th>
+            <th scope="col">Cargo</th>
+            <th scope="col">Período</th>
+            <th scope="col" class="text-end">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in object_list %}
+          <tr>
+            <th scope="row">{{ item.nombre_item }}</th>
+            <td>{{ item.descripcion|default:"—" }}</td>
+            <td>{{ item.get_tipo_unidad_display }}</td>
+            <td>{{ item.cargo }}</td>
+            <td>{{ item.periodo.nombre }}</td>
+            <td class="text-end text-nowrap">
+              <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
+              <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="6" class="text-center text-secondary py-4">
+              {% if search_term %}No se encontraron ítems para esa búsqueda.{% else %}No hay ítems activos.{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include "mantenedores/pagination.html" %}
+  </section>
+
+  <section class="card shadow-sm border-0">
+    <div class="card-body">
+      <h2 class="h5 fw-bold mb-1">Catálogo de actividades y servicios</h2>
+      <p class="text-secondary small mb-3">
+        Los cambios del catálogo no modifican el nombre ni el área guardados en actividades históricas.
+      </p>
+      <form method="post" class="row g-2 align-items-end mb-4">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="guardar_catalogo">
+        {% if catalogo_form.instance.pk %}
+          <input type="hidden" name="catalogo_id" value="{{ catalogo_form.instance.pk }}">
+        {% endif %}
+        {% for field in catalogo_form %}
+          <div class="col-12 col-md-4">
+            <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+          </div>
+        {% endfor %}
+        <div class="col-12">
+          <button type="submit" class="btn btn-danger">{{ catalogo_form_title }}</button>
+        </div>
+      </form>
+
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead>
+            <tr>
+              <th scope="col">Código</th>
+              <th scope="col">Servicio</th>
+              <th scope="col">Área</th>
+              <th scope="col">Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for servicio in catalogo_servicios %}
+              <tr>
+                <td colspan="4">
+                  <form method="post" class="row g-2 align-items-center">
+                    {% csrf_token %}
+                    <input type="hidden" name="catalogo_id" value="{{ servicio.pk }}">
+                    <div class="col-12 col-md-2">
+                      <label class="visually-hidden" for="catalogo-codigo-{{ servicio.pk }}">Código</label>
+                      <input class="form-control form-control-sm" id="catalogo-codigo-{{ servicio.pk }}" name="codigo" value="{{ servicio.codigo }}" maxlength="30" required>
+                    </div>
+                    <div class="col-12 col-md-4">
+                      <label class="visually-hidden" for="catalogo-nombre-{{ servicio.pk }}">Servicio</label>
+                      <input class="form-control form-control-sm" id="catalogo-nombre-{{ servicio.pk }}" name="nombre" value="{{ servicio.nombre }}" maxlength="150" required>
+                    </div>
+                    <div class="col-12 col-md-3">
+                      <label class="visually-hidden" for="catalogo-area-{{ servicio.pk }}">Área</label>
+                      <input class="form-control form-control-sm" id="catalogo-area-{{ servicio.pk }}" name="area" value="{{ servicio.area|default:'' }}" maxlength="100">
+                    </div>
+                    <div class="col-12 col-md-3 d-flex gap-2">
+                      <button type="submit" name="action" value="guardar_catalogo" class="btn btn-sm btn-outline-secondary">Guardar</button>
+                      <button type="submit" name="action" value="desactivar_catalogo" class="btn btn-sm btn-outline-danger">Desactivar</button>
+                    </div>
+                  </form>
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="4" class="text-center text-secondary py-3">No hay servicios activos.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}

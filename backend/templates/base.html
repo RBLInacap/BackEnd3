@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Matriz SGR | Ilustre Municipalidad de La Serena{% endblock %}</title>
+  <!-- Favicon Oficial Municipalidad de La Serena -->
+  <link rel="icon" type="image/png" href="/static/img/logo_la_serena.png">
+  <!-- Bootstrap 5.3.3 CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <!-- Google Fonts: Plus Jakarta Sans -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --carmesi-la-serena: #B30000;
+      --carmesi-oscuro: #800000;
+      --carmesi-claro: #CC1A1A;
+      --carmesi-suave: #FDF2F4;
+      --azul-marino: #14284B;
+      --dorado-heraldico: #C8963E;
+      --fondo-limpio: #F4F6F9;
+      --blanco: #FFFFFF;
+      --texto-oscuro: #1E293B;
+      --texto-mutado: #64748B;
+      --borde-suave: #E2E8F0;
+    }
+
+    body {
+      background-color: var(--fondo-limpio);
+      color: var(--texto-oscuro);
+      font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      letter-spacing: -0.01em;
+      -webkit-font-smoothing: antialiased;
+      scroll-padding-top: 85px;
+    }
+    .sgr-page-header {
+      min-height: 150px;
+      justify-content: center;
+    }
+    .card.sgr-image-header {
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+      background-color: #B30000 !important;
+    }
+    .sgr-image-header::after {
+      position: absolute;
+      z-index: 0;
+      inset: 0;
+      background: url("/static/img/faro.png") right bottom / auto 240% no-repeat;
+      content: "";
+      opacity: 0.2;
+      pointer-events: none;
+    }
+    .sgr-image-header > * {
+      position: relative;
+      z-index: 1;
+    }
+    .institutional-footer {
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+    }
+    .institutional-footer::after {
+      position: absolute;
+      z-index: -1;
+      right: 2%;
+      bottom: 0;
+      width: min(34vw, 440px);
+      height: 100%;
+      background: url("/static/img/queltehues.png") right bottom / contain no-repeat;
+      content: "";
+      opacity: 0.12;
+      pointer-events: none;
+    }
+    /* Scroll margin solo para anclas y tabs, excluyendo modales para evitar bucles de foco y parpadeo */
+    .tab-pane, [id^="compromiso-"], [id^="sec-"] {
+      scroll-margin-top: 85px;
+    }
+    .modal, .modal * {
+      scroll-margin-top: 0 !important;
+      scroll-padding-top: 0 !important;
+    }
+
+    /* Scrollbar visible y estilizado para tablas horizontales */
+    .table-responsive::-webkit-scrollbar {
+      height: 9px;
+    }
+    .table-responsive::-webkit-scrollbar-track {
+      background: #F1F5F9;
+      border-radius: 6px;
+    }
+    .table-responsive::-webkit-scrollbar-thumb {
+      background: #CBD5E1;
+      border-radius: 6px;
+    }
+    .table-responsive::-webkit-scrollbar-thumb:hover {
+      background: var(--carmesi-la-serena);
+    }
+
+    /* Animación fluida de entrada */
+    main {
+      animation: fadeInPage 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes fadeInPage {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Colores Institucionales de La Serena */
+    .bg-municipal, .bg-carmesi {
+      background: linear-gradient(135deg, var(--carmesi-oscuro) 0%, var(--carmesi-la-serena) 60%, var(--carmesi-claro) 100%) !important;
+      color: #FFFFFF !important;
+    }
+    .text-carmesi {
+      color: var(--carmesi-la-serena) !important;
+    }
+    .border-carmesi {
+      border-color: var(--carmesi-la-serena) !important;
+    }
+
+    /* Cards Blancas & Sombras Suaves con efecto Hover fluido */
+    .card {
+      background-color: var(--blanco) !important;
+      border: 1px solid var(--borde-suave) !important;
+      border-radius: 14px !important;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03) !important;
+      color: var(--texto-oscuro) !important;
+      transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .card:hover {
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06) !important;
+    }
+
+    /* Adaptación limpia */
+    .text-light {
+      color: var(--texto-oscuro) !important;
+    }
+    .bg-dark {
+      background-color: #F8FAFC !important;
+      color: var(--texto-oscuro) !important;
+      border-color: var(--borde-suave) !important;
+    }
+    .border-secondary {
+      border-color: var(--borde-suave) !important;
+    }
+    .form-control.bg-dark, .input-group-text.bg-dark {
+      background-color: #FFFFFF !important;
+      color: var(--texto-oscuro) !important;
+      border-color: #CBD5E1 !important;
+    }
+    .form-control:focus, .form-select:focus {
+      border-color: var(--carmesi-la-serena) !important;
+      box-shadow: 0 0 0 0.25rem rgba(179, 0, 0, 0.15) !important;
+    }
+
+    /* Forzar fondo blanco y texto oscuro en selects y options */
+    select, .form-select, select option, .form-select option {
+      background-color: #FFFFFF !important;
+      color: #1E293B !important;
+    }
+
+    /* Botones Carmesí */
+    .btn-danger {
+      background-color: var(--carmesi-la-serena) !important;
+      border-color: var(--carmesi-la-serena) !important;
+      color: #FFFFFF !important;
+    }
+    .btn-danger:hover {
+      background-color: var(--carmesi-oscuro) !important;
+      border-color: var(--carmesi-oscuro) !important;
+    }
+    .btn-outline-danger {
+      color: var(--carmesi-la-serena) !important;
+      border-color: var(--carmesi-la-serena) !important;
+    }
+    .btn-outline-danger:hover {
+      background-color: var(--carmesi-la-serena) !important;
+      color: #FFFFFF !important;
+    }
+
+    /* Botones más fluidos */
+    .btn {
+      border-radius: 9px !important;
+      font-weight: 600;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    /* Insignias estilizadas */
+    .badge {
+      border-radius: 7px !important;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      padding: 0.35em 0.65em;
+    }
+
+    /* Barra de Navegación */
+    .navbar-municipal {
+      background-color: #FFFFFF !important;
+      border-bottom: 2px solid var(--carmesi-la-serena) !important;
+    }
+    .nav-link {
+      color: #475569 !important;
+      font-weight: 600;
+      border-radius: 9px !important;
+      padding: 0.45rem 0.85rem;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .nav-link:hover {
+      color: var(--carmesi-la-serena) !important;
+      background-color: var(--carmesi-suave);
+      transform: translateY(-1px);
+    }
+    .nav-link.active {
+      background-color: var(--carmesi-la-serena) !important;
+      color: #FFFFFF !important;
+      box-shadow: 0 4px 12px rgba(179, 0, 0, 0.28) !important;
+    }
+    .app-layout {
+      min-height: 0;
+    }
+    .app-sidebar {
+      --bs-offcanvas-width: 272px;
+      width: 272px;
+      flex: 0 0 272px;
+      background-color: #FFFFFF;
+      border-right: 1px solid var(--borde-suave);
+      position: sticky;
+      top: 0;
+      height: calc(100vh - 54px);
+      overflow-y: auto;
+      z-index: 1025;
+    }
+    .app-sidebar-nav .nav-link {
+      display: flex;
+      align-items: center;
+      min-height: 42px;
+      padding: 0.55rem 0.75rem;
+      color: #475569 !important;
+    }
+    .app-sidebar-nav .nav-link i,
+    .app-sidebar-nav .nav-link svg {
+      width: 1.35rem;
+      flex: 0 0 1.35rem;
+      font-size: 1rem;
+      text-align: center;
+    }
+    .app-sidebar-nav .nav-link:hover {
+      color: var(--carmesi-la-serena) !important;
+      background-color: var(--carmesi-suave);
+      transform: none;
+    }
+    .app-sidebar-nav .nav-link.active {
+      color: #FFFFFF !important;
+      background-color: var(--carmesi-la-serena) !important;
+      box-shadow: 0 4px 12px rgba(179, 0, 0, 0.18) !important;
+    }
+    .app-sidebar-nav .nav-dropdown-menu {
+      position: static !important;
+      transform: none !important;
+      width: 100%;
+      margin-top: 0.25rem;
+      border: 1px solid #343A40;
+      border-radius: 8px;
+      padding: 0.35rem;
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18) !important;
+      background-color: #1E2124;
+    }
+    .app-sidebar-nav .nav-dropdown-item {
+      color: #F1F3F5 !important;
+      border-radius: 6px;
+      padding: 0.55rem 0.65rem;
+      transition: background-color 0.18s ease, color 0.18s ease;
+    }
+    .app-sidebar-nav .nav-dropdown-item:hover,
+    .app-sidebar-nav .nav-dropdown-item:focus-visible {
+      color: #FFFF00 !important;
+      background-color: transparent !important;
+    }
+    .app-sidebar-nav .nav-dropdown-item.active,
+    .app-sidebar-nav .nav-dropdown-item.active:hover,
+    .app-sidebar-nav .nav-dropdown-item.active:focus-visible {
+      color: #FFFF00 !important;
+      background-color: rgba(255, 255, 0, 0.1) !important;
+    }
+    .app-main {
+      min-width: 0;
+    }
+    .sidebar-toggle {
+      border-color: rgba(255, 255, 255, 0.65) !important;
+      color: #FFFFFF !important;
+    }
+    /* Tablas Limpias */
+    .table-dark {
+      --bs-table-bg: #FFFFFF !important;
+      --bs-table-color: var(--texto-oscuro) !important;
+      --bs-table-border-color: var(--borde-suave) !important;
+      --bs-table-hover-bg: #F8FAFC !important;
+    }
+    .table-dark thead th {
+      background-color: #F8FAFC !important;
+      color: #475569 !important;
+      border-bottom: 2px solid var(--borde-suave) !important;
+    }
+
+    /* Semáforos Municipales */
+    .badge-verde, .bg-success-subtle {
+      background-color: #DCFCE7 !important;
+      color: #15803D !important;
+      border: 1px solid #86EFAC !important;
+    }
+    .badge-ambar, .bg-warning-subtle {
+      background-color: #FEF3C7 !important;
+      color: #B45309 !important;
+      border: 1px solid #FCD34D !important;
+    }
+    .badge-rojo, .bg-danger-subtle {
+      background-color: #FEE2E2 !important;
+      color: #991B1B !important;
+      border: 1px solid #FCA5A5 !important;
+    }
+
+    /* Dropdown Menú */
+    .dropdown-menu-dark {
+      background-color: #FFFFFF !important;
+      color: var(--texto-oscuro) !important;
+      border: 1px solid var(--borde-suave) !important;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08) !important;
+    }
+    .dropdown-menu-dark .dropdown-item {
+      color: #334155 !important;
+    }
+    .dropdown-menu-dark .dropdown-item:hover {
+      background-color: var(--carmesi-suave) !important;
+      color: var(--carmesi-la-serena) !important;
+    }
+    .dropdown-menu {
+      z-index: 1050 !important;
+    }
+    .institutional-header {
+      min-height: 68px;
+      padding-top: 0.7rem !important;
+      padding-bottom: 0.7rem !important;
+    }
+    .institutional-brand {
+      gap: 0.65rem !important;
+    }
+    .institutional-emblem {
+      height: 46px;
+      width: auto;
+      object-fit: contain;
+    }
+    .institutional-wordmark {
+      height: 30px;
+      width: auto;
+      object-fit: contain;
+    }
+    .institutional-title {
+      font-size: 0.9rem;
+    }
+    .institutional-period {
+      font-size: 0.85rem;
+    }
+    @media (max-width: 575.98px) {
+      .institutional-header {
+        min-height: 60px;
+      }
+      .institutional-emblem {
+        height: 38px;
+      }
+      .institutional-wordmark {
+        height: 25px;
+      }
+      .institutional-title {
+        font-size: 0.9rem;
+      }
+    }
+  </style>
+  {% block extra_css %}{% endblock %}
+</head>
+<body class="d-flex flex-column min-vh-100">
+
+  <!-- Topbar Institucional Rojo Carmesí -->
+  <header class="institutional-header px-3 text-white small d-flex flex-wrap justify-content-between align-items-center position-relative shadow-sm" style="background-color: #B30000; z-index: 1030;">
+    <div class="institutional-brand d-flex align-items-center">
+      {% if request.user.is_authenticated and request.resolver_match.url_name != 'web_login' %}
+      <button class="btn btn-sm sidebar-toggle d-lg-none me-1" type="button" data-bs-toggle="offcanvas" data-bs-target="#appSidebar" aria-controls="appSidebar" aria-label="Abrir menú de navegación">
+        <i class="bi bi-list fs-5"></i>
+      </button>
+      {% endif %}
+      <img src="/static/img/escudo-horizontal-blanco.png" alt="" aria-hidden="true" class="institutional-emblem">
+      <img src="/static/img/texto-horizontal-blanco.png" alt="Ilustre Municipalidad de La Serena" class="institutional-wordmark">
+      <span class="text-white-50 d-none d-sm-inline">|</span>
+      <span class="institutional-title d-none d-sm-inline fw-semibold">Sistema de Gestión de Resultados (Matriz SGR)</span>
+      <span class="text-white-50 d-none d-md-inline">|</span>
+      <span class="institutional-period fw-bold d-none d-md-inline" style="color: #FDE68A;"><i class="bi bi-calendar3 me-1"></i> {{ nombre_periodo_activo|default:"Sin período configurado para la fecha actual" }}</span>
+    </div>
+
+    {% if request.resolver_match.url_name != 'web_login' and request.resolver_match.url_name != 'home' %}
+    <div class="d-flex align-items-center gap-3">
+      <button id="sync-btn" class="btn btn-sm btn-warning fw-bold py-0 px-2 d-none" onclick="sincronizarColaOffline()">
+        <i class="bi bi-arrow-repeat"></i> Sincronizar (<span id="offline-count">0</span>)
+      </button>
+
+      {% if request.user.is_authenticated %}
+        <div class="dropdown">
+          <button class="btn btn-sm btn-outline-light dropdown-toggle py-1 px-2 fw-semibold" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-person-badge text-warning me-1"></i> {{ request.user.get_full_name|default:request.user.username }}
+            <span class="badge ms-1" style="background-color: #14284B; color: #FFFFFF;">{{ request.user.get_rol_display }}</span>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark shadow-lg border mt-1">
+            <li><span class="dropdown-item-text text-secondary small">Delegación: <strong>{{ request.user.delegacion.nombre|default:"Central" }}</strong></span></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item py-2" href="{% url 'web_mi_ficha' %}"><i class="bi bi-person-lines-fill me-2 text-danger"></i>Mi Ficha Personal</a></li>
+            <li>
+              <form method="post" action="{% url 'web_logout' %}">
+                {% csrf_token %}
+                <button class="dropdown-item text-danger py-2" type="submit"><i class="bi bi-box-arrow-right me-2"></i>Cerrar Sesión</button>
+              </form>
+            </li>
+          </ul>
+        </div>
+      {% else %}
+        <a href="{% url 'web_login' %}" class="btn btn-sm btn-light py-0 px-3 fw-bold text-danger">Iniciar Sesión</a>
+      {% endif %}
+    </div>
+    {% endif %}
+  </header>
+
+  {% if request.user.is_authenticated and request.resolver_match.url_name != 'web_login' %}
+  <div class="app-layout d-flex flex-grow-1">
+    <aside class="app-sidebar offcanvas-lg offcanvas-start" tabindex="-1" id="appSidebar" aria-labelledby="appSidebarLabel">
+      <div class="offcanvas-body d-flex flex-column p-3">
+        <button type="button" class="btn-close d-lg-none" data-bs-dismiss="offcanvas" aria-label="Cerrar menú"></button>
+        <div class="small text-uppercase fw-bold text-secondary px-2 mb-2" id="appSidebarLabel" style="font-size: 0.68rem; letter-spacing: 0.08rem;">Navegación</div>
+        <ul class="navbar-nav app-sidebar-nav gap-1">
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'web_dashboard' %}active{% endif %}" href="{% url 'web_dashboard' %}">
+              <i class="bi bi-speedometer2 me-1"></i>
+              {% if request.user.es_administrativo %}Panel Administrativo{% elif request.user.es_delegado %}Panel Delegado{% elif request.user.es_supervisor %}Panel Supervisor{% else %}Panel Administrador{% endif %}
+            </a>
+          </li>
+          {% if request.user.rol == 'ADMINISTRADOR' or request.user.is_superuser %}
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle {% if 'mantenedor_' in request.resolver_match.url_name %}active{% endif %}"
+               href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-gear me-1"></i> Mantenedores
+            </a>
+            <ul class="dropdown-menu">
+              <li><a class="dropdown-item" href="{% url 'mantenedor_delegaciones_list' %}">Delegaciones</a></li>
+              <li><a class="dropdown-item" href="{% url 'mantenedor_cargos_list' %}">Cargos</a></li>
+              <li><a class="dropdown-item" href="{% url 'mantenedor_items_list' %}">Ítems</a></li>
+              <li><a class="dropdown-item" href="{% url 'mantenedor_periodos_list' %}">Períodos</a></li>
+              <li><a class="dropdown-item" href="{% url 'mantenedor_solicitantes_list' %}">Solicitantes</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="{% url 'mantenedor_funcionarios_list' %}">Funcionarios</a></li>
+              <li><a class="dropdown-item" href="{% url 'mantenedor_roles_list' %}">Roles</a></li>
+              <li><a class="dropdown-item" href="{% url 'mantenedor_areas_list' %}">Áreas</a></li>
+            </ul>
+          </li>
+          {% endif %}
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'web_personal' %}active{% endif %}" href="{% url 'web_personal' %}">
+              <i class="bi bi-person-check me-1"></i> Dashboard Personal
+            </a>
+          </li>
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle {% if 'web_registrar_solicitante' == request.resolver_match.url_name or 'web_registrar_actividad_diaria' == request.resolver_match.url_name or 'web_registrar_actividad_personal' == request.resolver_match.url_name %}active{% endif %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-journal-plus me-1"></i> Actividad Diaria
+            </a>
+            <ul class="dropdown-menu nav-dropdown-menu">
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'web_registrar_solicitante' %}active{% endif %}" href="{% url 'web_registrar_solicitante' %}"><i class="bi bi-person-plus me-2"></i>Registrar solicitante</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'web_registrar_actividad_diaria' or request.resolver_match.url_name == 'web_registrar_actividad_personal' %}active{% endif %}" href="{% url 'web_registrar_actividad_diaria' %}"><i class="bi bi-clipboard-plus me-2"></i>Registrar actividad</a></li>
+            </ul>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'web_terreno' %}active{% endif %}" href="{% url 'web_terreno' %}">
+              <i class="bi bi-camera-fill me-1"></i> Evidencias de Terreno
+            </a>
+          </li>
+          {% if request.user.rol == 'ADMINISTRADOR' or request.user.rol == 'SUPERVISOR' %}
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'web_verificacion' %}active{% endif %}" href="{% url 'web_verificacion' %}">
+              <i class="bi bi-check2-circle me-1"></i> Validar Evidencias
+            </a>
+          </li>
+          {% endif %}
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'web_tubo' %}active{% endif %}" href="{% url 'web_tubo' %}">
+              <i class="bi bi-kanban me-1"></i> Tubo de Trabajo
+            </a>
+          </li>
+          {% if not request.user.es_administrativo %}
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'web_semaforo' %}active{% endif %}" href="{% url 'web_semaforo' %}">
+              <svg class="me-1 align-text-bottom" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+                <rect x="4" y="1.5" width="8" height="11" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="8" cy="4.5" r="1" fill="currentColor"/>
+                <circle cx="8" cy="7" r="1" fill="currentColor"/>
+                <circle cx="8" cy="9.5" r="1" fill="currentColor"/>
+                <path d="M8 12.5V15M6.5 15h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg> Semáforo al Día
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'web_casos_sociales' %}active{% endif %}" href="{% url 'web_casos_sociales' %}">
+              <i class="bi bi-people me-1"></i> Casos Sociales
+            </a>
+          </li>
+          {% endif %}
+          {% if request.user.is_authenticated and request.user.rol == 'ADMINISTRADOR' or request.user.es_supervisor %}
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'web_auditoria' %}active{% endif %}" href="{% url 'web_auditoria' %}">
+              <i class="bi bi-shield-check me-1"></i> Auditoría
+            </a>
+          </li>
+          {% endif %}
+        </ul>
+      </div>
+    </aside>
+    <div class="app-main flex-grow-1 d-flex flex-column">
+  {% endif %}
+
+  <!-- Contenido Principal -->
+  <main class="flex-grow-1 py-4">
+    <div class="container-fluid px-3 px-lg-4">
+      {% if messages %}
+        {% for message in messages %}
+          <div class="alert alert-{{ message.tags|default:'info' }} alert-dismissible fade show shadow-sm" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+  {% if request.user.is_authenticated and request.resolver_match.url_name != 'web_login' %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Footer Institucional Oficial Municipalidad de La Serena -->
+  <footer class="institutional-footer text-white py-4 mt-auto shadow-lg" style="background-color: #121316; border-top: 3px solid var(--carmesi-la-serena);">
+    <div class="container-fluid px-4 px-lg-5 position-relative">
+      <div class="row g-4 align-items-center">
+        <!-- Columna 1: Escudo y Nombre Municipal -->
+        <div class="col-12 col-md-4 text-center text-md-start">
+          <div class="d-flex align-items-center justify-content-center justify-content-md-start gap-3 mb-2">
+            <div class="bg-white p-1 rounded-2 shadow-sm" style="width: 52px; height: 52px; display: inline-flex; align-items: center; justify-content: center;">
+              <img src="/static/img/logo_la_serena.png" alt="Escudo La Serena" style="width: 100%; height: 100%; object-fit: contain;">
+            </div>
+            <div>
+              <div class="fw-black text-uppercase tracking-wider" style="font-size: 1.05rem; letter-spacing: 0.5px;">LA SERENA</div>
+              <small class="text-white-50 text-uppercase fw-semibold" style="font-size: 0.72rem; letter-spacing: 1px;">Ilustre Municipalidad</small>
+            </div>
+          </div>
+          <div class="d-flex gap-2 justify-content-center justify-content-md-start mt-3">
+            <a href="https://maps.google.com/?q=Municipalidad+de+La+Serena" target="_blank" class="btn btn-sm btn-outline-light px-3 py-1 rounded-2" style="font-size: 0.78rem;">
+              <i class="bi bi-geo-alt-fill me-1 text-danger"></i> Cómo llegar
+            </a>
+            <a href="mailto:oficinadepartes@laserena.cl" class="btn btn-sm btn-outline-light px-3 py-1 rounded-2" style="font-size: 0.78rem;">
+              <i class="bi bi-envelope-fill me-1 text-warning"></i> Escríbenos
+            </a>
+          </div>
+        </div>
+
+        <!-- Columna 2: Transparencia y Participación -->
+        <div class="col-12 col-md-4 text-center text-md-start">
+          <h6 class="text-uppercase fw-bold text-white-50 small mb-2" style="letter-spacing: 1px;">Transparencia y Participación</h6>
+          <ul class="list-unstyled mb-0 small" style="font-size: 0.82rem; line-height: 1.8;">
+            <li><i class="bi bi-shield-check text-success me-2"></i>Transparencia Activa</li>
+            <li><i class="bi bi-file-earmark-text text-light me-2"></i>Solicitar Información</li>
+            <li><i class="bi bi-people text-warning me-2"></i>Plataforma Ley del Lobby</li>
+            <li><i class="bi bi-lock text-danger me-2"></i>Políticas de Privacidad y Protección de Datos</li>
+          </ul>
+        </div>
+
+        <!-- Columna 3: Contacto y Horarios -->
+        <div class="col-12 col-md-4 text-center text-md-start">
+          <h6 class="text-uppercase fw-bold text-white-50 small mb-2" style="letter-spacing: 1px;">Contacto Institucional</h6>
+          <div class="small text-white-50" style="font-size: 0.8rem; line-height: 1.7;">
+            <div><i class="bi bi-geo-alt me-2 text-white"></i>Arturo Prat 451, La Serena, Coquimbo</div>
+            <div><i class="bi bi-telephone me-2 text-white"></i>(56) 51 2 206601 | 2 206620</div>
+            <div><i class="bi bi-envelope me-2 text-white"></i>oficinadepartes@laserena.cl</div>
+            <div><i class="bi bi-clock me-2 text-white"></i>Lun a Jue: 08:30 - 14:00, 15:00 - 17:30 | Vie: 08:30 - 14:00</div>
+          </div>
+        </div>
+      </div>
+
+      <hr class="my-3 border-secondary" style="opacity: 0.25;">
+      
+      <div class="d-flex flex-column flex-sm-row justify-content-between align-items-center text-white-50 small" style="font-size: 0.76rem;">
+        <div>&copy; 2026 Ilustre Municipalidad de La Serena. Todos los derechos reservados.</div>
+        <div>Plataforma Institucional de Gestión de Resultados (Matriz SGR)</div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Bootstrap 5.3.3 JS Bundle -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+  <!-- Script Modo Offline y Sincronización Automática -->
+  <script>
+    const STORAGE_KEY = 'matriz_sgr_offline_queue';
+
+    function actualizarEstadoRed() {
+      const syncBtn = document.getElementById('sync-btn');
+      const offlineCountSpan = document.getElementById('offline-count');
+      const queue = obtenerColaOffline();
+
+      if (!syncBtn || !offlineCountSpan) return;
+
+      if (queue.length > 0) {
+        syncBtn.classList.remove('d-none');
+        offlineCountSpan.innerText = queue.length;
+        if (navigator.onLine) {
+          sincronizarColaOffline();
+        }
+      } else {
+        syncBtn.classList.add('d-none');
+      }
+    }
+
+    function obtenerColaOffline() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        return raw ? JSON.parse(raw) : [];
+      } catch {
+        return [];
+      }
+    }
+
+    let sincronizando = false;
+
+    function guardarRegistroOffline(registro) {
+      const queue = obtenerColaOffline();
+      const yaExiste = queue.some(q => q.id_local === registro.id_local);
+      if (!yaExiste) {
+        queue.push(registro);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+        actualizarEstadoRed();
+      }
+    }
+
+    async function sincronizarColaOffline() {
+      if (sincronizando) return;
+      const queue = obtenerColaOffline();
+      if (queue.length === 0) return;
+
+      sincronizando = true;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify([]));
+
+      const syncBtn = document.getElementById('sync-btn');
+      if (syncBtn) syncBtn.disabled = true;
+
+      let enviados = 0;
+      const pendientesDeReintento = [];
+
+      for (const item of queue) {
+        try {
+          const csrfCookie = document.cookie.split('; ').find(cookie => cookie.startsWith('csrftoken='));
+          const csrf = document.querySelector('[name=csrfmiddlewaretoken]')?.value
+            || (csrfCookie ? decodeURIComponent(csrfCookie.split('=')[1]) : '');
+          const res = await fetch('/api/actividades/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': csrf
+            },
+            body: JSON.stringify(item)
+          });
+          if (res.ok) {
+            enviados++;
+          } else {
+            pendientesDeReintento.push(item);
+          }
+        } catch (e) {
+          pendientesDeReintento.push(item);
+        }
+      }
+
+      if (pendientesDeReintento.length > 0) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(pendientesDeReintento));
+      }
+      sincronizando = false;
+      if (syncBtn) syncBtn.disabled = false;
+      actualizarEstadoRed();
+      if (enviados > 0) {
+        alert("¡Sincronización completada! Se registraron " + enviados + " actividades.");
+        window.location.reload();
+      }
+    }
+
+    window.addEventListener('online', actualizarEstadoRed);
+    window.addEventListener('offline', actualizarEstadoRed);
+    document.addEventListener('DOMContentLoaded', actualizarEstadoRed);
+  </script>
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

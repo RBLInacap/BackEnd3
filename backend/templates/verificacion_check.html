@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}Validación "Check" | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <!-- Cabecera de la Bandeja de Validación -->
+  <div class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+      <div>
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <span class="badge px-2 py-1 fw-bold text-uppercase bg-white text-danger">
+            Control de Calidad & Anti-Fraude
+          </span>
+          <span class="text-white-50 small">Botón exclusivo "Check" para Delegados y Verificadores</span>
+        </div>
+        <h3 class="fw-black mb-1 text-white">Bandeja de Validación de Fotografías y Evidencias</h3>
+        <small class="text-white-50">Cada evidencia tiene un código alfanumérico único e inmutable (ej. ORC711). Solo las fotos <strong class="text-white">APROBADAS</strong> suman al semáforo.</small>
+      </div>
+
+      <!-- Filtros -->
+      <form method="GET" class="d-flex flex-wrap align-items-center gap-2">
+        <select name="delegacion_id" class="form-select form-select-sm bg-white text-dark border fw-semibold" onchange="this.form.submit()">
+          <option value="" {% if not delegacion_filtro %}selected{% endif %}>Todas las Delegaciones</option>
+          {% for d in delegaciones %}
+            <option value="{{ d.id }}" {% if delegacion_filtro == d.id %}selected{% endif %}>{{ d.nombre }}</option>
+          {% endfor %}
+        </select>
+
+        <select name="estado" class="form-select form-select-sm bg-white text-dark border fw-semibold" onchange="this.form.submit()">
+          <option value="TODOS" {% if estado_filtro == 'TODOS' %}selected{% endif %}>Todos los Estados</option>
+          <option value="PENDIENTE" {% if estado_filtro == 'PENDIENTE' or not estado_filtro %}selected{% endif %}>Pendientes de Validación</option>
+          <option value="APROBADA" {% if estado_filtro == 'APROBADA' %}selected{% endif %}>Aprobadas (Check)</option>
+          <option value="RECHAZADA" {% if estado_filtro == 'RECHAZADA' %}selected{% endif %}>Rechazadas</option>
+        </select>
+      </form>
+    </div>
+
+    {% if request.user.rol == 'ADMINISTRATIVO' %}
+      <div class="alert alert-warning py-2 d-flex align-items-center gap-2 mt-3 mb-0 small border-warning">
+        <i class="bi bi-shield-lock-fill fs-5 text-danger"></i>
+        <div>
+          <strong>Vista de Solo Lectura para Funcionario:</strong> Por la Regla de Negocio <strong>RN-009</strong> y el Criterio <strong>CA-07</strong> (Segregación de Funciones), solo los <strong>Delegados Municipales</strong> y la <strong>Coordinación</strong> pueden pulsar el botón "Check" para aprobar o rechazar evidencias. Un ejecutor operativo no puede auto-aprobarse sus propias tareas.
+        </div>
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- Grilla de Tarjetas de Evidencias -->
+  <div class="row g-4">
+    {% for ev in evidencias %}
+      <div class="col-12 col-md-6 col-lg-4">
+        <div class="card shadow-sm border h-100 overflow-hidden d-flex flex-column bg-white">
+          <!-- Imagen y Badges -->
+          <div class="position-relative bg-light" style="height: 200px;">
+            <img src="{{ ev.get_foto_url }}" class="w-100 h-100 object-fit-cover" alt="Foto Evidencia">
+            <span class="position-absolute top-0 start-0 m-2 badge bg-dark bg-opacity-75 text-warning border border-warning font-monospace fs-6 shadow-sm">
+              ID: {{ ev.codigo_verificador }}
+            </span>
+            <span class="position-absolute top-0 end-0 m-2 badge {% if ev.estado == 'APROBADA' %}bg-success{% elif ev.estado == 'PENDIENTE' %}bg-warning text-dark{% else %}bg-danger{% endif %} shadow-sm">
+              {{ ev.get_estado_display }}
+            </span>
+          </div>
+
+          <!-- Cuerpo de la Tarjeta -->
+          <div class="card-body p-3 d-flex flex-column justify-content-between">
+            <div class="small text-secondary mb-3">
+              <div class="fw-bold text-dark fs-6 mb-1">{{ ev.actividad.actividad_solicitud }}</div>
+              <p class="mb-2 text-secondary">{{ ev.actividad.accion_ejecutada }}</p>
+              
+              <div class="border-top pt-2 mt-2">
+                {% if ev.actividad.direccion %}
+                  <div class="text-dark mb-1"><i class="bi bi-geo-alt-fill text-danger me-1"></i> Dirección: <strong>{{ ev.actividad.direccion }}</strong></div>
+                {% endif %}
+                <div class="text-dark"><i class="bi bi-building text-secondary me-1"></i> Delegación: <strong>{{ ev.actividad.delegacion.nombre }}</strong></div>
+                <div class="text-dark"><i class="bi bi-person-fill text-secondary me-1"></i> Funcionario: <strong>{{ ev.actividad.funcionario.get_full_name|default:ev.actividad.funcionario.username }}</strong></div>
+                <div class="text-secondary"><i class="bi bi-calendar3 me-1"></i> Fecha: {{ ev.fecha_subida|date:"d/m/Y H:i" }}</div>
+                {% if ev.fotos_adicionales %}
+                  <div class="d-flex gap-1 mt-2 align-items-center">
+                    <small class="text-secondary me-1" style="font-size: 0.72rem;">Fotos extra:</small>
+                    {% for f in ev.fotos_adicionales %}
+                      <a href="{{ f.url }}" target="_blank" title="Evidencia {{ f.num }}">
+                        <img src="{{ f.url }}" class="rounded border" style="width: 36px; height: 36px; object-fit: cover;" alt="Extra {{ f.num }}">
+                      </a>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+                {% if ev.observacion %}
+                  <div class="p-2 bg-warning-subtle rounded border border-warning mt-2 text-dark">
+                    <small class="fw-bold d-block text-danger">Motivo de Rechazo:</small>
+                    "{{ ev.observacion }}"
+                  </div>
+                {% endif %}
+              </div>
+            </div>
+
+            <!-- Botones de Acción según Rol -->
+            {% if request.user.rol == 'ADMINISTRATIVO' %}
+              <div class="p-2 bg-light rounded text-center small text-secondary w-100 border mt-2">
+                <i class="bi bi-lock-fill text-danger me-1"></i> Requiere validación de tu Delegado
+              </div>
+            {% else %}
+              <div class="d-flex gap-2 pt-2 border-top">
+                <form method="POST" action="{% url 'web_validar_evidencia' ev.id %}" class="flex-grow-1">
+                  {% csrf_token %}
+                  <input type="hidden" name="decision" value="APROBADA">
+                  <button type="submit" class="btn btn-success btn-sm w-100 fw-bold shadow-xs" {% if ev.estado == 'APROBADA' %}disabled{% endif %}>
+                    <i class="bi bi-check2-circle me-1"></i> Check (Aprobar)
+                  </button>
+                </form>
+
+                <button type="button" class="btn btn-outline-danger btn-sm fw-bold shadow-xs" data-bs-toggle="modal" data-bs-target="#modalRechazo{{ ev.id }}" {% if ev.estado == 'RECHAZADA' %}disabled{% endif %}>
+                  <i class="bi bi-x-circle"></i> Rechazar
+                </button>
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal de Rechazo -->
+      <div class="modal fade" id="modalRechazo{{ ev.id }}" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+          <div class="modal-content bg-white text-dark border shadow">
+            <div class="modal-header border-bottom bg-light">
+              <h5 class="modal-title fw-bold text-danger">Rechazar Evidencia {{ ev.codigo_verificador }}</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST" action="{% url 'web_validar_evidencia' ev.id %}">
+              {% csrf_token %}
+              <input type="hidden" name="decision" value="RECHAZADA">
+              <div class="modal-body small">
+                <p class="text-secondary">Indique el motivo técnico del rechazo:</p>
+                <textarea name="observacion" class="form-control border" rows="3" required placeholder="Motivo del rechazo..."></textarea>
+              </div>
+              <div class="modal-footer border-top bg-light">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+                <button type="submit" class="btn btn-danger btn-sm fw-bold">Confirmar Rechazo</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    {% empty %}
+      <div class="col-12 text-center text-secondary py-5">
+        <i class="bi bi-camera fs-1 mb-2"></i>
+        <h5>No hay evidencias registradas para este filtro</h5>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

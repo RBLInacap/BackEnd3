@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Panel Supervisor | Matriz SGR La Serena{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <section class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+      <div>
+        <span class="badge bg-white text-danger text-uppercase">
+          {% if request.user.es_delegado %}Panel Delegado Territorial{% else %}Panel Supervisor{% endif %}
+        </span>
+        <h1 class="h3 fw-bold text-white mt-2 mb-1">Seguimiento de gestión</h1>
+        <p class="text-white-50 mb-0">
+          Período: {{ periodo_nombre_actual }}
+          {% if request.user.es_delegado %}
+            · Delegación: {{ request.user.delegacion.nombre|default:"Sin delegación asignada" }}
+          {% endif %}
+        </p>
+      </div>
+      <a href="{% url 'web_verificacion' %}" class="btn btn-light text-danger fw-semibold">
+        <i class="bi bi-check2-circle me-1"></i> Validar evidencias
+      </a>
+    </div>
+  </section>
+
+  {% if not periodo_configurado %}
+  <div class="alert alert-warning mb-0" role="alert">
+    No hay un período de medición configurado. Los indicadores reflejan el trimestre calendario actual.
+  </div>
+  {% endif %}
+
+  <div class="row g-3">
+    <div class="col-12 col-sm-6 col-xl-3">
+      <div class="card p-3 h-100 shadow-sm">
+        <div class="small text-uppercase text-secondary fw-bold">Cumplimiento promedio</div>
+        <div class="fs-2 fw-bold mt-2">{{ promedio_ponderado }}%</div>
+        <div class="small text-secondary">Meta al día: {{ comunal.meta_esperada_pct|default:0 }}%</div>
+      </div>
+    </div>
+    <div class="col-12 col-sm-6 col-xl-3">
+      <div class="card p-3 h-100 shadow-sm">
+        <div class="small text-uppercase text-secondary fw-bold">Funcionarios activos</div>
+        <div class="fs-2 fw-bold mt-2">{{ total_funcionarios }}</div>
+      </div>
+    </div>
+    <div class="col-12 col-sm-6 col-xl-3">
+      <div class="card p-3 h-100 shadow-sm">
+        <div class="small text-uppercase text-secondary fw-bold">Evidencias pendientes</div>
+        <div class="fs-2 fw-bold text-warning mt-2">{{ total_pendientes_check }}</div>
+      </div>
+    </div>
+    <div class="col-12 col-sm-6 col-xl-3">
+      <div class="card p-3 h-100 shadow-sm">
+        <div class="small text-uppercase text-secondary fw-bold">Compromisos vencidos</div>
+        <div class="fs-2 fw-bold text-danger mt-2">{{ total_vencidos }}</div>
+      </div>
+    </div>
+  </div>
+
+  <section class="card shadow-sm border-0">
+    <div class="card-header bg-white">
+      <h2 class="h5 mb-0">Delegaciones bajo seguimiento</h2>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th scope="col">Delegación</th>
+            <th scope="col">Funcionarios</th>
+            <th scope="col">Avance</th>
+            <th scope="col">Evidencias pendientes</th>
+            <th scope="col">Compromisos vencidos</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in delegaciones_filtradas %}
+          <tr>
+            <th scope="row">{{ item.nombre }}</th>
+            <td>{{ item.total_funcionarios }}</td>
+            <td>{{ item.promedio_ponderado_pct }}%</td>
+            <td>{{ item.evidencias_pendientes_check }}</td>
+            <td>{{ item.compromisos.vencidos }}</td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="5" class="text-center text-secondary py-4">
+              {% if request.user.es_delegado and not request.user.delegacion_id %}
+                Tu cuenta aún no tiene una delegación asignada.
+              {% else %}
+                No hay datos disponibles para este período.
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="d-flex flex-wrap gap-2">
+    <a href="{% url 'web_semaforo' %}" class="btn btn-outline-danger">Ver semáforo al día</a>
+    <a href="{% url 'web_tubo' %}" class="btn btn-outline-secondary">Abrir tubo de trabajo</a>
+    <a href="{% url 'web_personal' %}" class="btn btn-outline-secondary">Consultar fichas personales</a>
+  </div>
+</div>
+{% endblock %}
