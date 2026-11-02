@@ -217,7 +217,8 @@ class Command(BaseCommand):
                 "tipo_atencion": "Diagnóstico y Postulación RSH",
                 "detalle": "Se levanta ficha preliminar con situación de vulnerabilidad habitacional",
                 "resultado": "Ficha aprobada en sistema nacional",
-                "funcionario": func_centro
+                "funcionario": func_centro,
+                "fecha_visita_programada": timezone.localdate(),
             }
         )
         AtencionSocial.objects.get_or_create(
@@ -227,7 +228,8 @@ class Command(BaseCommand):
                 "tipo_atencion": "Visita Domiciliaria de Verificación",
                 "detalle": "Constatación en terreno de requerimiento de material de techumbre",
                 "resultado": "Informe social derivado a DIDECO central",
-                "funcionario": func_centro
+                "funcionario": func_centro,
+                "fecha_visita": timezone.localdate(),
             }
         )
         AtencionSocial.objects.get_or_create(
@@ -237,7 +239,8 @@ class Command(BaseCommand):
                 "tipo_atencion": "Entrega de Materiales y Cierre de Ayuda",
                 "detalle": "Entrega de planchas de zinc y subsidio complementario de alimentos",
                 "resultado": "Caso atendido satisfactoriamente",
-                "funcionario": func_centro
+                "funcionario": func_centro,
+                "fecha_entrega_beneficio": timezone.localdate(),
             }
         )
 

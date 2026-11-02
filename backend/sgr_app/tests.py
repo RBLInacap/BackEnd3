@@ -10,7 +10,7 @@ from django.utils import timezone
 from unittest.mock import patch
 from django.db import IntegrityError
 from sgr_app.models import (
-    Delegacion, Cargo, Usuario, PeriodoMedicion, ItemMedicion,
+    Area, Delegacion, Cargo, Usuario, PeriodoMedicion, ItemMedicion,
     Actividad, Evidencia, CompromisoAgenda, CasoSocial, AtencionSocial,
     MetaModel, RegistroAuditoria, generar_codigo_evidencia
 )
@@ -287,9 +287,34 @@ class MatrizSGRTestSuite(TestCase):
             codigo_caso="CASO-TEST-001", persona_anonimizada="Persona Prueba",
             delegacion=self.delegacion
         )
-        AtencionSocial.objects.create(caso=caso, etapa=1, tipo_atencion="Ficha", detalle="E1", resultado="OK", funcionario=self.usuario)
-        AtencionSocial.objects.create(caso=caso, etapa=2, tipo_atencion="Visita", detalle="E2", resultado="OK", funcionario=self.usuario)
-        AtencionSocial.objects.create(caso=caso, etapa=3, tipo_atencion="Cierre", detalle="E3", resultado="OK", funcionario=self.usuario)
+        hoy = timezone.localdate()
+        AtencionSocial.objects.create(
+            caso=caso,
+            etapa=1,
+            fecha_visita_programada=hoy,
+            tipo_atencion="Ficha",
+            detalle="E1",
+            resultado="OK",
+            funcionario=self.usuario,
+        )
+        AtencionSocial.objects.create(
+            caso=caso,
+            etapa=2,
+            fecha_visita=hoy,
+            tipo_atencion="Visita",
+            detalle="E2",
+            resultado="OK",
+            funcionario=self.usuario,
+        )
+        AtencionSocial.objects.create(
+            caso=caso,
+            etapa=3,
+            fecha_entrega_beneficio=hoy,
+            tipo_atencion="Cierre",
+            detalle="E3",
+            resultado="OK",
+            funcionario=self.usuario,
+        )
         self.assertEqual(caso.atenciones.count(), 3)
 
     # 7. Auditoría de Operaciones Críticas (RF-036, CA-09, HU-30)
@@ -965,17 +990,28 @@ class MatrizSGRTestSuite(TestCase):
         )
         client = Client()
         client.force_login(administrador)
+        area = Area.objects.create(nombre='Operaciones Municipales')
 
         create_response = client.post(
             '/mantenedores/cargos/crear/',
-            {'nombre': 'Inspector Territorial', 'descripcion': 'Cargo de prueba'},
+            {
+                'nombre': 'Inspector Territorial',
+                'descripcion': 'Cargo de prueba',
+                'area': str(area.pk),
+            },
         )
         self.assertRedirects(create_response, '/mantenedores/cargos/')
         cargo = Cargo.objects.get(nombre='Inspector Territorial')
+        self.assertEqual(cargo.area, area)
+        self.assertTrue(cargo.codigo.startswith('CAR-'))
 
         update_response = client.post(
             f'/mantenedores/cargos/{cargo.pk}/modificar/',
-            {'nombre': 'Inspector de Terreno', 'descripcion': 'Cargo actualizado'},
+            {
+                'nombre': 'Inspector de Terreno',
+                'descripcion': 'Cargo actualizado',
+                'area': str(area.pk),
+            },
         )
         self.assertRedirects(update_response, '/mantenedores/cargos/')
         cargo.refresh_from_db()

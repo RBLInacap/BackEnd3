@@ -27,7 +27,15 @@
         {% if field.name == 'first_name' or field.name == 'last_name' or field.name == 'email' or field.name == 'email_confirmacion' or field.name == 'telefono' %}
           <div class="col-12 {% if field.name == 'first_name' or field.name == 'last_name' %}col-md-6{% endif %}">
             <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
-            {{ field }}
+            {% if field.name == 'telefono' %}
+              <div class="input-group">
+                <span class="input-group-text">+56 9</span>
+                {{ field }}
+              </div>
+              <div class="form-text">Ingresa los 8 dígitos restantes, solo números.</div>
+            {% else %}
+              {{ field }}
+            {% endif %}
             {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
             {% for error in field.errors %}<div class="small text-danger mt-1">{{ error }}</div>{% endfor %}
           </div>

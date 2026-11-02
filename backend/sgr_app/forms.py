@@ -10,7 +10,6 @@ from sgr_app.models import (
     CasoSocial,
     CatalogoServicio,
     CompromisoAgenda,
-    Departamento,
     Delegacion,
     Evidencia,
     ItemMedicion,
@@ -374,11 +373,20 @@ class SolicitanteForm(forms.ModelForm):
 
 
 class CasoSocialForm(forms.ModelForm):
+    fecha_apertura = forms.DateField(
+        label='Fecha apertura',
+        localize=False,
+        input_formats=['%Y-%m-%d'],
+        widget=forms.DateInput(
+            format='%Y-%m-%d',
+            attrs={'type': 'date'},
+        ),
+    )
+
     class Meta:
         model = CasoSocial
         fields = ('codigo_caso', 'persona_anonimizada', 'delegacion', 'fecha_apertura')
         widgets = {
-            'fecha_apertura': forms.DateInput(attrs={'type': 'date'}),
             'persona_anonimizada': forms.TextInput(attrs={
                 'autocomplete': 'off',
                 'placeholder': 'Código o identificación seudonimizada',
@@ -387,6 +395,8 @@ class CasoSocialForm(forms.ModelForm):
 
     def __init__(self, *args, user, **kwargs):
         super().__init__(*args, **kwargs)
+        if not self.instance.pk and not self.is_bound:
+            self.initial.setdefault('fecha_apertura', timezone.localdate())
         self.fields['delegacion'].queryset = Delegacion.objects.filter(activo=True)
         if user.es_delegado:
             self.fields['delegacion'].queryset = self.fields['delegacion'].queryset.filter(
@@ -406,11 +416,45 @@ class AtencionSocialForm(forms.Form):
         widget=forms.Textarea(attrs={'rows': 2}),
     )
     resultado = forms.CharField(max_length=150, label='Resultado')
+    fecha_gestion = forms.DateField(
+        label='Fecha',
+        error_messages={'required': 'La fecha de esta gestión es obligatoria.'},
+        widget=forms.DateInput(attrs={'type': 'date'}),
+    )
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, etapa, **kwargs):
         super().__init__(*args, **kwargs)
+        self.etapa = etapa
+        etiquetas_fecha = {
+            1: 'Fecha programada de visita',
+            2: 'Fecha de visita realizada',
+            3: 'Fecha de entrega del beneficio',
+        }
+        self.fields['fecha_gestion'].label = etiquetas_fecha.get(
+            etapa,
+            'Fecha de gestión',
+        )
+        if etapa == 1:
+            self.fields['fecha_gestion'].widget.attrs['min'] = (
+                timezone.localdate().isoformat()
+            )
+        elif etapa in (2, 3):
+            self.fields['fecha_gestion'].widget.attrs['max'] = (
+                timezone.localdate().isoformat()
+            )
         for field in self.fields.values():
             field.widget.attrs.setdefault('class', 'form-control')
+
+    def clean_fecha_gestion(self):
+        fecha_gestion = self.cleaned_data['fecha_gestion']
+        hoy = timezone.localdate()
+        if self.etapa == 1 and fecha_gestion < hoy:
+            raise ValidationError(
+                'La fecha programada de visita no puede ser anterior a hoy.'
+            )
+        if self.etapa in (2, 3) and fecha_gestion > hoy:
+            raise ValidationError('La fecha de una gestión realizada no puede ser futura.')
+        return fecha_gestion
 
 
 class MiFichaPersonalForm(forms.ModelForm):
@@ -452,7 +496,14 @@ class MiFichaPersonalForm(forms.ModelForm):
             'first_name': forms.TextInput(attrs={'autocomplete': 'given-name', 'maxlength': 150}),
             'last_name': forms.TextInput(attrs={'autocomplete': 'family-name', 'maxlength': 150}),
             'email': forms.EmailInput(attrs={'autocomplete': 'email', 'maxlength': 254}),
-            'telefono': forms.TextInput(attrs={'autocomplete': 'tel', 'inputmode': 'tel', 'maxlength': 30}),
+            'telefono': forms.TextInput(attrs={
+                'type': 'tel',
+                'autocomplete': 'tel',
+                'inputmode': 'numeric',
+                'maxlength': 8,
+                'pattern': '[0-9]{8}',
+                'data-chilean-mobile': '',
+            }),
         }
 
     def __init__(self, *args, **kwargs):
@@ -522,37 +573,55 @@ class MantenedorModelForm(forms.ModelForm):
 
 
 class DelegacionForm(MantenedorModelForm):
+    def clean_telefono(self):
+        telefono = self.cleaned_data.get('telefono')
+        if telefono and (not telefono.isascii() or not telefono.isdigit()):
+            raise ValidationError('El teléfono de la delegación debe contener solo números.')
+        return telefono
+
     class Meta:
         model = Delegacion
         fields = ('nombre', 'codigo', 'direccion', 'telefono', 'email', 'ambito')
         widgets = {
             'direccion': forms.TextInput(),
-            'telefono': forms.TextInput(),
+            'telefono': forms.TextInput(attrs={
+                'type': 'tel',
+                'inputmode': 'numeric',
+                'pattern': '[0-9]*',
+                'maxlength': 50,
+                'data-digits-only': '',
+            }),
             'email': forms.EmailInput(),
         }
 
 
 class CargoForm(MantenedorModelForm):
+    area = forms.ModelChoiceField(
+        queryset=Area.objects.none(),
+        label='Área',
+        empty_label='Selecciona un área',
+        help_text='Las opciones corresponden a las áreas activas del mantenedor de áreas.',
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
+
     class Meta:
         model = Cargo
-        fields = ('nombre', 'descripcion', 'departamento')
+        fields = ('nombre', 'descripcion', 'area')
         widgets = {
             'descripcion': forms.Textarea(attrs={'rows': 3}),
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        departamentos = Departamento.objects.filter(delegacion__activo=True).order_by(
-            'delegacion__nombre',
-            'nombre_departamento',
-        )
-        if self.instance.pk and self.instance.departamento_id:
-            departamentos = (Departamento.objects.filter(
-                pk=self.instance.departamento_id,
-            ) | departamentos).distinct()
-        self.fields['departamento'].queryset = departamentos
-        self.fields['departamento'].required = False
-        self.fields['departamento'].widget.attrs['class'] = 'form-select'
+        areas = Area.objects.filter(estado=True).order_by('nombre')
+        if self.instance.pk and self.instance.area_id:
+            areas = (
+                Area.objects.filter(pk=self.instance.area_id)
+                | areas
+            ).distinct()
+        self.fields['area'].queryset = areas
+        self.fields['area'].required = True
+        self.fields['area'].widget.attrs['class'] = 'form-select'
 
 
 class MantenedorItemForm(MantenedorModelForm):
@@ -664,6 +733,30 @@ class MantenedorPeriodoForm(MantenedorModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['version_de_parametro'].disabled = True
+        today = timezone.localdate()
+        try:
+            maximum_date = today.replace(year=today.year + 1)
+        except ValueError:
+            maximum_date = today.replace(year=today.year + 1, day=28)
+
+        if not self.instance.pk and not self.is_bound:
+            self.initial.setdefault('fecha_inicio', today)
+            self.initial.setdefault('fecha_termino', today)
+            self.initial.setdefault('anio', today.year)
+            self.initial.setdefault('trimestre', (today.month - 1) // 3 + 1)
+            self.initial.setdefault('dias_computables', 1)
+
+        for field_name in ('fecha_inicio', 'fecha_termino'):
+            minimum_date = today
+            maximum_field_date = maximum_date
+            current_value = getattr(self.instance, field_name, None)
+            if self.instance.pk and current_value:
+                minimum_date = min(minimum_date, current_value)
+                maximum_field_date = max(maximum_field_date, current_value)
+            self.fields[field_name].widget.attrs.update({
+                'min': minimum_date.isoformat(),
+                'max': maximum_field_date.isoformat(),
+            })
 
     def clean(self):
         cleaned_data = super().clean()
@@ -696,6 +789,31 @@ class MantenedorPeriodoForm(MantenedorModelForm):
         fecha_termino = cleaned_data.get('fecha_termino')
         anio = cleaned_data.get('anio')
         trimestre = cleaned_data.get('trimestre')
+        today = timezone.localdate()
+        try:
+            maximum_date = today.replace(year=today.year + 1)
+        except ValueError:
+            maximum_date = today.replace(year=today.year + 1, day=28)
+
+        for field_name, value in (
+            ('fecha_inicio', fecha_inicio),
+            ('fecha_termino', fecha_termino),
+        ):
+            previous_value = (
+                getattr(self.instance, field_name)
+                if self.instance.pk
+                else None
+            )
+            if (
+                value
+                and value != previous_value
+                and not today <= value <= maximum_date
+            ):
+                self.add_error(
+                    field_name,
+                    f'La fecha debe estar entre {today:%d/%m/%Y} y '
+                    f'{maximum_date:%d/%m/%Y}.',
+                )
 
         if fecha_inicio and fecha_termino and fecha_termino < fecha_inicio:
             self.add_error(
@@ -774,6 +892,19 @@ class MantenedorSolicitanteForm(MantenedorModelForm):
 
 
 class FuncionarioForm(MantenedorModelForm):
+    ROL_CHOICES = (
+        ('ADMINISTRADOR', 'Administrador'),
+        ('COORDINADOR', 'Coordinador'),
+        ('DELEGADO', 'Delegado'),
+        ('FUNCIONARIO', 'Funcionario'),
+    )
+    ROL_A_MODELO = {
+        'ADMINISTRADOR': (Usuario.Rol.ADMINISTRADOR, False),
+        'COORDINADOR': (Usuario.Rol.SUPERVISOR, False),
+        'DELEGADO': (Usuario.Rol.SUPERVISOR, True),
+        'FUNCIONARIO': (Usuario.Rol.ADMINISTRATIVO, False),
+    }
+
     run = forms.CharField(label='RUN', max_length=20, required=True)
     nombre = forms.CharField(label='Nombre', max_length=150, required=True)
     apellidoPaterno = forms.CharField(
@@ -787,16 +918,12 @@ class FuncionarioForm(MantenedorModelForm):
         required=True,
     )
     correo = forms.EmailField(label='Correo', max_length=254, required=True)
-    rol = forms.ChoiceField(choices=Usuario.Rol.choices, initial=Usuario.Rol.ADMINISTRATIVO)
-    es_delegado = forms.BooleanField(
-        label='Perfil Delegado',
-        required=False,
-        help_text='Limita el acceso del Supervisor a los datos de su delegación.',
-    )
+    rol = forms.ChoiceField(choices=ROL_CHOICES, initial='FUNCIONARIO')
     area_entidad = forms.ModelChoiceField(
         queryset=Area.objects.filter(estado=True).order_by('nombre'),
-        required=False,
+        required=True,
         label='Área',
+        empty_label='Selecciona un área',
     )
     cargo = forms.ModelChoiceField(
         queryset=Cargo.objects.filter(activo=True).order_by('nombre'),
@@ -830,7 +957,15 @@ class FuncionarioForm(MantenedorModelForm):
                 'apellidoMaterno': apellidos[1] if len(apellidos) > 1 else '',
                 'correo': self.instance.email,
                 'estado': self.instance.is_active,
-                'es_delegado': self.instance.es_delegado,
+                'rol': (
+                    'DELEGADO'
+                    if self.instance.es_delegado
+                    else 'COORDINADOR'
+                    if self.instance.rol == Usuario.Rol.SUPERVISOR
+                    else 'ADMINISTRADOR'
+                    if self.instance.rol == Usuario.Rol.ADMINISTRADOR
+                    else 'FUNCIONARIO'
+                ),
             })
 
     def clean_run(self):
@@ -859,13 +994,10 @@ class FuncionarioForm(MantenedorModelForm):
         cleaned_data = super().clean()
         rol = cleaned_data.get('rol')
         delegacion = cleaned_data.get('delegacion')
-        es_delegado = cleaned_data.get('es_delegado', False)
-        if es_delegado and rol != Usuario.Rol.SUPERVISOR:
-            self.add_error('rol', 'El perfil Delegado requiere el rol Supervisor.')
-        if es_delegado and not delegacion:
+        if rol == 'DELEGADO' and not delegacion:
             self.add_error(
                 'delegacion',
-                'El perfil Delegado requiere una delegación asignada.',
+                'El rol Delegado requiere una delegación asignada.',
             )
         return cleaned_data
 
@@ -880,8 +1012,9 @@ class FuncionarioForm(MantenedorModelForm):
             self.cleaned_data['apellidoMaterno'].strip(),
         )))
         funcionario.email = self.cleaned_data['correo']
-        funcionario.rol = self.cleaned_data['rol']
-        funcionario.es_delegado = self.cleaned_data['es_delegado']
+        funcionario.rol, funcionario.es_delegado = self.ROL_A_MODELO[
+            self.cleaned_data['rol']
+        ]
         funcionario.area_entidad = self.cleaned_data['area_entidad']
         funcionario.cargo = self.cleaned_data['cargo']
         funcionario.delegacion = self.cleaned_data['delegacion']

@@ -12,12 +12,13 @@
   <section class="card shadow-sm border-0">
     <div class="card-body d-flex flex-column flex-md-row justify-content-between gap-3">
       <form method="get" class="d-flex gap-2 flex-grow-1" role="search">
+        {% if show_inactive %}<input type="hidden" name="estado" value="inactivas">{% endif %}
         <label for="period-search" class="visually-hidden">Buscar período</label>
         <input id="period-search" type="search" name="q" value="{{ search_term }}"
                class="form-control" placeholder="Buscar período">
         <button type="submit" class="btn btn-outline-danger">Buscar</button>
         {% if search_term %}
-          <a href="{% url 'mantenedor_periodos_list' %}" class="btn btn-outline-secondary">Limpiar</a>
+          <a href="{% url 'mantenedor_periodos_list' %}{% if show_inactive %}?estado=inactivas{% endif %}" class="btn btn-outline-secondary">Limpiar</a>
         {% endif %}
       </form>
       {% if can_manage %}
@@ -26,6 +27,15 @@
         </a>
       {% endif %}
     </div>
+    {% if can_manage %}
+      <div class="px-3 pb-3">
+        {% if show_inactive %}
+          <a href="{% url 'mantenedor_periodos_list' %}" class="btn btn-sm btn-outline-secondary">Ver registros activos</a>
+        {% else %}
+          <a href="{% url 'mantenedor_periodos_list' %}?estado=inactivas" class="btn btn-sm btn-outline-secondary">Ver registros inactivos</a>
+        {% endif %}
+      </div>
+    {% endif %}
 
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
@@ -59,15 +69,23 @@
             </td>
             {% if can_manage %}
               <td class="text-end text-nowrap">
-                <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
-                <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+                {% if show_inactive %}
+                  <span class="badge text-bg-secondary me-1">Inactivo</span>
+                  <form method="post" action="{% url 'mantenedor_registro_reactivate' reactivation_entity item.pk %}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-success">Activar</button>
+                  </form>
+                {% else %}
+                  <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
+                  <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+                {% endif %}
               </td>
             {% endif %}
           </tr>
           {% empty %}
           <tr>
             <td colspan="{% if can_manage %}8{% else %}7{% endif %}" class="text-center text-secondary py-4">
-              {% if search_term %}No se encontraron períodos para esa búsqueda.{% else %}No hay períodos activos.{% endif %}
+              {% if search_term %}No se encontraron períodos para esa búsqueda.{% elif show_inactive %}No hay períodos inactivos.{% else %}No hay períodos activos.{% endif %}
             </td>
           </tr>
           {% endfor %}

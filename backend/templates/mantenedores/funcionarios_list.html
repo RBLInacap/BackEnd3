@@ -11,14 +11,24 @@
   <section class="card shadow-sm border-0">
     <div class="card-body d-flex flex-column flex-md-row justify-content-between gap-3">
       <form method="get" class="d-flex gap-2 flex-grow-1" role="search">
+        {% if show_inactive %}<input type="hidden" name="estado" value="inactivas">{% endif %}
         <label for="funcionario-search" class="visually-hidden">Buscar funcionario</label>
         <input id="funcionario-search" type="search" name="q" value="{{ search_term }}"
                class="form-control" placeholder="Buscar por RUN, nombre o correo">
         <button type="submit" class="btn btn-outline-danger">Buscar</button>
-        {% if search_term %}<a href="{% url 'mantenedor_funcionarios_list' %}" class="btn btn-outline-secondary">Limpiar</a>{% endif %}
+        {% if search_term %}<a href="{% url 'mantenedor_funcionarios_list' %}{% if show_inactive %}?estado=inactivas{% endif %}" class="btn btn-outline-secondary">Limpiar</a>{% endif %}
       </form>
       {% if can_manage %}<a href="{{ create_url }}" class="btn btn-danger text-nowrap"><i class="bi bi-plus-circle me-1"></i> Crear funcionario</a>{% endif %}
     </div>
+    {% if can_manage %}
+      <div class="px-3 pb-3">
+        {% if show_inactive %}
+          <a href="{% url 'mantenedor_funcionarios_list' %}" class="btn btn-sm btn-outline-secondary">Ver funcionarios activos</a>
+        {% else %}
+          <a href="{% url 'mantenedor_funcionarios_list' %}?estado=inactivas" class="btn btn-sm btn-outline-secondary">Ver funcionarios inactivos</a>
+        {% endif %}
+      </div>
+    {% endif %}
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
         <thead>
@@ -36,12 +46,20 @@
             <td>{{ item.email|default:"—" }}</td>
             <td>{{ item.get_rol_display }}</td>
             {% if can_manage %}<td class="text-end text-nowrap">
-              <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
-              <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+              {% if show_inactive %}
+                <span class="badge text-bg-secondary me-1">Inactivo</span>
+                <form method="post" action="{% url 'mantenedor_registro_reactivate' reactivation_entity item.pk %}" class="d-inline">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-sm btn-outline-success">Activar</button>
+                </form>
+              {% else %}
+                <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
+                <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+              {% endif %}
             </td>{% endif %}
           </tr>
           {% empty %}
-          <tr><td colspan="{% if can_manage %}6{% else %}5{% endif %}" class="text-center text-secondary py-4">{% if search_term %}No se encontraron funcionarios.{% else %}No hay funcionarios activos.{% endif %}</td></tr>
+          <tr><td colspan="{% if can_manage %}6{% else %}5{% endif %}" class="text-center text-secondary py-4">{% if search_term %}No se encontraron funcionarios.{% elif show_inactive %}No hay funcionarios inactivos.{% else %}No hay funcionarios activos.{% endif %}</td></tr>
           {% endfor %}
         </tbody>
       </table>

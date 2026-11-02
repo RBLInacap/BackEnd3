@@ -6,7 +6,7 @@ from django.db.models import Q
 from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from django.urls import reverse_lazy
-from django.views.generic import CreateView, DeleteView, ListView, UpdateView
+from django.views.generic import CreateView, DeleteView, ListView, UpdateView, View
 
 from sgr_app.forms import (
     AreaForm,
@@ -97,9 +97,10 @@ def _auditoria_valor(instance):
         }
     if isinstance(instance, Cargo):
         return {
+            'codigo': instance.codigo,
             'nombre': instance.nombre,
             'descripcion': instance.descripcion,
-            'departamento_id': instance.departamento_id,
+            'area_id': instance.area_id,
             'activo': instance.activo,
         }
     if isinstance(instance, Solicitante):
@@ -228,9 +229,17 @@ class ActivoListView(AdministradorRequiredMixin, ListView):
     create_url = ''
     update_url_name = ''
     delete_url_name = ''
+    supports_reactivation = False
+    active_field = 'activo'
+    reactivation_entity = ''
 
     def get_queryset(self):
-        queryset = super().get_queryset().filter(activo=True).order_by('nombre')
+        is_inactive_view = self.supports_reactivation and (
+            self.request.GET.get('estado') == 'inactivas'
+        )
+        queryset = super().get_queryset().filter(
+            **{self.active_field: not is_inactive_view},
+        ).order_by('nombre')
         term = self.request.GET.get('q', '').strip()
         if term:
             search = Q()
@@ -247,6 +256,12 @@ class ActivoListView(AdministradorRequiredMixin, ListView):
             'update_url_name': self.update_url_name,
             'delete_url_name': self.delete_url_name,
             'search_term': self.request.GET.get('q', '').strip(),
+            'supports_reactivation': self.supports_reactivation,
+            'reactivation_entity': self.reactivation_entity,
+            'show_inactive': (
+                self.supports_reactivation
+                and self.request.GET.get('estado') == 'inactivas'
+            ),
             'can_manage': (
                 self.request.user.is_superuser
                 or self.request.user.rol == Usuario.Rol.ADMINISTRADOR
@@ -300,10 +315,13 @@ class ActivoBooleanListView(AdministradorRequiredMixin, ListView):
     create_url = ''
     update_url_name = ''
     delete_url_name = ''
+    supports_reactivation = True
+    reactivation_entity = ''
 
     def get_queryset(self):
+        show_inactive = self.request.GET.get('estado') == 'inactivas'
         queryset = super().get_queryset().filter(
-            **{self.activo_field: True}
+            **{self.activo_field: not show_inactive}
         )
         term = self.request.GET.get('q', '').strip()
         if term and self.search_fields:
@@ -321,6 +339,12 @@ class ActivoBooleanListView(AdministradorRequiredMixin, ListView):
             'update_url_name': self.update_url_name,
             'delete_url_name': self.delete_url_name,
             'search_term': self.request.GET.get('q', '').strip(),
+            'supports_reactivation': self.supports_reactivation,
+            'reactivation_entity': self.reactivation_entity,
+            'show_inactive': (
+                self.supports_reactivation
+                and self.request.GET.get('estado') == 'inactivas'
+            ),
             'can_manage': (
                 self.request.user.is_superuser
                 or self.request.user.rol == Usuario.Rol.ADMINISTRADOR
@@ -379,13 +403,82 @@ class AuditedSoftDeleteView(AdministradorRequiredMixin, DeleteView):
         return HttpResponseRedirect(self.get_success_url())
 
 
+REACTIVATABLE_RECORDS = {
+    'delegaciones': (Delegacion, 'activo', 'mantenedor_delegaciones_list', False, False),
+    'cargos': (Cargo, 'activo', 'mantenedor_cargos_list', False, False),
+    'items': (ItemMedicion, 'activo', 'mantenedor_items_list', False, False),
+    'periodos': (PeriodoMedicion, 'estado', 'mantenedor_periodos_list', False, False),
+    'solicitantes': (Solicitante, 'estado', 'mantenedor_solicitantes_list', True, True),
+    'funcionarios': (Usuario, 'is_active', 'mantenedor_funcionarios_list', False, False),
+    'roles': (Rol, 'estado', 'mantenedor_roles_list', False, False),
+    'areas': (Area, 'estado', 'mantenedor_areas_list', False, False),
+    'catalogos': (CatalogoServicio, 'activo', 'mantenedor_items_list', True, True),
+}
+
+
+class ReactivateRecordView(AdministradorRequiredMixin, View):
+    def dispatch(self, request, *args, **kwargs):
+        record_config = REACTIVATABLE_RECORDS.get(kwargs['entity'])
+        if not record_config:
+            raise PermissionDenied
+        (
+            self.model,
+            self.active_field,
+            self.list_url_name,
+            self.allow_supervisor,
+            self.supervisor_can_manage,
+        ) = record_config
+        return super().dispatch(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        record = get_object_or_404(
+            self.model,
+            pk=kwargs['pk'],
+            **{self.active_field: False},
+        )
+        previous_value = str(record)
+        with transaction.atomic():
+            setattr(record, self.active_field, True)
+            record.save(update_fields=[self.active_field])
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                evento='CREACION',
+                accion='REACTIVACION',
+                entidad=self.model.__name__,
+                identificador=str(record.pk),
+                identificador_registro=str(record.pk),
+                valor_anterior={
+                    'registro': previous_value,
+                    self.active_field: False,
+                },
+                valor_nuevo={
+                    'registro': previous_value,
+                    self.active_field: True,
+                },
+                ip_origen=request.META.get('REMOTE_ADDR'),
+            )
+        messages.success(request, 'Registro reactivado correctamente.')
+        return HttpResponseRedirect(
+            f'{reverse_lazy(self.list_url_name)}?estado=inactivas'
+        )
+
+
 class DelegacionListView(ActivoListView):
     allow_supervisor = True
+    supports_reactivation = True
+    reactivation_entity = 'delegaciones'
+    supports_reactivation = True
     model = Delegacion
     template_name = 'mantenedores/list.html'
     context_object_name = 'object_list'
     search_fields = ('nombre', 'codigo', 'email', 'ambito')
     title = 'Mantenedor de delegaciones'
+    extra_context = {
+        'secondary_column_label': 'Código',
+        'detail_column_label': 'Teléfono',
+        'is_cargo_list': False,
+    }
     create_url = reverse_lazy('mantenedor_delegaciones_create')
     update_url_name = 'mantenedor_delegaciones_update'
     delete_url_name = 'mantenedor_delegaciones_delete'
@@ -430,14 +523,50 @@ class DelegacionDeleteView(SoftDeleteView):
         return Delegacion.objects.filter(activo=True)
 
 
+class DelegacionReactivateView(AdministradorRequiredMixin, View):
+    def post(self, request, *args, **kwargs):
+        delegacion = get_object_or_404(
+            Delegacion,
+            pk=kwargs['pk'],
+            activo=False,
+        )
+        with transaction.atomic():
+            delegacion.activo = True
+            delegacion.save(update_fields=['activo'])
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                evento='CREACION',
+                accion='REACTIVACION',
+                entidad='Delegacion',
+                identificador=str(delegacion.pk),
+                identificador_registro=str(delegacion.pk),
+                valor_anterior={'registro': str(delegacion), 'activo': False},
+                valor_nuevo={'registro': str(delegacion), 'activo': True},
+                ip_origen=request.META.get('REMOTE_ADDR'),
+            )
+        messages.success(request, 'Delegación reactivada correctamente.')
+        return HttpResponseRedirect(
+            f'{reverse_lazy("mantenedor_delegaciones_list")}?estado=inactivas'
+        )
+
+
 class CargoListView(ActivoListView):
     allow_supervisor = True
+    supports_reactivation = True
+    reactivation_entity = 'cargos'
     model = Cargo
     template_name = 'mantenedores/list.html'
     context_object_name = 'object_list'
-    queryset = Cargo.objects.select_related('departamento', 'departamento__delegacion')
-    search_fields = ('nombre', 'descripcion', 'departamento__nombre_departamento')
+    queryset = Cargo.objects.select_related('area')
+    search_fields = ('codigo', 'nombre', 'descripcion', 'area__nombre')
     title = 'Mantenedor de cargos'
+    extra_context = {
+        'secondary_column_label': 'Código',
+        'detail_column_label': 'Descripción',
+        'third_column_label': 'Área',
+        'is_cargo_list': True,
+    }
     create_url = reverse_lazy('mantenedor_cargos_create')
     update_url_name = 'mantenedor_cargos_update'
     delete_url_name = 'mantenedor_cargos_delete'
@@ -489,6 +618,7 @@ class ItemListView(ActivoBooleanListView):
     queryset = ItemMedicion.objects.select_related('cargo', 'periodo')
     template_name = 'mantenedores/items_list.html'
     activo_field = 'activo'
+    reactivation_entity = 'items'
     ordering_field = 'nombre_item'
     search_fields = ('nombre_item', 'descripcion', 'tipo_unidad')
     title = 'Mantenedor de ítems'
@@ -500,10 +630,14 @@ class ItemListView(ActivoBooleanListView):
         context = super().get_context_data(**kwargs)
         catalogo_form = kwargs.get('catalogo_form') or CatalogoServicioForm()
         user = self.request.user
+        show_inactive = context['show_inactive']
         context.update({
-            'catalogo_servicios': CatalogoServicio.objects.filter(activo=True).order_by(
-                'area', 'nombre'
+            'catalogo_servicios': CatalogoServicio.objects.filter(
+                activo=not show_inactive,
+            ).order_by(
+                'area', 'nombre',
             ),
+            'catalogo_reactivation_entity': 'catalogos',
             'catalogo_form': catalogo_form,
             'catalogo_form_title': (
                 'Modificar servicio' if catalogo_form.instance.pk else 'Agregar servicio'
@@ -645,6 +779,7 @@ class PeriodoListView(ActivoBooleanListView):
     model = PeriodoMedicion
     template_name = 'mantenedores/periodos_list.html'
     activo_field = 'estado'
+    reactivation_entity = 'periodos'
     ordering_field = '-fecha_inicio'
     search_fields = ('nombre',)
     title = 'Mantenedor de períodos'
@@ -723,6 +858,7 @@ class SolicitanteListView(ActivoBooleanListView):
     model = Solicitante
     template_name = 'mantenedores/solicitantes_list.html'
     activo_field = 'estado'
+    reactivation_entity = 'solicitantes'
     ordering_field = 'nombre'
     search_fields = (
         'run',
@@ -791,6 +927,7 @@ class FuncionarioListView(ActivoBooleanListView):
     model = Usuario
     template_name = 'mantenedores/funcionarios_list.html'
     activo_field = 'is_active'
+    reactivation_entity = 'funcionarios'
     ordering_field = 'last_name'
     search_fields = ('rut_anonimizado', 'first_name', 'last_name', 'email')
     title = 'Mantenedor de funcionarios'
@@ -846,6 +983,7 @@ class RolListView(ActivoBooleanListView):
     model = Rol
     template_name = 'mantenedores/roles_list.html'
     activo_field = 'estado'
+    reactivation_entity = 'roles'
     ordering_field = 'nombre_rol'
     search_fields = ('nombre_rol', 'descripcion')
     title = 'Mantenedor de roles'
@@ -897,6 +1035,7 @@ class AreaListView(ActivoBooleanListView):
     model = Area
     template_name = 'mantenedores/areas_list.html'
     activo_field = 'estado'
+    reactivation_entity = 'areas'
     ordering_field = 'nombre'
     search_fields = ('nombre', 'descripcion')
     title = 'Mantenedor de áreas'

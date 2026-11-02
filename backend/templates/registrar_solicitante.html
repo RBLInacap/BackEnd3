@@ -61,10 +61,10 @@
       <div class="col-12 col-md-6">
         <label class="form-label fw-semibold" for="telefono">Teléfono</label>
         <div class="input-group">
-          <span class="input-group-text">+56</span>
-          <input id="telefono" name="telefono" type="tel" class="form-control {% if form.telefono.errors %}is-invalid{% endif %}" value="{{ form_data.telefono|default:'' }}" placeholder="9 1234 5678" inputmode="numeric" maxlength="20" aria-describedby="telefonoError">
+          <span class="input-group-text">+56 9</span>
+          <input id="telefono" name="telefono" type="tel" class="form-control {% if form.telefono.errors %}is-invalid{% endif %}" value="{{ form_data.telefono|default:'' }}" placeholder="12345678" inputmode="numeric" maxlength="8" pattern="[0-9]{8}" data-chilean-mobile aria-describedby="telefonoError">
         </div>
-        <small class="text-muted">Opcional. Se aceptan hasta 9 dígitos nacionales válidos.</small>
+        <small class="text-muted">Opcional. Ingresa los 8 dígitos restantes, solo números.</small>
         <div id="telefonoError" data-error-for="telefono" class="invalid-feedback {% if form.telefono.errors %}d-block{% endif %}">{% if form.telefono.errors %}{{ form.telefono.errors|join:' ' }}{% endif %}</div>
       </div>
     </div>
@@ -113,12 +113,10 @@
       }
     }
     function formatPhone() {
-      let digits = phone.value.replace(/\D/g, '');
-      if (digits.startsWith('56') && digits.length > 9) digits = digits.slice(2);
-      digits = digits.slice(0, 9);
-      phone.value = digits.length > 5 ? `${digits[0]} ${digits.slice(1, 5)} ${digits.slice(5)}` : digits;
-      const valid = !digits || (digits.length === 9 && '2345679'.includes(digits[0]) && new Set(digits).size > 1);
-      return showError(phone, valid ? '' : 'Ingresa un teléfono chileno válido de 9 dígitos.');
+      const digits = window.chileanMobileDigits(phone.value);
+      phone.value = digits;
+      const valid = !digits || (digits.length === 8 && new Set(`9${digits}`).size > 1);
+      return showError(phone, valid ? '' : 'Ingresa 8 dígitos válidos para un móvil chileno.');
     }
     function validateRequiredField(field) {
       const value = field.value.trim();

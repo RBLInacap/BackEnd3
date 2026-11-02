@@ -2,7 +2,7 @@ import csv
 from django.shortcuts import render, redirect, get_object_or_404
 from django.core.paginator import Paginator
 from django.http import HttpResponse
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.urls import reverse
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
 from django.contrib import messages
@@ -911,6 +911,13 @@ def web_personal(request):
             fecha_actividad__lte=periodo.fecha_termino,
         ).select_related(
             'item_medicion', 'delegacion', 'compromiso_agenda'
+        ).annotate(
+            tiene_evidencia_aprobada=Exists(
+                Evidencia.objects.filter(
+                    actividad_id=OuterRef('pk'),
+                    estado=Evidencia.Estado.APROBADA,
+                )
+            )
         ).prefetch_related('evidencias', 'compromisos').order_by('-fecha_actividad', '-fecha_registro')
         if periodo:
             metricas = calcular_metricas_funcionario(funcionario, periodo)
@@ -1338,12 +1345,22 @@ def web_agregar_evidencia(request, actividad_id):
         return redirect('web_personal')
     if request.method != 'POST':
         return redirect(f"{reverse('web_personal')}?id={actividad.funcionario_id}")
-    fotos = request.FILES.getlist('fotos')
-    if not fotos:
-        messages.error(request, 'Selecciona al menos una fotografía para agregar evidencia.')
-        return redirect(f"{reverse('web_personal')}?id={actividad.funcionario_id}")
     try:
         with transaction.atomic():
+            actividad = Actividad.objects.select_for_update().get(pk=actividad.pk)
+            if Evidencia.objects.filter(
+                actividad=actividad,
+                estado=Evidencia.Estado.APROBADA,
+            ).exists():
+                messages.error(
+                    request,
+                    'La actividad está cerrada porque ya tiene una evidencia aprobada.',
+                )
+                return redirect(f"{reverse('web_personal')}?id={actividad.funcionario_id}")
+            fotos = request.FILES.getlist('fotos')
+            if not fotos:
+                messages.error(request, 'Selecciona al menos una fotografía para agregar evidencia.')
+                return redirect(f"{reverse('web_personal')}?id={actividad.funcionario_id}")
             evidencias = _guardar_fotos(actividad, fotos, request.user)
             RegistroAuditoria.objects.create(
                 usuario=request.user,
@@ -2305,7 +2322,16 @@ def web_casos_sociales(request):
                 casos.select_related('delegacion'),
                 pk=request.POST.get('caso_id'),
             )
-            form = AtencionSocialForm(request.POST)
+            etapa = (
+                caso.atenciones.order_by('-etapa')
+                .values_list('etapa', flat=True)
+                .first()
+                or 0
+            ) + 1
+            form = AtencionSocialForm(
+                request.POST,
+                etapa=min(etapa, 3),
+            )
             if form.is_valid():
                 try:
                     with transaction.atomic():
@@ -2314,6 +2340,7 @@ def web_casos_sociales(request):
                             tipo_atencion=form.cleaned_data['tipo_atencion'],
                             detalle=form.cleaned_data['detalle'],
                             resultado=form.cleaned_data['resultado'],
+                            fecha_gestion=form.cleaned_data['fecha_gestion'],
                         )
                         RegistroAuditoria.objects.create(
                             usuario=user,
@@ -2340,7 +2367,15 @@ def web_casos_sociales(request):
                     )
                     return redirect('web_casos_sociales')
             else:
-                messages.error(request, 'Completa los datos de la gestión social.')
+                errores = [
+                    error
+                    for field_errors in form.errors.values()
+                    for error in field_errors
+                ]
+                messages.error(
+                    request,
+                    '; '.join(errores) or 'Completa los datos de la gestión social.',
+                )
         else:
             raise PermissionDenied
 
@@ -2349,6 +2384,7 @@ def web_casos_sociales(request):
         'casos': casos,
         'case_form': case_form,
         'puede_crear_casos': True,
+        'hoy': timezone.localdate(),
     })
 
 def web_auditoria(request):

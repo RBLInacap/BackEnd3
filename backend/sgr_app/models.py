@@ -42,6 +42,15 @@ def generar_codigo_evidencia(prefijo="SGR"):
     return f"{prefijo}{aleatorio}"
 
 
+def generar_codigo_cargo():
+    chars = (
+        string.ascii_uppercase.replace('O', '').replace('I', '')
+        + string.digits.replace('0', '').replace('1', '')
+    )
+    aleatorio = ''.join(secrets.choice(chars) for _ in range(8))
+    return f'CAR-{aleatorio}'
+
+
 # =============================================================================
 # 7. CLASE ROL
 # =============================================================================
@@ -49,7 +58,7 @@ class Rol(models.Model):
     """
     Entidad de Roles y Privilegios en el modelo de dominio UML (Clase Rol).
     """
-    nombre_rol = models.CharField(max_length=50, unique=True, default='OPERATIVO', verbose_name="Nombre del Rol")
+    nombre_rol = models.CharField(max_length=50, unique=True, verbose_name="Nombre del Rol")
     descripcion = models.TextField(blank=True, null=True, verbose_name="Descripción de Permisos")
     estado = models.BooleanField(default=True, verbose_name="Estado Activo")
 
@@ -230,41 +239,27 @@ class Delegacion(models.Model):
 
 
 # =============================================================================
-# CLASE DEPARTAMENTO
-# =============================================================================
-class Departamento(models.Model):
-    """
-    Unidad organizativa administrativa dentro de una delegación (Clase Departamento).
-    """
-    nombre_departamento = models.CharField(max_length=150, verbose_name="Nombre del Departamento")
-    descripcion = models.TextField(blank=True, null=True, verbose_name="Descripción")
-    delegacion = models.ForeignKey(Delegacion, on_delete=models.CASCADE, related_name='departamentos', verbose_name="Delegación Perteneciente")
-
-    class Meta:
-        db_table = 'Departamentos'
-        verbose_name = 'Departamento'
-        verbose_name_plural = 'Departamentos'
-
-    def __str__(self):
-        return f"{self.nombre_departamento} - {self.delegacion.nombre}"
-
-    @property
-    def nombre(self):
-        return self.nombre_departamento
-
-    @nombre.setter
-    def nombre(self, val):
-        self.nombre_departamento = val
-
-
-# =============================================================================
 # 9. CLASE CARGO
 # =============================================================================
 class Cargo(models.Model):
+    codigo = models.CharField(
+        max_length=12,
+        unique=True,
+        default=generar_codigo_cargo,
+        editable=False,
+        verbose_name='Código',
+    )
     nombre = models.CharField(max_length=100, unique=True)
     descripcion = models.TextField(blank=True, null=True)
     activo = models.BooleanField(default=True)
-    departamento = models.ForeignKey(Departamento, on_delete=models.SET_NULL, null=True, blank=True, related_name='cargos', verbose_name="Departamento Asignado")
+    area = models.ForeignKey(
+        Area,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cargos',
+        verbose_name="Área",
+    )
 
     class Meta:
         verbose_name = "Cargo"
@@ -1870,7 +1865,14 @@ class CasoSocial(models.Model):
         self.full_clean()
         super().save(*args, **kwargs)
 
-    def registrar_atencion(self, funcionario, tipo_atencion: str, detalle: str, resultado: str):
+    def registrar_atencion(
+        self,
+        funcionario,
+        tipo_atencion: str,
+        detalle: str,
+        resultado: str,
+        fecha_gestion,
+    ):
         """RN-012: Registra una de las hasta 3 gestiones para este caso social."""
         with transaction.atomic():
             caso = type(self).objects.select_for_update().get(pk=self.pk)
@@ -1886,6 +1888,11 @@ class CasoSocial(models.Model):
                 raise ValueError(
                     "Un caso social no puede registrar más de 3 gestiones asociadas (RN-012)."
                 )
+            fecha_por_etapa = {
+                1: {'fecha_visita_programada': fecha_gestion},
+                2: {'fecha_visita': fecha_gestion},
+                3: {'fecha_entrega_beneficio': fecha_gestion},
+            }
             return AtencionSocial.objects.create(
                 caso=caso,
                 etapa=etapa_actual,
@@ -1893,6 +1900,7 @@ class CasoSocial(models.Model):
                 tipo_atencion=tipo_atencion,
                 detalle=detalle,
                 resultado=resultado,
+                **fecha_por_etapa[etapa_actual],
             )
 
     registrarAtencion = registrar_atencion
@@ -1921,6 +1929,9 @@ class AtencionSocial(models.Model):
     caso = models.ForeignKey(CasoSocial, on_delete=models.CASCADE, related_name='atenciones')
     etapa = models.PositiveSmallIntegerField(choices=ETAPAS)
     fecha = models.DateField(default=timezone.localdate)
+    fecha_visita_programada = models.DateField(null=True, blank=True)
+    fecha_visita = models.DateField(null=True, blank=True)
+    fecha_entrega_beneficio = models.DateField(null=True, blank=True)
     tipo_atencion = models.CharField(max_length=100)
     detalle = models.TextField()
     resultado = models.CharField(max_length=150)
@@ -1941,6 +1952,30 @@ class AtencionSocial(models.Model):
             raise ValidationError({'caso': 'Selecciona un caso social válido.'})
         if not self.funcionario_id:
             raise ValidationError({'funcionario': 'Selecciona un funcionario válido.'})
+        fecha_por_etapa = {
+            1: ('fecha_visita_programada', 'La fecha programada de visita'),
+            2: ('fecha_visita', 'La fecha de visita realizada'),
+            3: ('fecha_entrega_beneficio', 'La fecha de entrega del beneficio'),
+        }
+        campo_fecha, etiqueta_fecha = fecha_por_etapa.get(
+            self.etapa,
+            (None, None),
+        )
+        if not campo_fecha:
+            raise ValidationError({'etapa': 'Selecciona una etapa válida.'})
+        fecha_gestion = getattr(self, campo_fecha)
+        if not fecha_gestion:
+            raise ValidationError({
+                campo_fecha: f'{etiqueta_fecha} es obligatoria para esta gestión.'
+            })
+        if self.etapa == 1 and fecha_gestion < timezone.localdate():
+            raise ValidationError({
+                campo_fecha: 'La fecha programada de visita no puede ser anterior a hoy.'
+            })
+        if self.etapa in (2, 3) and fecha_gestion > timezone.localdate():
+            raise ValidationError({
+                campo_fecha: 'La fecha de una gestión realizada no puede ser futura.'
+            })
 
     def save(self, *args, **kwargs):
         self.full_clean()

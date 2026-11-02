@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils import timezone
 from sgr_app.services.evidencias import metadatos_archivo_evidencia, validar_archivo_evidencia
 from sgr_app.models import (
     Usuario, Delegacion, Cargo, PeriodoMedicion, CatalogoServicio,
@@ -124,6 +125,14 @@ class EvidenciaSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
+        actividad = attrs.get('actividad')
+        if self.instance is None and actividad and Evidencia.objects.filter(
+            actividad=actividad,
+            estado=Evidencia.Estado.APROBADA,
+        ).exists():
+            raise serializers.ValidationError({
+                'actividad': 'La actividad está cerrada porque ya tiene una evidencia aprobada.'
+            })
         for campo in ('archivo_foto', 'archivo_foto_2', 'archivo_foto_3'):
             archivo = attrs.get(campo)
             if archivo:
@@ -235,6 +244,40 @@ class AtencionSocialSerializer(serializers.ModelSerializer):
     class Meta:
         model = AtencionSocial
         fields = '__all__'
+
+    def validate(self, attrs):
+        etapa = attrs.get(
+            'etapa',
+            self.instance.etapa if self.instance else None,
+        )
+        fecha_fields = {
+            1: ('fecha_visita_programada', 'La fecha programada de visita'),
+            2: ('fecha_visita', 'La fecha de visita realizada'),
+            3: ('fecha_entrega_beneficio', 'La fecha de entrega del beneficio'),
+        }
+        if etapa not in fecha_fields:
+            raise serializers.ValidationError({'etapa': 'Selecciona una etapa válida.'})
+        fecha_field, label = fecha_fields[etapa]
+        fecha = attrs.get(
+            fecha_field,
+            getattr(self.instance, fecha_field, None)
+            if self.instance
+            else None,
+        )
+        if not fecha:
+            raise serializers.ValidationError({
+                fecha_field: f'{label} es obligatoria para esta gestión.'
+            })
+        today = timezone.localdate()
+        if etapa == 1 and fecha < today:
+            raise serializers.ValidationError({
+                fecha_field: 'La fecha programada de visita no puede ser anterior a hoy.'
+            })
+        if etapa in (2, 3) and fecha > today:
+            raise serializers.ValidationError({
+                fecha_field: 'La fecha de una gestión realizada no puede ser futura.'
+            })
+        return attrs
 
 
 class CasoSocialSerializer(serializers.ModelSerializer):

@@ -5,7 +5,10 @@ from django.core.exceptions import ValidationError
 
 _RUT_PATTERN = re.compile(r'^(?P<body>(?:\d{1,2}\.)?\d{3}\.\d{3}|\d{7,8})-(?P<dv>[\dkK])$')
 _FORMATTED_RUT_PATTERN = re.compile(r'^(?P<body>\d{1,2}\.\d{3}\.\d{3})-(?P<dv>[\dkK])$')
-_PHONE_PATTERN = re.compile(r'^(?:\+56[\s.-]?)?[2-79](?:[\s.-]?\d){8}$')
+_PHONE_PATTERN = re.compile(
+    r'^(?:\+56[\s.-]?9(?:[\s.-]?[0-9]){8}|9(?:[\s.-]?[0-9]){8}|'
+    r'[0-9](?:[\s.-]?[0-9]){7})$'
+)
 
 
 def normalize_chilean_rut(value):
@@ -46,17 +49,22 @@ def normalize_chilean_phone(value):
     phone = (value or '').strip()
     if not phone:
         return ''
-    if not _PHONE_PATTERN.fullmatch(phone):
-        raise ValidationError('Usa un teléfono chileno local de 9 dígitos o el prefijo +56.')
 
-    digits = re.sub(r'\D', '', phone)
-    if phone.startswith('+56'):
-        digits = digits[2:]
-    if len(digits) != 9 or digits[0] not in '2345679':
-        raise ValidationError('El número debe tener 9 dígitos y comenzar con 9 (móvil) o un prefijo fijo chileno válido.')
-    if len(set(digits)) == 1:
-        raise ValidationError('Ingresa un número telefónico asignable; no se aceptan números repetidos.')
-    return f'+56{digits}'
+    if not _PHONE_PATTERN.fullmatch(phone):
+        raise ValidationError('Ingresa 8 dígitos para un teléfono móvil chileno con prefijo +56 9.')
+
+    clean_phone = re.sub(r'[\s.-]', '', phone)
+    if clean_phone.startswith('+569'):
+        subscriber_number = clean_phone[4:]
+    elif len(clean_phone) == 9:
+        subscriber_number = clean_phone[1:]
+    else:
+        subscriber_number = clean_phone
+
+    if len(set(f'9{subscriber_number}')) == 1:
+        raise ValidationError('Ingresa un número telefónico válido; no se aceptan números repetidos.')
+
+    return f'+569{subscriber_number}'
 
 
 def validate_chilean_phone(value):

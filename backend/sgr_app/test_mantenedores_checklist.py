@@ -1,7 +1,9 @@
-from datetime import date
+from datetime import date, timedelta
 
 from django.test import TestCase
+from django.utils import timezone
 
+from sgr_app.forms import DelegacionForm, MantenedorPeriodoForm
 from sgr_app.models import (
     Area,
     Cargo,
@@ -9,6 +11,7 @@ from sgr_app.models import (
     Delegacion,
     ItemMedicion,
     PeriodoMedicion,
+    RegistroAuditoria,
     Rol,
     Solicitante,
     Usuario,
@@ -28,12 +31,30 @@ class MantenedoresChecklistTests(TestCase):
             nombre='Delegación para checklist',
             codigo='CHK',
         )
+        self.area = Area.objects.create(nombre='Área para checklist')
         self.cargo = Cargo.objects.create(nombre='Cargo para checklist')
         self.periodo = PeriodoMedicion.objects.create(
             nombre='Período base checklist',
             fecha_inicio=date(2026, 10, 1),
             fecha_termino=date(2026, 12, 31),
         )
+
+    def test_delegation_phone_only_accepts_digits(self):
+        form_data = {
+            'nombre': 'Delegación prueba',
+            'codigo': 'NUM',
+            'direccion': '',
+            'email': '',
+            'ambito': 'Urbano',
+            'telefono': '512206518',
+        }
+        valid_form = DelegacionForm(data=form_data)
+        self.assertTrue(valid_form.is_valid(), valid_form.errors)
+
+        invalid_form = DelegacionForm(data={**form_data, 'telefono': 'sjdfasdf'})
+        self.assertFalse(invalid_form.is_valid())
+        self.assertIn('telefono', invalid_form.errors)
+        self.assertIn('solo números', invalid_form.errors['telefono'][0])
 
     def assert_crud_flow(
         self,
@@ -116,12 +137,12 @@ class MantenedoresChecklistTests(TestCase):
                 'create_data': {
                     'nombre': 'Cargo CRUD',
                     'descripcion': 'Descripción de prueba',
-                    'departamento': '',
+                    'area': str(self.area.pk),
                 },
                 'update_data': {
                     'nombre': 'Cargo CRUD actualizado',
                     'descripcion': 'Descripción actualizada',
-                    'departamento': '',
+                    'area': str(self.area.pk),
                 },
                 'find_object': lambda: Cargo.objects.filter(nombre='Cargo CRUD').first(),
                 'active_field': 'activo',
@@ -166,34 +187,12 @@ class MantenedoresChecklistTests(TestCase):
                 'update_url': '/mantenedores/periodos/{pk}/modificar/',
                 'delete_url': '/mantenedores/periodos/{pk}/desactivar/',
                 'create_data': {
+                    **self.period_form_data(timezone.localdate(), timezone.localdate()),
                     'nombre': 'Período CRUD',
-                    'anio': '2026',
-                    'trimestre': '4',
-                    'fecha_inicio': '2026-10-01',
-                    'fecha_termino': '2026-12-31',
-                    'dias_computables': '92',
-                    'umbral_verde': '80',
-                    'umbral_ambar': '50',
-                    'umbral_semaforo_verde': '100',
-                    'umbral_semaforo_ambar': '60',
-                    'umbral_colectivo': '80',
-                    'tope_cumplimiento': '150',
-                    'estado': 'on',
                 },
                 'update_data': {
+                    **self.period_form_data(timezone.localdate(), timezone.localdate()),
                     'nombre': 'Período CRUD actualizado',
-                    'anio': '2026',
-                    'trimestre': '4',
-                    'fecha_inicio': '2026-10-01',
-                    'fecha_termino': '2026-12-31',
-                    'dias_computables': '92',
-                    'umbral_verde': '80',
-                    'umbral_ambar': '50',
-                    'umbral_semaforo_verde': '100',
-                    'umbral_semaforo_ambar': '60',
-                    'umbral_colectivo': '80',
-                    'tope_cumplimiento': '150',
-                    'estado': 'on',
                 },
                 'find_object': lambda: PeriodoMedicion.objects.filter(
                     nombre='Período CRUD',
@@ -243,7 +242,8 @@ class MantenedoresChecklistTests(TestCase):
                     'apellidoPaterno': 'Apellido',
                     'apellidoMaterno': 'Prueba',
                     'correo': 'funcionario.crud@example.com',
-                    'rol': Usuario.Rol.ADMINISTRATIVO,
+                    'rol': 'FUNCIONARIO',
+                    'area_entidad': str(self.area.pk),
                     'estado': 'on',
                 },
                 'update_data': {
@@ -252,7 +252,8 @@ class MantenedoresChecklistTests(TestCase):
                     'apellidoPaterno': 'Apellido',
                     'apellidoMaterno': 'Prueba',
                     'correo': 'funcionario.crud@example.com',
-                    'rol': Usuario.Rol.ADMINISTRATIVO,
+                    'rol': 'FUNCIONARIO',
+                    'area_entidad': str(self.area.pk),
                     'estado': 'on',
                 },
                 'find_object': lambda: Usuario.objects.filter(
@@ -357,6 +358,253 @@ class MantenedoresChecklistTests(TestCase):
         self.assertContains(response, 'dropdown-menu nav-dropdown-menu')
         self.assertContains(response, 'dropdown-item nav-dropdown-item active')
         self.assertContains(response, 'bi-geo-alt')
+
+    def test_cargo_maintainer_assigns_area_and_generates_code(self):
+        response = self.client.post('/mantenedores/cargos/crear/', {
+            'nombre': 'Cargo con área',
+            'descripcion': 'Cargo asociado a un área',
+            'area': str(self.area.pk),
+        })
+        self.assertEqual(response.status_code, 302)
+
+        cargo = Cargo.objects.get(nombre='Cargo con área')
+        self.assertEqual(cargo.area, self.area)
+        self.assertTrue(cargo.codigo.startswith('CAR-'))
+        self.assertEqual(len(cargo.codigo), 12)
+
+        response = self.client.get('/mantenedores/cargos/')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Área')
+        self.assertContains(response, cargo.codigo)
+        self.assertContains(response, self.area.nombre)
+        self.assertNotContains(response, 'Departamento')
+
+        response = self.client.get('/mantenedores/delegaciones/')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Teléfono')
+        self.assertNotContains(response, 'Departamento')
+
+    def test_create_cargo_shows_active_areas_in_dropdown(self):
+        inactive_area = Area.objects.create(
+            nombre='Área inactiva para prueba',
+            estado=False,
+        )
+
+        response = self.client.get('/mantenedores/cargos/crear/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<select name="area"', html=False)
+        self.assertContains(response, f'value="{self.area.pk}"', html=False)
+        self.assertContains(response, self.area.nombre)
+        self.assertNotContains(response, inactive_area.nombre)
+        self.assertContains(response, 'Selecciona un área')
+
+    def test_functionary_role_dropdown_has_four_choices_and_maps_delegate(self):
+        response = self.client.get('/mantenedores/funcionarios/crear/')
+
+        self.assertEqual(response.status_code, 200)
+        role_field = response.context['form'].fields['rol']
+        self.assertEqual(
+            list(role_field.choices),
+            [
+                ('ADMINISTRADOR', 'Administrador'),
+                ('COORDINADOR', 'Coordinador'),
+                ('DELEGADO', 'Delegado'),
+                ('FUNCIONARIO', 'Funcionario'),
+            ],
+        )
+        self.assertNotIn('es_delegado', response.context['form'].fields)
+
+        response = self.client.post('/mantenedores/funcionarios/crear/', {
+            'run': '12.345.678-5',
+            'nombre': 'Persona',
+            'apellidoPaterno': 'Delegada',
+            'apellidoMaterno': 'Prueba',
+            'correo': 'delegada.prueba@example.com',
+            'rol': 'DELEGADO',
+            'area_entidad': str(self.area.pk),
+            'delegacion': str(self.delegacion.pk),
+            'estado': 'on',
+        })
+        self.assertEqual(response.status_code, 302)
+
+        funcionario = Usuario.objects.get(email='delegada.prueba@example.com')
+        self.assertEqual(funcionario.rol, Usuario.Rol.SUPERVISOR)
+        self.assertTrue(funcionario.es_delegado)
+
+    def test_functionary_requires_area(self):
+        response = self.client.post('/mantenedores/funcionarios/crear/', {
+            'run': '12.345.678-5',
+            'nombre': 'Persona',
+            'apellidoPaterno': 'Sin',
+            'apellidoMaterno': 'Área',
+            'correo': 'sin.area@example.com',
+            'rol': 'FUNCIONARIO',
+            'estado': 'on',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('area_entidad', response.context['form'].errors)
+        self.assertFalse(Usuario.objects.filter(email='sin.area@example.com').exists())
+
+    def test_new_role_name_does_not_default_to_operativo(self):
+        response = self.client.get('/mantenedores/roles/crear/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'value="OPERATIVO"')
+        self.assertEqual(response.context['form']['nombre_rol'].value(), None)
+
+    def test_inactive_maintainer_records_can_be_reactivated(self):
+        self.delegacion.activo = False
+        self.delegacion.save(update_fields=['activo'])
+        self.cargo.activo = False
+        self.cargo.save(update_fields=['activo'])
+        self.periodo.estado = False
+        self.periodo.save(update_fields=['estado'])
+        solicitante = Solicitante.objects.create(
+            nombre='Solicitante inactivo',
+            apellido='Prueba',
+            apellido_paterno='Prueba',
+            apellido_materno='Inactivo',
+            tipo_solicitante='VECINO',
+            estado=False,
+        )
+        funcionario = Usuario.objects.create_user(
+            username='funcionario.inactivo',
+            password='TestPassword123!',
+            email='funcionario.inactivo@example.com',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            is_active=False,
+        )
+        rol = Rol.objects.create(nombre_rol='Rol inactivo', estado=False)
+        area = Area.objects.create(nombre='Área inactiva', estado=False)
+        servicio = CatalogoServicio.objects.create(
+            codigo='SVC-INACTIVO',
+            nombre='Servicio inactivo',
+            activo=False,
+        )
+        item = ItemMedicion.objects.create(
+            cargo=self.cargo,
+            periodo=self.periodo,
+            nombre_item='Ítem inactivo',
+            meta_cuantitativa=1,
+            ponderador=100,
+            activo=False,
+        )
+        records = (
+            ('delegaciones', self.delegacion, 'activo', '/mantenedores/delegaciones/'),
+            ('cargos', self.cargo, 'activo', '/mantenedores/cargos/'),
+            ('items', item, 'activo', '/mantenedores/items/'),
+            ('periodos', self.periodo, 'estado', '/mantenedores/periodos/'),
+            ('solicitantes', solicitante, 'estado', '/mantenedores/solicitantes/'),
+            ('funcionarios', funcionario, 'is_active', '/mantenedores/funcionarios/'),
+            ('roles', rol, 'estado', '/mantenedores/roles/'),
+            ('areas', area, 'estado', '/mantenedores/areas/'),
+            ('catalogos', servicio, 'activo', '/mantenedores/items/'),
+        )
+
+        for entity, record, active_field, list_url in records:
+            with self.subTest(entity=entity):
+                inactive_response = self.client.get(f'{list_url}?estado=inactivas')
+                self.assertEqual(inactive_response.status_code, 200)
+                self.assertContains(inactive_response, 'Activar')
+                response = self.client.post(
+                    f'/mantenedores/{entity}/{record.pk}/reactivar/',
+                )
+                self.assertEqual(
+                    response.status_code,
+                    302,
+                    response.content.decode(),
+                )
+                record.refresh_from_db()
+                self.assertTrue(getattr(record, active_field))
+
+    def test_period_form_limits_dates_to_today_through_one_year(self):
+        today = timezone.localdate()
+        try:
+            maximum_date = today.replace(year=today.year + 1)
+        except ValueError:
+            maximum_date = today.replace(year=today.year + 1, day=28)
+
+        valid_form = MantenedorPeriodoForm(data=self.period_form_data(today, today))
+        self.assertTrue(valid_form.is_valid(), valid_form.errors)
+        self.assertEqual(
+            valid_form.fields['fecha_inicio'].widget.attrs['min'],
+            today.isoformat(),
+        )
+        self.assertEqual(
+            valid_form.fields['fecha_termino'].widget.attrs['max'],
+            maximum_date.isoformat(),
+        )
+
+        too_early = today - timedelta(days=1)
+        invalid_form = MantenedorPeriodoForm(
+            data=self.period_form_data(too_early, too_early),
+        )
+        self.assertFalse(invalid_form.is_valid())
+        self.assertIn('fecha_inicio', invalid_form.errors)
+        self.assertIn('fecha_termino', invalid_form.errors)
+
+        too_late = maximum_date + timedelta(days=1)
+        invalid_form = MantenedorPeriodoForm(
+            data=self.period_form_data(too_late, too_late),
+        )
+        self.assertFalse(invalid_form.is_valid())
+        self.assertIn('fecha_inicio', invalid_form.errors)
+        self.assertIn('fecha_termino', invalid_form.errors)
+
+    def period_form_data(self, start, end):
+        return {
+            'nombre': 'Período de validación',
+            'anio': str(start.year),
+            'trimestre': str((start.month - 1) // 3 + 1),
+            'fecha_inicio': start.isoformat(),
+            'fecha_termino': end.isoformat(),
+            'dias_computables': str((end - start).days + 1),
+            'umbral_verde': '80',
+            'umbral_ambar': '50',
+            'umbral_semaforo_verde': '100',
+            'umbral_semaforo_ambar': '60',
+            'umbral_colectivo': '80',
+            'tope_cumplimiento': '150',
+            'cerrado': '',
+            'estado': 'on',
+        }
+
+    def test_inactive_delegation_can_be_reactivated_from_same_maintainer(self):
+        delegacion = self.delegacion
+        delegacion.activo = False
+        delegacion.save(update_fields=['activo'])
+
+        response = self.client.get('/mantenedores/delegaciones/')
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, delegacion.nombre)
+        self.assertContains(response, 'Ver delegaciones inactivas')
+
+        response = self.client.get('/mantenedores/delegaciones/?estado=inactivas')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, delegacion.nombre)
+        self.assertContains(response, 'Activar')
+
+        response = self.client.post(
+            f'/mantenedores/delegaciones/{delegacion.pk}/reactivar/',
+        )
+        self.assertRedirects(
+            response,
+            '/mantenedores/delegaciones/?estado=inactivas',
+            fetch_redirect_response=False,
+        )
+        delegacion.refresh_from_db()
+        self.assertTrue(delegacion.activo)
+        response = self.client.get('/mantenedores/delegaciones/?estado=inactivas')
+        self.assertNotContains(response, delegacion.nombre)
+        response = self.client.get('/mantenedores/delegaciones/')
+        self.assertContains(response, delegacion.nombre)
+        self.assertTrue(RegistroAuditoria.objects.filter(
+            entidad='Delegacion',
+            identificador=str(delegacion.pk),
+            accion='REACTIVACION',
+        ).exists())
 
     def test_supervisor_can_read_maintainers_and_manage_requesters_and_catalog(self):
         supervisor = Usuario.objects.create_user(

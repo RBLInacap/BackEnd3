@@ -398,6 +398,19 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
     queryset = Evidencia.objects.all().select_related('actividad', 'verificador')
     serializer_class = EvidenciaSerializer
 
+    def perform_create(self, serializer):
+        actividad = serializer.validated_data['actividad']
+        with transaction.atomic():
+            actividad = Actividad.objects.select_for_update().get(pk=actividad.pk)
+            if Evidencia.objects.filter(
+                actividad=actividad,
+                estado=Evidencia.Estado.APROBADA,
+            ).exists():
+                raise DRFValidationError({
+                    'actividad': 'La actividad está cerrada porque ya tiene una evidencia aprobada.'
+                })
+            serializer.save()
+
     def get_queryset(self):
         qs = Evidencia.objects.all()
         if self.request.user.es_administrativo:

@@ -18,6 +18,7 @@ from PIL import Image
 from sgr_app.models import (
     Actividad,
     AjusteIncentivo,
+    Area,
     AtencionSocial,
     Cargo,
     CasoSocial,
@@ -66,6 +67,7 @@ class ActivityWorkflowTests(TestCase):
         self.period_end = next_quarter_start - timedelta(days=1)
 
         self.delegacion = Delegacion.objects.create(nombre='Delegación de prueba', codigo='TST')
+        self.area = Area.objects.create(nombre='Área de prueba')
         self.cargo = Cargo.objects.create(nombre='Gestor de prueba')
         self.funcionario = Usuario.objects.create_user(
             username='funcionario.workflow',
@@ -118,7 +120,7 @@ class ActivityWorkflowTests(TestCase):
             'last_name': 'Funcionaria Prueba',
             'email': 'andrea.funcionaria@example.com',
             'email_confirmacion': 'andrea.funcionaria@example.com',
-            'telefono': '9 8765 4321',
+            'telefono': '87654321',
             'password_actual': '',
             'password_nueva': '',
             'password_confirmacion': '',
@@ -171,7 +173,7 @@ class ActivityWorkflowTests(TestCase):
         response = self.client.post('/mi-ficha/', self.profile_form(telefono='123'))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Usa un teléfono chileno local de 9 dígitos o el prefijo +56.')
+        self.assertContains(response, 'Ingresa 8 dígitos para un teléfono móvil chileno con prefijo +56 9.')
         self.funcionario.refresh_from_db()
         self.assertIsNone(self.funcionario.telefono)
 
@@ -659,6 +661,55 @@ class ActivityWorkflowTests(TestCase):
         self.assertContains(segunda_pagina, 'Página 2 de 2')
         self.assertIn(f'item={self.item.pk}'.encode(), segunda_pagina.content)
         self.assertIn(b'pagina=1', segunda_pagina.content)
+
+    def test_approved_evidence_closes_activity_for_additional_evidence(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Actividad cerrada por aprobación',
+        )
+        Evidencia.objects.create(
+            actividad=actividad,
+            estado=Evidencia.Estado.APROBADA,
+        )
+
+        dashboard_response = self.client.get('/personal/')
+        self.assertEqual(dashboard_response.status_code, 200)
+        actividad_en_contexto = next(
+            entry
+            for entry in dashboard_response.context['actividades']
+            if entry.pk == actividad.pk
+        )
+        self.assertTrue(actividad_en_contexto.tiene_evidencia_aprobada)
+        self.assertContains(dashboard_response, 'Cerrada')
+        self.assertNotContains(
+            dashboard_response,
+            f'data-actividad-id="{actividad.pk}"',
+            html=False,
+        )
+
+        web_response = self.client.post(
+            f'/personal/actividades/{actividad.pk}/evidencias/',
+        )
+        self.assertEqual(web_response.status_code, 302)
+        self.assertEqual(actividad.evidencias.count(), 1)
+
+        administrator = Usuario.objects.create_user(
+            username='admin.evidence.lock',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        self.client.force_login(administrator)
+        api_response = self.client.post(
+            '/api/evidencias/',
+            data=json.dumps({'actividad': actividad.pk}),
+            content_type='application/json',
+        )
+        self.assertEqual(api_response.status_code, 400)
+        self.assertIn('cerrada', api_response.json()['actividad'][0].lower())
+        self.assertEqual(actividad.evidencias.count(), 1)
 
     def test_compliance_calculation_applies_approved_adjustments_and_preserves_base(self):
         actividad = Actividad.objects.create(
@@ -1368,9 +1419,9 @@ class ActivityWorkflowTests(TestCase):
             'apellidoPaterno': 'Gestora',
             'apellidoMaterno': 'Delegada',
             'correo': 'patricia.delegada@example.com',
-            'rol': Usuario.Rol.SUPERVISOR,
+            'rol': 'DELEGADO',
+            'area_entidad': str(self.area.pk),
             'delegacion': str(self.delegacion.pk),
-            'es_delegado': 'on',
             'estado': 'on',
         })
 
@@ -1402,15 +1453,28 @@ class ActivityWorkflowTests(TestCase):
             'apellidoPaterno': 'Gestora',
             'apellidoMaterno': 'Delegada',
             'correo': 'patricia.delegada@example.com',
-            'rol': Usuario.Rol.ADMINISTRATIVO,
-            'es_delegado': 'on',
+            'rol': 'DELEGADO',
+            'area_entidad': str(self.area.pk),
+            'delegacion': '',
             'estado': 'on',
         })
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn('rol', response.context['form'].errors)
         self.assertIn('delegacion', response.context['form'].errors)
         self.assertFalse(Usuario.objects.filter(email='patricia.delegada@example.com').exists())
+
+        response = self.client.post('/mantenedores/funcionarios/crear/', {
+            'run': '12.345.678-5',
+            'nombre': 'Patricia',
+            'apellidoPaterno': 'Gestora',
+            'apellidoMaterno': 'Delegada',
+            'correo': 'patricia.delegada@example.com',
+            'rol': Usuario.Rol.ADMINISTRATIVO,
+            'area_entidad': str(self.area.pk),
+            'estado': 'on',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('rol', response.context['form'].errors)
 
     def test_period_form_rejects_end_date_before_start(self):
         admin = Usuario.objects.create_user(
@@ -1499,7 +1563,7 @@ class ActivityWorkflowTests(TestCase):
             'apellido_materno': 'Pérez',
             'tipo_solicitante': 'VECINO',
             'correo': 'camila@example.com',
-            'telefono': '9 8765 4321',
+            'telefono': '87654321',
         })
 
         self.assertEqual(response.status_code, 302)
@@ -2480,6 +2544,7 @@ class ActivityWorkflowTests(TestCase):
                 'tipo_atencion': f'Gestión {etapa}',
                 'detalle': f'Detalle de gestión {etapa}',
                 'resultado': f'Resultado {etapa}',
+                'fecha_gestion': self.today.isoformat(),
             })
             self.assertRedirects(response, '/casos-sociales/')
 
@@ -2489,6 +2554,9 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual({atencion.funcionario_id for atencion in atenciones}, {self.supervisor.pk})
         self.assertEqual(caso.persona_anonimizada, 'PERSONA-ANON-001')
         self.assertTrue(all(atencion.caso_id == caso.pk for atencion in atenciones))
+        self.assertEqual(atenciones[0].fecha_visita_programada, self.today)
+        self.assertEqual(atenciones[1].fecha_visita, self.today)
+        self.assertEqual(atenciones[2].fecha_entrega_beneficio, self.today)
 
         response = self.client.post('/casos-sociales/', {
             'action': 'registrar_atencion',
@@ -2496,6 +2564,7 @@ class ActivityWorkflowTests(TestCase):
             'tipo_atencion': 'Gestión extra',
             'detalle': 'No debe registrarse',
             'resultado': 'No corresponde',
+            'fecha_gestion': self.today.isoformat(),
         })
 
         self.assertEqual(response.status_code, 200)
@@ -2503,6 +2572,58 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(AtencionSocial.objects.filter(caso=caso).count(), 3)
         self.assertContains(response, 'PERSONA-ANON-001')
         self.assertContains(response, 'Gestiones registradas: 3 de 3')
+
+    def test_social_case_requires_valid_date_for_each_stage(self):
+        self.client.force_login(self.supervisor)
+        caso = CasoSocial.objects.create(
+            codigo_caso='CASO-FECHAS-001',
+            persona_anonimizada='PERSONA-ANON-FECHAS',
+            delegacion=self.delegacion,
+        )
+        response = self.client.post('/casos-sociales/', {
+            'action': 'registrar_atencion',
+            'caso_id': str(caso.pk),
+            'tipo_atencion': 'Primera gestión',
+            'detalle': 'Diagnóstico inicial',
+            'resultado': 'Visita pendiente',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(caso.atenciones.count(), 0)
+        self.assertContains(response, 'La fecha de esta gestión es obligatoria')
+
+        response = self.client.post('/casos-sociales/', {
+            'action': 'registrar_atencion',
+            'caso_id': str(caso.pk),
+            'tipo_atencion': 'Primera gestión',
+            'detalle': 'Diagnóstico inicial',
+            'resultado': 'Visita pendiente',
+            'fecha_gestion': (self.today - timedelta(days=1)).isoformat(),
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(caso.atenciones.count(), 0)
+        self.assertContains(response, 'no puede ser anterior a hoy')
+
+        response = self.client.post('/casos-sociales/', {
+            'action': 'registrar_atencion',
+            'caso_id': str(caso.pk),
+            'tipo_atencion': 'Primera gestión',
+            'detalle': 'Diagnóstico inicial',
+            'resultado': 'Visita pendiente',
+            'fecha_gestion': self.today.isoformat(),
+        })
+        self.assertRedirects(response, '/casos-sociales/')
+
+        response = self.client.post('/casos-sociales/', {
+            'action': 'registrar_atencion',
+            'caso_id': str(caso.pk),
+            'tipo_atencion': 'Segunda gestión',
+            'detalle': 'Visita al domicilio',
+            'resultado': 'Atendida',
+            'fecha_gestion': (self.today + timedelta(days=1)).isoformat(),
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(caso.atenciones.count(), 1)
+        self.assertContains(response, 'no puede ser futura')
 
     def test_catalogo_edit_preserves_service_snapshot_in_historical_activities(self):
         admin = Usuario.objects.create_user(
@@ -2838,15 +2959,15 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(requester.run, '12.345.678-5')
         self.assertEqual(requester.telefono, '+56912345678')
 
-    def test_chilean_phone_validation_normalizes_mobile_and_landline(self):
+    def test_chilean_phone_validation_normalizes_mobile_numbers(self):
+        self.assertEqual(normalize_chilean_phone('12345678'), '+56912345678')
         self.assertEqual(normalize_chilean_phone('9 1234 5678'), '+56912345678')
         self.assertEqual(normalize_chilean_phone('+56 9 1234 5678'), '+56912345678')
-        self.assertEqual(normalize_chilean_phone('+56 2 2345 6789'), '+56223456789')
-        self.assertEqual(normalize_chilean_phone('+56 71 234 5678'), '+56712345678')
         for invalid_phone in (
             '+56 9 123 456',
             '56 9 1234 5678',
-            '12345678',
+            '+56 2 2345 6789',
+            '+56 71 234 5678',
             '+56 8 1234 5678',
             '9...1..2..3..4..5..6..7..8',
             '999999999',
@@ -2871,7 +2992,7 @@ class ActivityWorkflowTests(TestCase):
         valid = UsuarioSerializer(data={
             'username': 'usuario.valido',
             'rut_anonimizado': '11.111.111-1',
-            'telefono': '9 1234 5678',
+            'telefono': '12345678',
             'email': 'persona@example.com',
         })
         self.assertTrue(valid.is_valid(), valid.errors)
@@ -2902,7 +3023,7 @@ class ActivityWorkflowTests(TestCase):
         )
         valid = ActividadSerializer(
             actividad,
-            data={'contacto_telefono': '9 1234 5678'},
+            data={'contacto_telefono': '12345678'},
             partial=True,
         )
         self.assertTrue(valid.is_valid(), valid.errors)

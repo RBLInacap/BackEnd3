@@ -11,13 +11,23 @@
   <section class="card shadow-sm border-0">
     <div class="card-body d-flex flex-column flex-md-row justify-content-between gap-3">
       <form method="get" class="d-flex gap-2 flex-grow-1" role="search">
+        {% if show_inactive %}<input type="hidden" name="estado" value="inactivas">{% endif %}
         <label for="area-search" class="visually-hidden">Buscar área</label>
         <input id="area-search" type="search" name="q" value="{{ search_term }}" class="form-control" placeholder="Buscar por nombre o descripción">
         <button type="submit" class="btn btn-outline-danger">Buscar</button>
-        {% if search_term %}<a href="{% url 'mantenedor_areas_list' %}" class="btn btn-outline-secondary">Limpiar</a>{% endif %}
+        {% if search_term %}<a href="{% url 'mantenedor_areas_list' %}{% if show_inactive %}?estado=inactivas{% endif %}" class="btn btn-outline-secondary">Limpiar</a>{% endif %}
       </form>
       {% if can_manage %}<a href="{{ create_url }}" class="btn btn-danger text-nowrap"><i class="bi bi-plus-circle me-1"></i> Crear área</a>{% endif %}
     </div>
+    {% if can_manage %}
+      <div class="px-3 pb-3">
+        {% if show_inactive %}
+          <a href="{% url 'mantenedor_areas_list' %}" class="btn btn-sm btn-outline-secondary">Ver áreas activas</a>
+        {% else %}
+          <a href="{% url 'mantenedor_areas_list' %}?estado=inactivas" class="btn btn-sm btn-outline-secondary">Ver áreas inactivas</a>
+        {% endif %}
+      </div>
+    {% endif %}
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
         <thead><tr><th scope="col">Nombre</th><th scope="col">Descripción</th>{% if can_manage %}<th scope="col" class="text-end">Acciones</th>{% endif %}</tr></thead>
@@ -26,11 +36,19 @@
           <tr>
             <th scope="row">{{ item.nombre }}</th><td>{{ item.descripcion|default:"—" }}</td>
             {% if can_manage %}<td class="text-end text-nowrap">
-              <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
-              <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+              {% if show_inactive %}
+                <span class="badge text-bg-secondary me-1">Inactiva</span>
+                <form method="post" action="{% url 'mantenedor_registro_reactivate' reactivation_entity item.pk %}" class="d-inline">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-sm btn-outline-success">Activar</button>
+                </form>
+              {% else %}
+                <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
+                <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+              {% endif %}
             </td>{% endif %}
           </tr>
-          {% empty %}<tr><td colspan="{% if can_manage %}3{% else %}2{% endif %}" class="text-center text-secondary py-4">{% if search_term %}No se encontraron áreas.{% else %}No hay áreas activas.{% endif %}</td></tr>{% endfor %}
+          {% empty %}<tr><td colspan="{% if can_manage %}3{% else %}2{% endif %}" class="text-center text-secondary py-4">{% if search_term %}No se encontraron áreas.{% elif show_inactive %}No hay áreas inactivas.{% else %}No hay áreas activas.{% endif %}</td></tr>{% endfor %}
         </tbody>
       </table>
     </div>

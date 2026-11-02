@@ -310,11 +310,18 @@
                 {% endif %}
               </td>
               <td class="text-end ps-2 pe-4 py-3 text-nowrap">
-                <button type="button" class="btn btn-outline-primary btn-sm p-1"
-                        data-actividad-id="{{ act.id }}" data-bs-toggle="modal"
-                        data-bs-target="#modalAgregarEvidencia" title="Agregar solo evidencia a esta actividad">
-                  <i class="bi bi-camera-fill"></i> Evidencia
-                </button>
+                {% if act.tiene_evidencia_aprobada %}
+                  <span class="badge bg-success-subtle text-success border border-success"
+                        title="La actividad se cerró al aprobarse una evidencia">
+                    <i class="bi bi-lock-fill me-1"></i> Cerrada
+                  </span>
+                {% else %}
+                  <button type="button" class="btn btn-outline-primary btn-sm p-1"
+                          data-actividad-id="{{ act.id }}" data-bs-toggle="modal"
+                          data-bs-target="#modalAgregarEvidencia" title="Agregar solo evidencia a esta actividad">
+                    <i class="bi bi-camera-fill"></i> Evidencia
+                  </button>
+                {% endif %}
                 {% if act.evidencia %}
                   <button type="button" class="btn btn-outline-secondary btn-sm p-1" onclick="abrirModalFoto('{{ act.evidencia.get_foto_url }}', '{{ act.evidencia.codigo_verificador }}', '{{ act.evidencia.get_estado_display }}', '{{ act.item_medicion.nombre_item|default:'Actividad' }}')" title="Ver evidencia completa">
                     <i class="bi bi-eye"></i>
@@ -531,11 +538,11 @@
             <div class="col-12 col-md-6">
               <label class="form-label small fw-bold text-dark mb-1">Teléfono de contacto</label>
               <div class="input-group input-group-sm">
-                <span class="input-group-text">+56</span>
-                <input type="tel" name="contacto_telefono" id="solicitanteTelefono" value="{{ activity_form_data.contacto_telefono|default:'' }}" class="form-control" placeholder="9 1234 5678 (móvil) o 2 2345 6789 (fijo)" inputmode="numeric" maxlength="20" title="Ingresa solo los 9 dígitos nacionales: 9 para móvil o prefijo fijo chileno válido.">
+                <span class="input-group-text">+56 9</span>
+                <input type="tel" name="contacto_telefono" id="solicitanteTelefono" value="{{ activity_form_data.contacto_telefono|default:'' }}" class="form-control" placeholder="12345678" inputmode="numeric" maxlength="8" pattern="[0-9]{8}" data-chilean-mobile title="Ingresa los 8 dígitos restantes, solo números.">
               </div>
-              <small class="form-text text-muted">Solo números; máximo 9 dígitos. El prefijo +56 se agrega automáticamente.</small>
-              <div id="solicitanteTelefonoError" class="invalid-feedback">Ingresa 9 dígitos válidos: móvil iniciado en 9 o prefijo fijo chileno válido.</div>
+              <small class="form-text text-muted">Solo números; ingresa los 8 dígitos restantes.</small>
+              <div id="solicitanteTelefonoError" class="invalid-feedback">Ingresa 8 dígitos válidos para un móvil chileno.</div>
             </div>
 
             <div class="col-12">
@@ -730,27 +737,19 @@
   function validarTelefonoSolicitante(input, mostrarError) {
     input.setCustomValidity('');
     const raw = input.value.trim();
-    let digits = raw.replace(/\D/g, '');
-    if (digits.startsWith('56') && digits.length > 9) digits = digits.slice(2);
+    const digits = window.chileanMobileDigits(raw);
     const valid = !raw || (
-      digits.length === 9 &&
-      '2345679'.includes(digits[0]) &&
-      new Set(digits).size > 1
+      digits.length === 8 &&
+      new Set(`9${digits}`).size > 1
     );
-    input.setCustomValidity(valid ? '' : 'Ingresa 9 dígitos con prefijo chileno válido; no se aceptan números repetidos.');
+    input.setCustomValidity(valid ? '' : 'Ingresa 8 dígitos válidos para un móvil chileno.');
     input.classList.toggle('is-invalid', !valid && mostrarError);
     return valid;
   }
 
   function limitarTelefonoSolicitante(input) {
-    let digits = input.value.replace(/\D/g, '');
-    if (digits.startsWith('56') && digits.length > 9) digits = digits.slice(2);
-    digits = digits.slice(0, 9);
-    input.value = digits.length > 5
-      ? `${digits[0]} ${digits.slice(1, 5)} ${digits.slice(5)}`
-      : digits.length > 1
-        ? `${digits[0]} ${digits.slice(1)}`
-        : digits;
+    const digits = window.chileanMobileDigits(input.value);
+    input.value = digits;
     validarTelefonoSolicitante(input, true);
   }
 
