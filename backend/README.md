@@ -109,3 +109,9 @@ Configura antes de publicar `DEBUG=False`, una clave secreta nueva, `ALLOWED_HOS
 - Casos sociales con acceso limitado por rol y delegación.
 - Semáforo trimestral con umbrales configurables en la base de datos.
 - API REST autenticada bajo `/api/`.
+
+Los mantenedores se gestionan desde las interfaces HTML propias. La API REST permite
+consultar delegaciones, cargos, usuarios, períodos, catálogo de servicios e ítems,
+pero sus endpoints de mantenimiento son de solo lectura; las operaciones
+transaccionales de la API conservan sus permisos por rol. La acción Eliminar de los
+mantenedores desactiva el registro y conserva sus relaciones e historial.
