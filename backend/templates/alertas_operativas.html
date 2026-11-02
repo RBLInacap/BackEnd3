@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Alertas operativas | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <div class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <h3 class="fw-bold text-white mb-1">Alertas operativas</h3>
+    <p class="text-white-50 mb-0">Vencimientos, atrasos, bajo avance e inactividad del período seleccionado.</p>
+  </div>
+
+  <form method="get" class="card card-body d-flex flex-row flex-wrap align-items-end gap-3">
+    <div>
+      <label class="form-label fw-semibold" for="periodo">Período</label>
+      <select class="form-select" id="periodo" name="periodo">
+        {% for opcion in periodos %}
+          <option value="{{ opcion.pk }}" {% if periodo_seleccionado.pk == opcion.pk %}selected{% endif %}>{{ opcion.nombre }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn btn-outline-danger" type="submit">Filtrar</button>
+    <span class="text-secondary small">Emitido al {{ hoy|date:"d/m/Y" }}</span>
+  </form>
+
+  {% if alertas %}
+    <div class="table-responsive card">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr><th>Tipo</th><th>Alerta</th><th>Motivo</th><th>Responsable</th><th>Fecha</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for alerta in alertas %}
+            <tr>
+              <td><span class="badge text-bg-{{ alerta.nivel }}">{{ alerta.tipo|title }}</span></td>
+              <td class="fw-semibold">{{ alerta.titulo }}</td>
+              <td>{{ alerta.motivo }}</td>
+              <td>{{ alerta.responsable }}</td>
+              <td class="text-nowrap">{{ alerta.fecha|date:"d/m/Y" }}</td>
+              <td><a class="btn btn-sm btn-outline-primary" href="{{ alerta.url }}">Ver registro</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="alert alert-success mb-0">No hay alertas operativas para este período y ámbito.</div>
+  {% endif %}
+</div>
+{% endblock %}

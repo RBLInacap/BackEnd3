@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.core.exceptions import ValidationError as DjangoValidationError
+from sgr_app.services.evidencias import metadatos_archivo_evidencia, validar_archivo_evidencia
 from sgr_app.models import (
     Usuario, Delegacion, Cargo, PeriodoMedicion, CatalogoServicio,
     ItemMedicion, CompromisoAgenda, Actividad, Evidencia,
@@ -106,6 +107,7 @@ class ItemMedicionSerializer(serializers.ModelSerializer):
 
 class EvidenciaSerializer(serializers.ModelSerializer):
     verificador_nombre = serializers.ReadOnlyField(source='verificador.get_full_name')
+    subido_por_nombre = serializers.ReadOnlyField(source='subido_por.get_full_name')
 
     class Meta:
         model = Evidencia
@@ -113,9 +115,59 @@ class EvidenciaSerializer(serializers.ModelSerializer):
             'id', 'actividad', 'codigo_verificador', 'archivo_foto', 'archivo_foto_2', 'archivo_foto_3',
             'url_foto_simulada', 'url_foto_simulada_2', 'url_foto_simulada_3',
             'hash_sha256', 'estado', 'verificador', 'verificador_nombre',
-            'fecha_validacion', 'observacion', 'fecha_subida'
+            'fecha_validacion', 'observacion', 'fecha_subida', 'metadatos',
+            'subido_por', 'subido_por_nombre', 'archivos_eliminados_en',
         ]
-        read_only_fields = ['id', 'codigo_verificador', 'hash_sha256', 'fecha_subida']
+        read_only_fields = [
+            'id', 'codigo_verificador', 'hash_sha256', 'fecha_subida',
+            'metadatos', 'subido_por', 'subido_por_nombre', 'archivos_eliminados_en',
+        ]
+
+    def validate(self, attrs):
+        for campo in ('archivo_foto', 'archivo_foto_2', 'archivo_foto_3'):
+            archivo = attrs.get(campo)
+            if archivo:
+                try:
+                    validar_archivo_evidencia(archivo)
+                except DjangoValidationError as exc:
+                    raise serializers.ValidationError({campo: exc.messages}) from exc
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        subido_por = request.user if request else None
+        archivos = [
+            validated_data[campo]
+            for campo in ('archivo_foto', 'archivo_foto_2', 'archivo_foto_3')
+            if validated_data.get(campo)
+        ]
+        if archivos:
+            validated_data['metadatos'] = {
+                'archivos': [
+                    metadatos_archivo_evidencia(archivo, subido_por)
+                    for archivo in archivos
+                ]
+            }
+            validated_data['subido_por'] = subido_por
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        subido_por = request.user if request else None
+        archivos = [
+            validated_data[campo]
+            for campo in ('archivo_foto', 'archivo_foto_2', 'archivo_foto_3')
+            if validated_data.get(campo)
+        ]
+        if archivos:
+            instance.metadatos = {
+                'archivos': [
+                    metadatos_archivo_evidencia(archivo, subido_por)
+                    for archivo in archivos
+                ]
+            }
+            instance.subido_por = subido_por
+        return super().update(instance, validated_data)
 
 
 class CompromisoAgendaSerializer(serializers.ModelSerializer):

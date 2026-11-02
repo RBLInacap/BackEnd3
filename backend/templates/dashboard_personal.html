@@ -60,8 +60,14 @@
       {% if periodo_configurado and metas_configuradas %}
       <div class="col-12 col-md-5">
         <div class="card p-4 rounded-4 text-center shadow border-0 bg-white">
-          <div class="small text-uppercase fw-bold text-secondary" style="font-size: 0.75rem; letter-spacing: 0.05rem;">Cumplimiento Ponderado Personal</div>
-          <div class="display-5 fw-black my-1" style="color: var(--carmesi-la-serena);">{{ metricas.total_ponderado_pct }}%</div>
+          <div class="small text-uppercase fw-bold text-secondary" style="font-size: 0.75rem; letter-spacing: 0.05rem;">Resultado Ponderado Personal</div>
+          <div class="display-5 fw-black my-1" style="color: var(--carmesi-la-serena);">{{ metricas.total_ajustado_pct }}%</div>
+          {% if metricas.ajustes %}
+          <div class="small text-secondary mb-2">
+            Base por ítems: {{ metricas.total_ponderado_pct }}%
+            (ajustes aprobados: {% for ajuste in metricas.ajustes %}{% if not forloop.first %}, {% endif %}{{ ajuste.efecto_pct }}%{% endfor %})
+          </div>
+          {% endif %}
           <div class="small text-secondary mb-3">
             Meta esperada al día: <strong class="text-dark">{{ metricas.meta_esperada_pct }}%</strong>
           </div>

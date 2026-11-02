@@ -306,6 +306,54 @@
     </div>
   {% endif %}
 
+  <section class="card shadow-sm border-0 overflow-hidden">
+    <div class="card-header bg-dark p-3 border-secondary">
+      <h5 class="fw-bold mb-1 text-light">Desempeño global por cargo</h5>
+      <small class="text-secondary">Promedio del resultado final de los funcionarios visibles, incluidos ajustes aprobados.</small>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0 small">
+        <thead class="bg-light text-secondary text-uppercase border-bottom">
+          <tr>
+            <th class="ps-4 py-3">Cargo</th>
+            <th class="text-center py-3">Funcionarios</th>
+            <th class="text-center py-3">Resultado promedio</th>
+            <th class="text-center py-3">Brecha vs. esperado</th>
+            <th class="py-3">Detalle</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for grupo in resumenes_por_cargo %}
+          <tr>
+            <th class="ps-4 py-3">{{ grupo.cargo }}</th>
+            <td class="text-center">{{ grupo.total_funcionarios }}</td>
+            <td class="text-center fw-bold">{{ grupo.promedio_ponderado_pct }}%</td>
+            <td class="text-center fw-semibold {% if grupo.brecha_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
+              {{ grupo.brecha_pct }} pp
+            </td>
+            <td>
+              <details>
+                <summary class="text-danger fw-semibold">Ver funcionarios del cargo</summary>
+                <ul class="mb-0 mt-2">
+                  {% for f in grupo.funcionarios %}
+                  <li>
+                    <a href="{% url 'web_personal' %}?id={{ f.funcionario_id }}&periodo={{ periodo.pk }}">
+                      {{ f.nombre_completo }} — {{ f.total_ajustado_pct }}%
+                    </a>
+                  </li>
+                  {% endfor %}
+                </ul>
+              </details>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5" class="text-center text-secondary py-3">No hay funcionarios disponibles para esta selección.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- Tabla Detallada de Funcionarios -->
   <div class="card shadow-sm border-0 overflow-hidden">
     <div class="card-header bg-dark p-3 border-secondary d-flex justify-content-between align-items-center">
@@ -323,7 +371,7 @@
             <th class="ps-4 pe-3 py-3 text-nowrap" style="min-width: 220px;">Funcionario</th>
             <th class="px-3 py-3 text-nowrap" style="min-width: 140px;">Cargo</th>
             <th class="px-3 py-3 text-nowrap" style="min-width: 120px;">Delegación</th>
-            <th class="text-center px-4 py-3 text-nowrap" style="min-width: 150px;">Cumplimiento Ponderado</th>
+            <th class="text-center px-4 py-3 text-nowrap" style="min-width: 150px;">Resultado con Ajustes</th>
             <th class="text-center px-4 py-3 text-nowrap" style="min-width: 130px;">Semáforo</th>
             <th class="text-center px-4 py-3 text-nowrap" style="min-width: 130px;">Última Actividad</th>
             <th class="text-end ps-3 pe-4 py-3 text-nowrap" style="min-width: 120px;">Acciones</th>
@@ -341,7 +389,7 @@
                 <span class="badge bg-secondary font-monospace">{{ f.delegacion_codigo }}</span>
               </td>
               <td class="text-center px-4 py-3 fw-bold fs-6 text-dark">
-                {{ f.total_ponderado_pct }}%
+                {{ f.total_ajustado_pct }}%
               </td>
               <td class="text-center">
                 {% if f.semaforo_global == 'VERDE' %}

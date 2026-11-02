@@ -67,6 +67,71 @@ def _auditoria_periodo_snapshot(periodo):
 def _auditoria_valor(instance):
     if isinstance(instance, PeriodoMedicion):
         return _auditoria_periodo_snapshot(instance)
+    if isinstance(instance, ItemMedicion):
+        return {
+            'cargo_id': instance.cargo_id,
+            'periodo_id': instance.periodo_id,
+            'nombre_item': instance.nombre_item,
+            'descripcion': instance.descripcion,
+            'tipo_unidad': instance.tipo_unidad,
+            'meta_cuantitativa': instance.meta_cuantitativa,
+            'ponderador': instance.ponderador,
+            'unidad_medida': instance.unidad_medida,
+            'activo': instance.activo,
+        }
+    if isinstance(instance, Area):
+        return {
+            'nombre': instance.nombre,
+            'descripcion': instance.descripcion,
+            'estado': instance.estado,
+        }
+    if isinstance(instance, Delegacion):
+        return {
+            'nombre': instance.nombre,
+            'codigo': instance.codigo,
+            'direccion': instance.direccion,
+            'telefono': instance.telefono,
+            'email': instance.email,
+            'ambito': instance.ambito,
+            'activo': instance.activo,
+        }
+    if isinstance(instance, Cargo):
+        return {
+            'nombre': instance.nombre,
+            'descripcion': instance.descripcion,
+            'departamento_id': instance.departamento_id,
+            'activo': instance.activo,
+        }
+    if isinstance(instance, Solicitante):
+        return {
+            'run': instance.run,
+            'nombre': instance.nombre,
+            'apellido_paterno': instance.apellido_paterno,
+            'apellido_materno': instance.apellido_materno,
+            'tipo_solicitante': instance.tipo_solicitante,
+            'telefono': instance.telefono,
+            'correo': instance.correo,
+            'estado': instance.estado,
+        }
+    if isinstance(instance, Usuario):
+        return {
+            'username': instance.username,
+            'nombre': instance.first_name,
+            'apellido': instance.last_name,
+            'correo': instance.email,
+            'rol': instance.rol,
+            'es_delegado': instance.es_delegado,
+            'area_id': instance.area_entidad_id,
+            'cargo_id': instance.cargo_id,
+            'delegacion_id': instance.delegacion_id,
+            'activo': instance.is_active,
+        }
+    if isinstance(instance, Rol):
+        return {
+            'nombre_rol': instance.nombre_rol,
+            'descripcion': instance.descripcion,
+            'estado': instance.estado,
+        }
     return str(instance)
 
 
@@ -130,6 +195,7 @@ class AuditedSaveMixin:
                             valor_nuevo=_auditoria_periodo_snapshot(periodo),
                             ip_origen=self.request.META.get('REMOTE_ADDR'),
                         )
+            valor_nuevo = _auditoria_valor(self.object)
             RegistroAuditoria.objects.create(
                 usuario=self.request.user,
                 funcionario=self.request.user,
@@ -144,9 +210,9 @@ class AuditedSaveMixin:
                     else {'registro': previous_value}
                 ),
                 valor_nuevo=(
-                    _auditoria_valor(self.object)
-                    if isinstance(self.object, PeriodoMedicion)
-                    else {'registro': str(self.object)}
+                    valor_nuevo
+                    if isinstance(valor_nuevo, dict)
+                    else {'registro': valor_nuevo}
                 ),
                 ip_origen=self.request.META.get('REMOTE_ADDR'),
             )

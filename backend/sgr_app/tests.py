@@ -4,11 +4,11 @@ from urllib.parse import urlparse
 
 from django.core import mail
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError
 from django.test import TestCase, Client
 from django.test import override_settings
 from django.utils import timezone
 from unittest.mock import patch
+from django.db import IntegrityError
 from sgr_app.models import (
     Delegacion, Cargo, Usuario, PeriodoMedicion, ItemMedicion,
     Actividad, Evidencia, CompromisoAgenda, CasoSocial, AtencionSocial,
@@ -251,6 +251,36 @@ class MatrizSGRTestSuite(TestCase):
         self.assertTrue(cod.startswith("CIA"))
         self.assertEqual(len(cod), 9)
 
+    def test_evidence_verification_code_retries_collisions_and_is_immutable(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.usuario,
+            delegacion=self.delegacion,
+            item_medicion=self.item1,
+            fecha_actividad=date(2026, 8, 1),
+        )
+        primera = Evidencia.objects.create(actividad=actividad)
+        codigo_original = primera.codigo_verificador
+        codigo_alternativo = f'{self.delegacion.codigo}XYZ123'
+
+        with patch(
+            'sgr_app.models.generar_codigo_evidencia',
+            side_effect=(codigo_original, codigo_alternativo),
+        ):
+            segunda = Evidencia.objects.create(actividad=actividad)
+
+        self.assertEqual(segunda.codigo_verificador, codigo_alternativo)
+        self.assertNotEqual(primera.codigo_verificador, segunda.codigo_verificador)
+
+        primera.codigo_verificador = codigo_alternativo
+        with self.assertRaises(ValidationError):
+            primera.save()
+
+        primera.refresh_from_db()
+        self.assertEqual(primera.codigo_verificador, codigo_original)
+        self.assertFalse(Evidencia.objects.filter(
+            codigo_verificador=codigo_alternativo,
+        ).exclude(pk=segunda.pk).exists())
+
     # 6. Casos Sociales con Secuencia de 3 Etapas (RF-015, CA-04)
     def test_casos_sociales_secuencia_tres_etapas(self):
         caso = CasoSocial.objects.create(
@@ -318,6 +348,76 @@ class MatrizSGRTestSuite(TestCase):
         self.assertEqual(resp_del.status_code, 200)
         ev.refresh_from_db()
         self.assertEqual(ev.estado, Evidencia.Estado.APROBADA)
+
+    def test_api_evidence_correction_requires_reason_and_uses_authenticated_verifier(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.usuario,
+            delegacion=self.delegacion,
+            item_medicion=self.item1,
+            actividad_solicitud='Validación de evidencia',
+            fecha_actividad=date(2026, 8, 1),
+        )
+        evidencia = Evidencia.objects.create(
+            actividad=actividad,
+            estado=Evidencia.Estado.PENDIENTE,
+        )
+        admin = Usuario.objects.create_superuser(
+            username='admin.spoof.validation',
+            email='admin.validation@example.com',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        client = Client()
+        client.force_login(self.usuario)
+
+        forbidden = client.post(
+            f'/api/evidencias/{evidencia.pk}/validar/',
+            {
+                'decision': Evidencia.Estado.APROBADA,
+                'verificador': admin.pk,
+            },
+            content_type='application/json',
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        client.force_login(self.verificador)
+        missing_reason = client.post(
+            f'/api/evidencias/{evidencia.pk}/validar/',
+            {'decision': Evidencia.Estado.CORRECCION},
+            content_type='application/json',
+        )
+        self.assertEqual(missing_reason.status_code, 400)
+        evidencia.refresh_from_db()
+        self.assertEqual(evidencia.estado, Evidencia.Estado.PENDIENTE)
+
+        response = client.post(
+            f'/api/evidencias/{evidencia.pk}/validar/',
+            {
+                'decision': Evidencia.Estado.CORRECCION,
+                'observacion': 'Adjuntar fotografía legible.',
+                'verificador': admin.pk,
+            },
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        evidencia.refresh_from_db()
+        self.assertEqual(evidencia.estado, Evidencia.Estado.CORRECCION)
+        self.assertEqual(evidencia.verificador, self.verificador)
+        self.assertIsNotNone(evidencia.fecha_validacion)
+        self.assertEqual(
+            evidencia.observacion_rechazo,
+            'Adjuntar fotografía legible.',
+        )
+        audit = RegistroAuditoria.objects.get(
+            entidad='Evidencia',
+            identificador_registro=str(evidencia.pk),
+            accion='VALIDAR_EVIDENCIA',
+        )
+        self.assertEqual(audit.funcionario, self.verificador)
+        self.assertEqual(
+            audit.valor_nuevo['verificador_id'],
+            self.verificador.pk,
+        )
 
     # 11. Registro de Evidencias de Terreno con Dirección y Múltiples Fotos
     def test_registro_evidencias_terreno_con_direccion_y_fotos(self):

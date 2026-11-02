@@ -31,6 +31,7 @@
           <option value="PENDIENTE" {% if estado_filtro == 'PENDIENTE' or not estado_filtro %}selected{% endif %}>Pendientes de Validación</option>
           <option value="APROBADA" {% if estado_filtro == 'APROBADA' %}selected{% endif %}>Aprobadas (Check)</option>
           <option value="RECHAZADA" {% if estado_filtro == 'RECHAZADA' %}selected{% endif %}>Rechazadas</option>
+          <option value="CORRECCION" {% if estado_filtro == 'CORRECCION' %}selected{% endif %}>Requieren corrección</option>
         </select>
       </form>
     </div>
@@ -73,7 +74,26 @@
                 {% endif %}
                 <div class="text-dark"><i class="bi bi-building text-secondary me-1"></i> Delegación: <strong>{{ ev.actividad.delegacion.nombre }}</strong></div>
                 <div class="text-dark"><i class="bi bi-person-fill text-secondary me-1"></i> Funcionario: <strong>{{ ev.actividad.funcionario.get_full_name|default:ev.actividad.funcionario.username }}</strong></div>
+                {% if ev.subido_por %}
+                  <div class="text-dark"><i class="bi bi-cloud-upload text-secondary me-1"></i> Cargada por: <strong>{{ ev.subido_por.get_full_name|default:ev.subido_por.username }}</strong></div>
+                {% endif %}
                 <div class="text-secondary"><i class="bi bi-calendar3 me-1"></i> Fecha: {{ ev.fecha_subida|date:"d/m/Y H:i" }}</div>
+                {% if ev.metadatos.archivos %}
+                  {% for archivo in ev.metadatos.archivos %}
+                    <div class="text-secondary">
+                      {{ archivo.formato }} · {{ archivo.tamano_bytes|filesizeformat }}
+                      {% if archivo.nombre_archivo %}· {{ archivo.nombre_archivo }}{% endif %}
+                    </div>
+                  {% endfor %}
+                {% elif ev.metadatos.formato %}
+                  <div class="text-secondary">
+                    {{ ev.metadatos.formato }} · {{ ev.metadatos.tamano_bytes|filesizeformat }}
+                    {% if ev.metadatos.nombre_archivo %}· {{ ev.metadatos.nombre_archivo }}{% endif %}
+                  </div>
+                {% endif %}
+                {% if ev.archivos_eliminados_en %}
+                  <div class="text-warning-emphasis">Archivo retirado según política de retención el {{ ev.archivos_eliminados_en|date:"d/m/Y" }}.</div>
+                {% endif %}
                 {% if ev.fotos_adicionales %}
                   <div class="d-flex gap-1 mt-2 align-items-center">
                     <small class="text-secondary me-1" style="font-size: 0.72rem;">Fotos extra:</small>

@@ -16,7 +16,9 @@ import string
 import hashlib
 import re
 from datetime import date
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 from django.contrib.auth.models import AbstractUser, UserManager
 from django.utils import timezone
 from django.core.exceptions import ValidationError
@@ -26,6 +28,7 @@ from sgr_app.validators import (
     validate_chilean_phone,
     validate_chilean_rut,
 )
+from sgr_app.services.evidencias import metadatos_archivo_evidencia
 
 
 def generar_codigo_evidencia(prefijo="SGR"):
@@ -694,6 +697,31 @@ class PeriodoMedicion(models.Model):
             raise ValidationError("El tope debe ser positivo y el umbral colectivo no puede ser negativo.")
 
     def save(self, *args, **kwargs):
+        if self.pk and not self._state.adding:
+            original = type(self).objects.filter(pk=self.pk).first()
+            if original and original.cerrado:
+                parameter_fields = (
+                    'nombre',
+                    'anio',
+                    'trimestre',
+                    'fecha_inicio',
+                    'fecha_termino',
+                    'dias_computables',
+                    'umbral_verde',
+                    'umbral_ambar',
+                    'umbral_semaforo_verde',
+                    'umbral_semaforo_ambar',
+                    'umbral_colectivo',
+                    'tope_cumplimiento',
+                    'version_de_parametro',
+                )
+                if any(
+                    getattr(original, field) != getattr(self, field)
+                    for field in parameter_fields
+                ):
+                    raise ValidationError(
+                        'No se pueden modificar los parámetros de un período cerrado.'
+                    )
         if self.fecha_inicio and self.fecha_termino:
             self.dias_computables = max((self.fecha_termino - self.fecha_inicio).days + 1, 1)
             self.anio = self.fecha_inicio.year
@@ -883,6 +911,10 @@ class ItemMedicion(models.Model):
         unique_together = ('cargo', 'periodo', 'nombre_item')
 
     def clean(self):
+        if self.periodo_id and self.periodo.cerrado:
+            raise ValidationError(
+                'No se pueden crear ni modificar ítems de un período cerrado.'
+            )
         if self.meta_cuantitativa <= 0:
             raise ValidationError("La meta del ítem debe ser estrictamente mayor que cero.")
         if not (0 <= self.ponderador <= 100):
@@ -1085,20 +1117,29 @@ class Actividad(models.Model):
 
     def adjuntar_evidencia(self, archivo_file, descripcion=""):
         """Cargar y vincular un archivo de respaldo a la clase Evidencia."""
+        es_archivo = hasattr(archivo_file, 'read')
+        metadatos = (
+            metadatos_archivo_evidencia(archivo_file, self.funcionario)
+            if es_archivo else None
+        )
         evidencia, created = Evidencia.objects.get_or_create(
             actividad=self,
             defaults={
-                'archivo': archivo_file if hasattr(archivo_file, 'read') else None,
-                'archivo_foto': archivo_file if hasattr(archivo_file, 'read') else None,
+                'archivo': archivo_file if es_archivo else None,
+                'archivo_foto': archivo_file if es_archivo else None,
                 'url_foto_simulada': archivo_file if isinstance(archivo_file, str) else '',
                 'observacion': descripcion,
-                'estado': Evidencia.Estado.PENDIENTE
+                'estado': Evidencia.Estado.PENDIENTE,
+                'subido_por': self.funcionario if es_archivo else None,
+                'metadatos': metadatos,
             }
         )
         if not created:
-            if hasattr(archivo_file, 'read'):
+            if es_archivo:
                 evidencia.archivo = archivo_file
                 evidencia.archivo_foto = archivo_file
+                evidencia.subido_por = self.funcionario
+                evidencia.metadatos = metadatos
             elif isinstance(archivo_file, str):
                 evidencia.url_foto_simulada = archivo_file
             evidencia.observacion = descripcion
@@ -1298,6 +1339,14 @@ class Evidencia(models.Model):
     url_foto_simulada_3 = models.URLField(max_length=500, blank=True, null=True)
     fecha_evidencia = models.DateField(default=timezone.now, blank=True, verbose_name="Fecha de Carga")
     metadatos = models.JSONField(blank=True, null=True, verbose_name="Metadatos (GPS, formato, peso)")
+    subido_por = models.ForeignKey(
+        Usuario,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='evidencias_subidas',
+    )
+    archivos_eliminados_en = models.DateTimeField(null=True, blank=True)
     estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.PENDIENTE, verbose_name="Estado de Validación")
     observacion = models.TextField(blank=True, null=True, verbose_name="Observacion")
     observacion_rechazo = models.TextField(blank=True, null=True)
@@ -1381,7 +1430,13 @@ class Evidencia(models.Model):
     def estadoValidacion(self):
         return "VALIDADA" if self.estado else ("RECHAZADA" if self.observacion else "EN_REVISION")
 
-    def cargar_archivo(self, archivo_subido, metadatos_dict=None):
+    def cargar_archivo(self, archivo_subido, metadatos_dict=None, subido_por=None):
+        if hasattr(archivo_subido, 'read'):
+            metadatos_dict = metadatos_archivo_evidencia(
+                archivo_subido,
+                subido_por or self.actividad.funcionario,
+            )
+            self.subido_por = subido_por or self.actividad.funcionario
         self.archivo = archivo_subido
         if hasattr(archivo_subido, 'read'):
             self.archivo_foto = archivo_subido
@@ -1423,8 +1478,36 @@ class Evidencia(models.Model):
 
         if not self.codigo_verificador:
             prefijo = self.actividad.delegacion.codigo if self.actividad and self.actividad.delegacion else "SGR"
-            self.codigo_verificador = generar_codigo_evidencia(prefijo)
-        super().save(*args, **kwargs)
+            codigos_intentados = set()
+            for _ in range(5):
+                codigo = generar_codigo_evidencia(prefijo)
+                if codigo in codigos_intentados:
+                    continue
+                codigos_intentados.add(codigo)
+                self.codigo_verificador = codigo
+                try:
+                    with transaction.atomic():
+                        super().save(*args, **kwargs)
+                    break
+                except IntegrityError:
+                    if not type(self).objects.filter(
+                        codigo_verificador=codigo,
+                    ).exists():
+                        raise
+            else:
+                raise ValidationError(
+                    'No fue posible asignar un código único a la evidencia después de varios intentos.'
+                )
+        else:
+            if self.pk and not self._state.adding:
+                codigo_guardado = type(self).objects.filter(
+                    pk=self.pk,
+                ).values_list('codigo_verificador', flat=True).first()
+                if codigo_guardado != self.codigo_verificador:
+                    raise ValidationError(
+                        {'codigo_verificador': 'El código verificador es inmutable.'}
+                    )
+            super().save(*args, **kwargs)
         compromiso = self.actividad.compromiso_agenda if self.actividad_id else None
         if compromiso:
             compromiso.sincronizar_estado_evidencias()
@@ -1432,6 +1515,14 @@ class Evidencia(models.Model):
     def __str__(self):
         estado_str = "Aprobada" if self.estado else "Pendiente/Rechazada"
         return f"Evidencia #{self.id} - Actividad #{self.actividad.id} ({estado_str})"
+
+
+@receiver(post_delete, sender=Evidencia, dispatch_uid='sgr_delete_evidence_files')
+def eliminar_archivos_evidencia_al_eliminar_registro(sender, instance, **kwargs):
+    for campo in ('archivo', 'archivo_foto', 'archivo_foto_2', 'archivo_foto_3'):
+        archivo = getattr(instance, campo)
+        if archivo and archivo.name:
+            archivo.storage.delete(archivo.name)
 
 
 # =============================================================================
@@ -1545,6 +1636,10 @@ class MetaModel(models.Model):
         return round(total_avanzado - self.meta_esperada_al_dia, 2)
 
     def clean(self):
+        if self.periodo_id and self.periodo.cerrado:
+            raise ValidationError(
+                'No se pueden crear ni modificar metas de un período cerrado.'
+            )
         if self.valor_meta is not None and self.valor_meta <= 0:
             raise ValidationError("RN-002: El valor objetivo de la meta debe ser mayor que cero.")
         if self.ponderador is not None and self.ponderador <= 0:
@@ -1632,8 +1727,13 @@ class Indicador(models.Model):
     def clean(self):
         if self.ponderacion is not None and self.ponderacion < 0:
             raise ValidationError("La ponderación del indicador no puede ser negativa.")
-        if self.meta and self.meta.periodo and self.meta.periodo.cerrado:
+        periodo = self.meta.periodo if self.meta_id else self.periodo
+        if periodo and periodo.cerrado:
             raise ValidationError("RN-013: No se pueden alterar indicadores asociados a un período cerrado.")
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
 
 
 # =============================================================================
@@ -1655,6 +1755,14 @@ class AjusteIncentivo(models.Model):
     valor_porcentaje = models.FloatField(default=0.0, verbose_name='Porcentaje de Ajuste (%)')
     fecha_registro = models.DateTimeField(default=timezone.now, verbose_name='Fecha de Registro')
     funcionario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='ajustes', verbose_name='Funcionario Evaluado')
+    registrado_por = models.ForeignKey(
+        Usuario,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ajustes_registrados',
+        verbose_name='Responsable del Registro',
+    )
     periodo = models.ForeignKey(PeriodoMedicion, on_delete=models.CASCADE, null=True, blank=True, related_name='ajustes', verbose_name='Período Evaluativo')
     estado = models.CharField(max_length=20, default='PENDIENTE')
     aprobadoPor = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='ajustes_aprobados')
@@ -1682,8 +1790,6 @@ class AjusteIncentivo(models.Model):
 
     def aplicar_ajuste(self, cumplimiento_base: float = None) -> float:
         """RN-011 / RF-025: Calcula e impacta la variación porcentual."""
-        if self.periodo and self.periodo.cerrado:
-            raise ValidationError("RN-013: No se puede aplicar un ajuste sobre un período evaluativo que ya se encuentra cerrado.")
         impacto = abs(self.valor_porcentaje)
         if self.tipo in ['PENALIZACION', 'DESCUENTO']:
             impacto = -impacto
@@ -1701,6 +1807,8 @@ class AjusteIncentivo(models.Model):
     def aprobarAjuste(self, funcionarioAprobador) -> bool:
         if self.estado != "PENDIENTE":
             return False
+        if self.periodo and self.periodo.cerrado:
+            raise ValidationError("No se pueden aprobar ajustes de un período cerrado.")
         if not funcionarioAprobador.puede_aprobar_ajustes():
             raise PermissionError("El funcionario no cuenta con el rol o los permisos requeridos.")
         if self.funcionario_id == funcionarioAprobador.id:
@@ -1714,6 +1822,8 @@ class AjusteIncentivo(models.Model):
     def rechazarAjuste(self, funcionarioAprobador, motivoRechazo: str = None) -> bool:
         if self.estado != "PENDIENTE":
             return False
+        if self.periodo and self.periodo.cerrado:
+            raise ValidationError("No se pueden rechazar ajustes de un período cerrado.")
         if not funcionarioAprobador.puede_aprobar_ajustes():
             raise PermissionError("El funcionario no cuenta con los permisos requeridos para rechazar ajustes.")
         if self.funcionario_id == funcionarioAprobador.id:
@@ -1731,6 +1841,8 @@ class AjusteIncentivo(models.Model):
             raise ValidationError("RN-013: No se pueden registrar o modificar ajustes dentro de un período cerrado.")
         if self.valor_porcentaje is not None and self.valor_porcentaje <= 0:
             raise ValidationError("El valor del porcentaje de ajuste debe ser un valor mayor a cero.")
+        if not (self.motivo or '').strip():
+            raise ValidationError({'motivo': 'El motivo del ajuste es obligatorio.'})
 
 
 # =============================================================================
@@ -1847,6 +1959,14 @@ class AtencionSocial(models.Model):
 # =============================================================================
 # 6. CLASE AUDITORIA / REGISTROAUDITORIA
 # =============================================================================
+class RegistroAuditoriaQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError('Los registros de auditoría son inmutables.')
+
+    def delete(self):
+        raise ValidationError('Los registros de auditoría no se pueden eliminar.')
+
+
 class RegistroAuditoria(models.Model):
     """
     Entidad del sistema encargada de registrar la trazabilidad histórica (Clase Auditoria).
@@ -1868,15 +1988,24 @@ class RegistroAuditoria(models.Model):
     identificador_registro = models.CharField(max_length=50, default='0')
     valor_anterior = models.JSONField(blank=True, null=True, verbose_name="Valores Anteriores (JSON)")
     valor_nuevo = models.JSONField(blank=True, null=True, verbose_name="Valores Nuevos (JSON)")
-    funcionario = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='auditorias', verbose_name="Funcionario Responsable")
-    usuario = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='auditorias_legacy')
+    funcionario = models.ForeignKey(Usuario, on_delete=models.PROTECT, null=True, blank=True, related_name='auditorias', verbose_name="Funcionario Responsable")
+    usuario = models.ForeignKey(Usuario, on_delete=models.PROTECT, null=True, blank=True, related_name='auditorias_legacy')
     ip_origen = models.GenericIPAddressField(null=True, blank=True)
+    objects = RegistroAuditoriaQuerySet.as_manager()
 
     class Meta:
         db_table = 'Auditorias'
         verbose_name = 'Auditoría'
         verbose_name_plural = 'Auditorías'
         ordering = ['-fecha_auditoria']
+
+    def save(self, *args, **kwargs):
+        if self.pk and type(self).objects.filter(pk=self.pk).exists():
+            raise ValidationError('Los registros de auditoría son inmutables.')
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Los registros de auditoría no se pueden eliminar.')
 
     def __str__(self):
         func_nom = self.funcionario.get_full_name() if self.funcionario else (self.usuario.username if self.usuario else "Sistema")

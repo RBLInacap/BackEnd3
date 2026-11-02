@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Incentivos y penalizaciones | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
+    <div>
+      <h1 class="h3 fw-bold mb-1">Incentivos y penalizaciones</h1>
+      <p class="text-secondary mb-0">Registra ajustes con motivo y responsable, y revisa su efecto en el resultado personal.</p>
+    </div>
+    <form method="get" class="d-flex align-items-center gap-2">
+      <label for="periodoAjustes" class="small fw-bold text-nowrap">Período:</label>
+      <select id="periodoAjustes" name="periodo" class="form-select form-select-sm">
+        {% for opcion in periodos %}
+        <option value="{{ opcion.pk }}" {% if periodo_seleccionado == opcion.pk|stringformat:"s" %}selected{% endif %}>
+          {{ opcion.nombre }} ({{ opcion.fecha_inicio|date:"d/m/Y" }} - {{ opcion.fecha_termino|date:"d/m/Y" }})
+        </option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-sm btn-outline-danger" type="submit">Consultar</button>
+    </form>
+  </div>
+
+  {% if periodo.pk and periodo.cerrado %}
+  <div class="alert alert-warning">El período está cerrado: no se pueden registrar ni aprobar nuevos ajustes.</div>
+  {% endif %}
+
+  <div class="row g-4">
+    <div class="col-12 col-xl-4">
+      <section class="card shadow-sm border-0">
+        <div class="card-header bg-light fw-bold">Registrar ajuste</div>
+        <div class="card-body">
+          {% if not periodo.pk %}
+          <div class="alert alert-info mb-0">No hay un período configurado para registrar ajustes.</div>
+          {% elif periodo_cerrado %}
+          <p class="text-secondary mb-0">Selecciona un período abierto para registrar un ajuste.</p>
+          {% else %}
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="periodo" value="{{ periodo.pk }}">
+            {% if ajuste_form.non_field_errors %}
+            <div class="alert alert-danger">{{ ajuste_form.non_field_errors }}</div>
+            {% endif %}
+            {% for field in ajuste_form %}
+            <div class="mb-3">
+              <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+              {{ field }}
+              {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+            </div>
+            {% endfor %}
+            <button type="submit" class="btn btn-danger w-100">Registrar para aprobación</button>
+          </form>
+          {% endif %}
+        </div>
+      </section>
+    </div>
+
+    <div class="col-12 col-xl-8">
+      <section class="card shadow-sm border-0 overflow-hidden">
+        <div class="card-header bg-light">
+          <h2 class="h6 fw-bold mb-1">Ajustes del período</h2>
+          <div class="small text-secondary">{{ periodo.nombre }}</div>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Funcionario</th>
+                <th>Ajuste y motivo</th>
+                <th>Responsable</th>
+                <th>Estado / efecto</th>
+                <th class="text-end">Revisión</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for ajuste in ajustes %}
+              <tr>
+                <td>
+                  <strong>{{ ajuste.funcionario.get_full_name|default:ajuste.funcionario.username }}</strong>
+                  <small class="d-block text-secondary">{{ ajuste.funcionario.delegacion.nombre|default:"Sin delegación" }}</small>
+                </td>
+                <td>
+                  <span class="badge {% if ajuste.tipo == 'PENALIZACION' or ajuste.tipo == 'DESCUENTO' %}bg-danger{% else %}bg-success{% endif %}">
+                    {{ ajuste.get_tipo_display }} {{ ajuste.valor_porcentaje }}%
+                  </span>
+                  <div class="small mt-1">{{ ajuste.motivo }}</div>
+                </td>
+                <td>
+                  {{ ajuste.registrado_por.get_full_name|default:ajuste.registrado_por.username|default:"Responsable no registrado" }}
+                  {% if ajuste.aprobadoPor %}
+                  <small class="d-block text-secondary">Revisó: {{ ajuste.aprobadoPor.get_full_name|default:ajuste.aprobadoPor.username }}</small>
+                  {% endif %}
+                </td>
+                <td>
+                  <span class="badge {% if ajuste.estado == 'APROBADO' %}bg-success{% elif ajuste.estado == 'RECHAZADO' %}bg-secondary{% else %}bg-warning text-dark{% endif %}">
+                    {{ ajuste.get_estado_display|default:ajuste.estado }}
+                  </span>
+                  {% if ajuste.estado == 'APROBADO' %}
+                  <small class="d-block mt-1">Efecto: {{ ajuste.efecto_pct }} pp</small>
+                  <small class="d-block text-secondary">Resultado: {{ ajuste.resultado_pct }}%</small>
+                  {% else %}
+                  <small class="d-block mt-1 text-secondary">Sin efecto mientras no esté aprobado.</small>
+                  {% endif %}
+                </td>
+                <td class="text-end">
+                  {% if ajuste.estado == 'PENDIENTE' and not periodo_cerrado %}
+                  <form method="post" action="{% url 'web_decidir_ajuste_incentivo' ajuste.pk %}" class="d-flex flex-column gap-2 align-items-end">
+                    {% csrf_token %}
+                    <input type="hidden" name="decision" value="APROBAR">
+                    <button class="btn btn-sm btn-success" type="submit">Aprobar</button>
+                  </form>
+                  <form method="post" action="{% url 'web_decidir_ajuste_incentivo' ajuste.pk %}" class="mt-2">
+                    {% csrf_token %}
+                    <input type="hidden" name="decision" value="RECHAZAR">
+                    <label class="visually-hidden" for="motivoRechazo{{ ajuste.pk }}">Motivo de rechazo</label>
+                    <input id="motivoRechazo{{ ajuste.pk }}" name="observacion" class="form-control form-control-sm mb-1" placeholder="Motivo de rechazo" required>
+                    <button class="btn btn-sm btn-outline-danger" type="submit">Rechazar</button>
+                  </form>
+                  {% else %}
+                  <span class="text-secondary small">Sin acciones</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% empty %}
+              <tr><td colspan="5" class="text-center text-secondary py-4">No hay ajustes registrados en este período.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+{% endblock %}

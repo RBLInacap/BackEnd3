@@ -1,7 +1,16 @@
 from datetime import date
 from django.utils import timezone
 from django.db.models import Count, Q
-from sgr_app.models import Actividad, Evidencia, ItemMedicion, PeriodoMedicion, Usuario, Delegacion, CompromisoAgenda
+from sgr_app.models import (
+    Actividad,
+    AjusteIncentivo,
+    CompromisoAgenda,
+    Delegacion,
+    Evidencia,
+    ItemMedicion,
+    PeriodoMedicion,
+    Usuario,
+)
 
 
 def calcular_dias_periodo(periodo: PeriodoMedicion, fecha_corte: date = None):
@@ -144,9 +153,45 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
             'semaforo': color_item
         })
 
+    ajustes_aprobados = (
+        AjusteIncentivo.objects.filter(
+            funcionario=funcionario,
+            periodo=periodo,
+            estado__in=('APROBADO', 'APLICADO', 'INCENTIVO', 'PENALIZACION'),
+        ).select_related('registrado_por', 'aprobadoPor').order_by('fecha_registro', 'pk')
+        if periodo.pk
+        else AjusteIncentivo.objects.none()
+    )
+    total_ajustado = total_ponderado_acumulado
+    detalles_ajustes = []
+    for ajuste in ajustes_aprobados:
+        total_anterior = total_ajustado
+        total_ajustado = ajuste.aplicar_ajuste(total_anterior)
+        detalles_ajustes.append({
+            'id': ajuste.pk,
+            'tipo': ajuste.get_tipo_display(),
+            'motivo': ajuste.motivo,
+            'valor_porcentaje': ajuste.valor_porcentaje,
+            'responsable': (
+                ajuste.registrado_por.get_full_name()
+                or ajuste.registrado_por.username
+                if ajuste.registrado_por
+                else 'Responsable no registrado'
+            ),
+            'aprobado_por': (
+                ajuste.aprobadoPor.get_full_name()
+                or ajuste.aprobadoPor.username
+                if ajuste.aprobadoPor
+                else 'Aprobación no registrada'
+            ),
+            'estado': ajuste.estado,
+            'efecto_pct': round(total_ajustado - total_anterior, 2),
+            'resultado_pct': round(total_ajustado, 2),
+        })
+
     # Semáforo global del funcionario
     color_global = determinar_color_semaforo(
-        total_ponderado_acumulado,
+        total_ajustado,
         meta_esperada_pct,
         periodo.umbral_semaforo_verde,
         periodo.umbral_semaforo_ambar,
@@ -174,6 +219,7 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
         'funcionario_id': funcionario.id,
         'nombre_completo': funcionario.get_full_name() or funcionario.username,
         'username': funcionario.username,
+        'cargo_id': funcionario.cargo_id,
         'cargo': funcionario.cargo.nombre if funcionario.cargo else "Sin Cargo",
         'delegacion': funcionario.delegacion.nombre if funcionario.delegacion else "Central",
         'delegacion_codigo': funcionario.delegacion.codigo if funcionario.delegacion else "SGR",
@@ -182,6 +228,8 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
         'dias_transcurridos': info_tiempo['dias_transcurridos'],
         'dias_totales': info_tiempo['dias_totales'],
         'total_ponderado_pct': round(total_ponderado_acumulado, 2),
+        'total_ajustado_pct': round(total_ajustado, 2),
+        'ajustes': detalles_ajustes,
         'semaforo_global': color_global,
         'items': detalles_items,
         'ultima_actividad': fecha_ultimo_ingreso.isoformat() if fecha_ultimo_ingreso else None,
@@ -215,7 +263,7 @@ def calcular_resumen_delegacion(delegacion: Delegacion, periodo: PeriodoMedicion
 
     total_f = len(metricas_funcionarios)
     if total_f > 0:
-        promedio_ponderado = round(sum(m['total_ponderado_pct'] for m in metricas_funcionarios) / total_f, 2)
+        promedio_ponderado = round(sum(m['total_ajustado_pct'] for m in metricas_funcionarios) / total_f, 2)
         conteo_verde = sum(1 for m in metricas_funcionarios if m['semaforo_global'] == 'VERDE')
         conteo_ambar = sum(1 for m in metricas_funcionarios if m['semaforo_global'] == 'AMBAR')
         conteo_rojo = sum(1 for m in metricas_funcionarios if m['semaforo_global'] == 'ROJO')

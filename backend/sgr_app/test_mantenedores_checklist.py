@@ -532,3 +532,20 @@ class MantenedoresChecklistTests(TestCase):
                     self.client.delete(detail_url).status_code,
                     403,
                 )
+
+    def test_api_does_not_render_browsable_management_interface(self):
+        response = self.client.get(
+            '/api/delegaciones/',
+            HTTP_ACCEPT='text/html',
+        )
+        self.assertEqual(response.status_code, 406)
+
+        response = self.client.get(
+            '/api/delegaciones/',
+            HTTP_ACCEPT='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response['Content-Type'].split(';')[0],
+            'application/json',
+        )

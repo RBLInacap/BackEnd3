@@ -57,6 +57,54 @@
     </div>
   </div>
 
+  <section class="card shadow-sm border-0 overflow-hidden">
+    <div class="card-header bg-white">
+      <h2 class="h5 mb-1">Desempeño por cargo</h2>
+      <p class="small text-secondary mb-0">Resumen calculado desde los funcionarios activos de las delegaciones visibles.</p>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th scope="col">Cargo</th>
+            <th scope="col" class="text-center">Funcionarios</th>
+            <th scope="col" class="text-center">Resultado promedio</th>
+            <th scope="col" class="text-center">Brecha vs. esperado</th>
+            <th scope="col">Detalle</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for grupo in resumenes_por_cargo %}
+          <tr>
+            <th scope="row">{{ grupo.cargo }}</th>
+            <td class="text-center">{{ grupo.total_funcionarios }}</td>
+            <td class="text-center fw-semibold">{{ grupo.promedio_ponderado_pct }}%</td>
+            <td class="text-center fw-semibold {% if grupo.brecha_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
+              {{ grupo.brecha_pct }} pp
+            </td>
+            <td>
+              <details>
+                <summary class="text-danger fw-semibold">Ver funcionarios</summary>
+                <ul class="mb-0 mt-2">
+                  {% for f in grupo.funcionarios %}
+                  <li>
+                    <a href="{% url 'web_personal' %}?id={{ f.funcionario_id }}&periodo={{ periodo.pk }}">
+                      {{ f.nombre_completo }} — {{ f.total_ajustado_pct }}%
+                    </a>
+                  </li>
+                  {% endfor %}
+                </ul>
+              </details>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5" class="text-center text-secondary py-3">No hay funcionarios con cargo asignado para este período.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="card shadow-sm border-0">
     <div class="card-header bg-white">
       <h2 class="h5 mb-0">Delegaciones bajo seguimiento</h2>

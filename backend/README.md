@@ -87,6 +87,12 @@ Nunca subas `backend/.env` ni compartas la contraseña de aplicación.
 
 `python manage.py poblar_sgr` agrega delegaciones, cargos, cuentas de demostración y datos sintéticos. Úsalo solo en una base local desechable: **no lo ejecutes sobre una base que ya contenga información real**. El comando no establece contraseñas conocidas; asígnalas individualmente con `python manage.py changepassword <usuario>`.
 
+### Política de evidencias
+
+Las evidencias aceptan imágenes JPEG, PNG y WEBP de hasta 5 MiB y 40 megapíxeles por archivo. El sistema verifica el contenido real de la imagen, no solo el MIME enviado por el navegador, y registra nombre original, formato, tamaño, fecha y usuario que la cargó. Estos valores se pueden ajustar con `EVIDENCE_MAX_FILE_SIZE` (bytes), `EVIDENCE_MAX_IMAGE_PIXELS`, `EVIDENCE_ALLOWED_FORMATS` y `EVIDENCE_RETENTION_DAYS` en `backend/.env`.
+
+La retención predeterminada es de 365 días. Programa diariamente `python manage.py purgar_evidencias_vencidas` mediante el Programador de tareas de Windows o cron. Al vencer el plazo, se eliminan los archivos almacenados y se mantienen el registro de evidencia y sus metadatos. Al eliminar una evidencia antes de ese plazo, también se borran sus archivos asociados.
+
 ## Conectar a MySQL/MariaDB de WAMP
 
 phpMyAdmin administra el servidor MySQL/MariaDB; Django se conecta directamente al servidor de base de datos.
@@ -131,6 +137,9 @@ Configura antes de publicar `DEBUG=False`, una clave secreta nueva, `ALLOWED_HOS
 | `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | Conexión a MySQL/MariaDB. |
 | `USE_S3` | Activa almacenamiento de evidencias en Amazon S3. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME` | Credenciales y bucket S3; configura permisos mínimos. |
+| `EVIDENCE_MAX_FILE_SIZE`, `EVIDENCE_MAX_IMAGE_PIXELS` | Límites por archivo de tamaño (bytes) y resolución (píxeles). |
+| `EVIDENCE_ALLOWED_FORMATS` | Formatos de imagen permitidos, separados por comas (`JPEG,PNG,WEBP` por defecto). |
+| `EVIDENCE_RETENTION_DAYS` | Días de conservación del archivo antes de purgarlo; el registro permanece. |
 | `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS` | Orígenes explícitos permitidos, separados por comas. |
 | `EMAIL_BACKEND` | Consola en desarrollo (`DEBUG=True`) y SMTP en producción por defecto; se puede sobrescribir. |
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS`, `EMAIL_USE_SSL` | Configuración SMTP para enviar correo fuera del entorno local. |
@@ -149,6 +158,9 @@ consultar delegaciones, cargos, usuarios, períodos, catálogo de servicios e í
 pero sus endpoints de mantenimiento son de solo lectura; las operaciones
 transaccionales de la API conservan sus permisos por rol. La acción Eliminar de los
 mantenedores desactiva el registro y conserva sus relaciones e historial.
+La API no ofrece la interfaz navegable de Django REST Framework: las plantillas
+propias consumen únicamente las respuestas JSON necesarias para sus flujos, como
+la sincronización de actividades sin conexión.
 
 Los supervisores pueden consultar los ocho mantenedores, pero solo pueden crear,
 modificar y desactivar solicitantes y servicios del catálogo. La configuración de

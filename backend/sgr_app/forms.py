@@ -5,6 +5,7 @@ from django.utils import timezone
 
 from sgr_app.models import (
     Area,
+    AjusteIncentivo,
     Cargo,
     CasoSocial,
     CatalogoServicio,
@@ -33,6 +34,64 @@ ACTIVIDAD_AREAS_APOYO = (
     'DIDECO / Social', 'Tránsito y Transporte', 'Seguridad Ciudadana',
     'Medio Ambiente', 'SECPLAN / Proyectos',
 )
+
+
+class AjusteIncentivoForm(forms.Form):
+    funcionario = forms.ModelChoiceField(
+        queryset=Usuario.objects.none(),
+        label='Funcionario',
+    )
+    tipo = forms.ChoiceField(
+        choices=AjusteIncentivo.TIPO_CHOICES,
+        label='Tipo de ajuste',
+    )
+    motivo = forms.CharField(
+        label='Motivo',
+        error_messages={'required': 'El motivo del ajuste es obligatorio.'},
+        widget=forms.Textarea(attrs={'rows': 3}),
+    )
+    valor_porcentaje = forms.FloatField(
+        label='Porcentaje de ajuste',
+        min_value=0.01,
+        widget=forms.NumberInput(attrs={'step': '0.01', 'min': '0.01'}),
+    )
+
+    def __init__(self, *args, funcionarios=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if funcionarios is None:
+            funcionarios = Usuario.objects.none()
+        self.fields['funcionario'].queryset = funcionarios
+        self.fields['funcionario'].widget.attrs.update({'class': 'form-select'})
+        self.fields['tipo'].widget.attrs.update({'class': 'form-select'})
+        self.fields['motivo'].widget.attrs.update({'class': 'form-control'})
+        self.fields['valor_porcentaje'].widget.attrs.update({'class': 'form-control'})
+
+    def clean_motivo(self):
+        motivo = self.cleaned_data['motivo'].strip()
+        if not motivo:
+            raise ValidationError('El motivo del ajuste es obligatorio.')
+        return motivo
+
+
+class AjusteDecisionForm(forms.Form):
+    decision = forms.ChoiceField(choices=(
+        ('APROBAR', 'Aprobar'),
+        ('RECHAZAR', 'Rechazar'),
+    ))
+    observacion = forms.CharField(
+        required=False,
+        label='Motivo de rechazo',
+        widget=forms.Textarea(attrs={'rows': 2}),
+    )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if (
+            cleaned_data.get('decision') == 'RECHAZAR'
+            and not cleaned_data.get('observacion', '').strip()
+        ):
+            self.add_error('observacion', 'Indica el motivo del rechazo.')
+        return cleaned_data
 
 
 class CompromisoAgendaForm(forms.ModelForm):
@@ -542,6 +601,16 @@ class MantenedorItemForm(MantenedorModelForm):
         self.fields['cargo'].queryset = cargos
         self.fields['periodo'].queryset = periodos
 
+    def clean(self):
+        cleaned_data = super().clean()
+        periodo = cleaned_data.get('periodo')
+        if periodo and periodo.cerrado:
+            self.add_error(
+                'periodo',
+                'No se pueden crear ni modificar ítems de un período cerrado.',
+            )
+        return cleaned_data
+
 
 class MantenedorPeriodoForm(MantenedorModelForm):
     class Meta:
@@ -598,6 +667,31 @@ class MantenedorPeriodoForm(MantenedorModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
+        if self.instance.pk and self.instance.cerrado:
+            campos_parametro = (
+                'nombre',
+                'anio',
+                'trimestre',
+                'fecha_inicio',
+                'fecha_termino',
+                'umbral_verde',
+                'umbral_ambar',
+                'umbral_semaforo_verde',
+                'umbral_semaforo_ambar',
+                'umbral_colectivo',
+                'tope_cumplimiento',
+            )
+            if any(
+                campo in cleaned_data
+                and cleaned_data[campo] != getattr(self.instance, campo)
+                for campo in campos_parametro
+            ):
+                self.add_error(
+                    None,
+                    'No se pueden modificar los parámetros de un período cerrado. '
+                    'Reabra el período antes de editar su configuración.',
+                )
+
         fecha_inicio = cleaned_data.get('fecha_inicio')
         fecha_termino = cleaned_data.get('fecha_termino')
         anio = cleaned_data.get('anio')
@@ -694,6 +788,11 @@ class FuncionarioForm(MantenedorModelForm):
     )
     correo = forms.EmailField(label='Correo', max_length=254, required=True)
     rol = forms.ChoiceField(choices=Usuario.Rol.choices, initial=Usuario.Rol.ADMINISTRATIVO)
+    es_delegado = forms.BooleanField(
+        label='Perfil Delegado',
+        required=False,
+        help_text='Limita el acceso del Supervisor a los datos de su delegación.',
+    )
     area_entidad = forms.ModelChoiceField(
         queryset=Area.objects.filter(estado=True).order_by('nombre'),
         required=False,
@@ -731,6 +830,7 @@ class FuncionarioForm(MantenedorModelForm):
                 'apellidoMaterno': apellidos[1] if len(apellidos) > 1 else '',
                 'correo': self.instance.email,
                 'estado': self.instance.is_active,
+                'es_delegado': self.instance.es_delegado,
             })
 
     def clean_run(self):
@@ -759,10 +859,14 @@ class FuncionarioForm(MantenedorModelForm):
         cleaned_data = super().clean()
         rol = cleaned_data.get('rol')
         delegacion = cleaned_data.get('delegacion')
-        if self.instance.es_delegado and rol != Usuario.Rol.SUPERVISOR:
-            self.add_error('rol', 'Un usuario Delegado debe conservar el rol Supervisor.')
-        if rol == Usuario.Rol.SUPERVISOR and delegacion and self.instance.es_delegado:
-            cleaned_data['delegacion'] = delegacion
+        es_delegado = cleaned_data.get('es_delegado', False)
+        if es_delegado and rol != Usuario.Rol.SUPERVISOR:
+            self.add_error('rol', 'El perfil Delegado requiere el rol Supervisor.')
+        if es_delegado and not delegacion:
+            self.add_error(
+                'delegacion',
+                'El perfil Delegado requiere una delegación asignada.',
+            )
         return cleaned_data
 
     def save(self, commit=True):
@@ -777,6 +881,7 @@ class FuncionarioForm(MantenedorModelForm):
         )))
         funcionario.email = self.cleaned_data['correo']
         funcionario.rol = self.cleaned_data['rol']
+        funcionario.es_delegado = self.cleaned_data['es_delegado']
         funcionario.area_entidad = self.cleaned_data['area_entidad']
         funcionario.cargo = self.cleaned_data['cargo']
         funcionario.delegacion = self.cleaned_data['delegacion']
@@ -838,17 +943,18 @@ class ActividadFotosInput(forms.ClearableFileInput):
     allow_multiple_selected = True
 
 
-class ActividadFotosField(forms.FileField):
+class ActividadFotosField(forms.ImageField):
     widget = ActividadFotosInput
 
     def clean(self, data, initial=None):
         if not data:
             return []
         files = data if isinstance(data, (list, tuple)) else [data]
+        from sgr_app.services.evidencias import validar_archivo_evidencia
+
+        for uploaded_file in files:
+            validar_archivo_evidencia(uploaded_file)
         cleaned_files = [super().clean(file, initial) for file in files]
-        for uploaded_file in cleaned_files:
-            if not uploaded_file.content_type or not uploaded_file.content_type.startswith('image/'):
-                raise ValidationError('Solo se permiten archivos de imagen como evidencia.')
         return cleaned_files
 
 
@@ -976,14 +1082,23 @@ class ValidarEvidenciaForm(forms.Form):
     decision = forms.ChoiceField(choices=(
         (Evidencia.Estado.APROBADA, 'Aprobar'),
         (Evidencia.Estado.RECHAZADA, 'Rechazar'),
+        (Evidencia.Estado.CORRECCION, 'Solicitar corrección'),
     ))
     observacion = forms.CharField(required=False, widget=forms.Textarea)
 
     def clean(self):
         cleaned_data = super().clean()
         if (
-            cleaned_data.get('decision') == Evidencia.Estado.RECHAZADA
+            cleaned_data.get('decision') in (
+                Evidencia.Estado.RECHAZADA,
+                Evidencia.Estado.CORRECCION,
+            )
             and not cleaned_data.get('observacion', '').strip()
         ):
-            self.add_error('observacion', 'Indica el motivo del rechazo.')
+            self.add_error(
+                'observacion',
+                'Indica el motivo del rechazo o la corrección solicitada.',
+            )
+        elif 'observacion' in cleaned_data:
+            cleaned_data['observacion'] = cleaned_data['observacion'].strip()
         return cleaned_data

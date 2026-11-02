@@ -1,17 +1,23 @@
 from datetime import date, timedelta
 import json
 import tempfile
-from io import BytesIO
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO, StringIO
 from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError
-from django.test import Client, TestCase, override_settings
+from django.db import IntegrityError, close_old_connections
+from django.db.models.deletion import ProtectedError
+from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
+from PIL import Image
 
 from sgr_app.models import (
     Actividad,
+    AjusteIncentivo,
     AtencionSocial,
     Cargo,
     CasoSocial,
@@ -35,11 +41,16 @@ from sgr_app.serializers import (
     UsuarioSerializer,
 )
 from sgr_app.periodos import get_nombre_trimestre_actual, get_periodo_trimestre_actual
+from sgr_app.services.calculos import calcular_dias_periodo, calcular_metricas_funcionario
 from sgr_app.validators import (
     normalize_chilean_phone,
     normalize_chilean_rut,
     validate_chilean_rut,
 )
+from sgr_app.services.evidencias import validar_archivo_evidencia
+from sgr_app.web_views import _agrupar_funcionarios_por_cargo
+
+
 class ActivityWorkflowTests(TestCase):
     def setUp(self):
         self.today = timezone.localdate()
@@ -97,7 +108,9 @@ class ActivityWorkflowTests(TestCase):
         self.addCleanup(self.media_dir.cleanup)
 
     def upload(self, name):
-        return SimpleUploadedFile(name, b'test-image', content_type='image/jpeg')
+        image_buffer = BytesIO()
+        Image.new('RGB', (2, 2), color='blue').save(image_buffer, format='JPEG')
+        return SimpleUploadedFile(name, image_buffer.getvalue(), content_type='image/jpeg')
 
     def profile_form(self, **overrides):
         data = {
@@ -384,6 +397,86 @@ class ActivityWorkflowTests(TestCase):
         )
         self.assertContains(response, get_nombre_trimestre_actual(self.today))
 
+    def test_role_dashboards_aggregate_employee_results_by_cargo_and_allow_drilldown(self):
+        colega = Usuario.objects.create_user(
+            username='funcionario.cargo.companero',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            cargo=self.cargo,
+            delegacion=self.delegacion,
+        )
+        otra_delegacion = Delegacion.objects.create(
+            nombre='Delegación para comparación',
+            codigo='CMP',
+        )
+        otro_cargo = Cargo.objects.create(nombre='Analista de apoyo')
+        funcionario_otra_delegacion = Usuario.objects.create_user(
+            username='funcionario.cargo.otra.delegacion',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            cargo=otro_cargo,
+            delegacion=otra_delegacion,
+        )
+        for funcionario, cantidad in ((self.funcionario, 1), (colega, 2)):
+            for _ in range(cantidad):
+                actividad = Actividad.objects.create(
+                    funcionario=funcionario,
+                    delegacion=self.delegacion,
+                    item_medicion=self.item,
+                    fecha_actividad=self.today,
+                )
+                Evidencia.objects.create(
+                    actividad=actividad,
+                    estado=Evidencia.Estado.APROBADA,
+                )
+
+        delegado = Usuario.objects.create_user(
+            username='delegado.cargo.dashboard',
+            password='TestPassword123!',
+            rol=Usuario.Rol.SUPERVISOR,
+            es_delegado=True,
+            delegacion=self.delegacion,
+        )
+        self.client.force_login(delegado)
+        delegado_response = self.client.get('/dashboard/')
+
+        self.assertEqual(delegado_response.status_code, 200)
+        resumen_delegacion = delegado_response.context['comunal']['delegaciones'][0]
+        self.assertEqual(resumen_delegacion['total_funcionarios'], 2)
+        self.assertEqual(resumen_delegacion['promedio_ponderado_pct'], 15.0)
+        self.assertEqual(len(delegado_response.context['resumenes_por_cargo']), 1)
+        resumen_cargo_delegado = delegado_response.context['resumenes_por_cargo'][0]
+        self.assertEqual(resumen_cargo_delegado['cargo'], self.cargo.nombre)
+        self.assertEqual(resumen_cargo_delegado['total_funcionarios'], 2)
+        self.assertEqual(resumen_cargo_delegado['promedio_ponderado_pct'], 15.0)
+        self.assertEqual(
+            {funcionario['funcionario_id'] for funcionario in resumen_cargo_delegado['funcionarios']},
+            {self.funcionario.pk, colega.pk},
+        )
+        self.assertNotContains(delegado_response, funcionario_otra_delegacion.username)
+        self.assertContains(delegado_response, colega.username)
+        self.assertIn(f'id={colega.pk}'.encode(), delegado_response.content)
+
+        administrator = Usuario.objects.create_user(
+            username='admin.cargo.dashboard',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        self.client.force_login(administrator)
+        admin_response = self.client.get('/dashboard/')
+
+        self.assertEqual(admin_response.status_code, 200)
+        self.assertEqual(
+            {group['cargo_id'] for group in admin_response.context['resumenes_por_cargo']},
+            {self.cargo.pk, otro_cargo.pk},
+        )
+        self.assertEqual(
+            sum(group['total_funcionarios'] for group in admin_response.context['resumenes_por_cargo']),
+            3,
+        )
+        self.assertContains(admin_response, 'Desempeño global por cargo')
+        self.assertContains(admin_response, funcionario_otra_delegacion.username)
+
     def test_semaforo_uses_current_quarter_and_admin_thresholds(self):
         self.client.force_login(self.supervisor)
         self.periodo.umbral_semaforo_verde = 110.0
@@ -567,6 +660,155 @@ class ActivityWorkflowTests(TestCase):
         self.assertIn(f'item={self.item.pk}'.encode(), segunda_pagina.content)
         self.assertIn(b'pagina=1', segunda_pagina.content)
 
+    def test_compliance_calculation_applies_approved_adjustments_and_preserves_base(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+        )
+        Evidencia.objects.create(
+            actividad=actividad,
+            estado=Evidencia.Estado.APROBADA,
+        )
+        administrator = Usuario.objects.create_user(
+            username='admin.aprobar.ajuste',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        incentivo = AjusteIncentivo.objects.create(
+            funcionario=self.funcionario,
+            registrado_por=administrator,
+            periodo=self.periodo,
+            tipo='INCENTIVO',
+            motivo='Reconocimiento por cumplimiento',
+            valor_porcentaje=5,
+            estado='PENDIENTE',
+        )
+        penalizacion = AjusteIncentivo.objects.create(
+            funcionario=self.funcionario,
+            registrado_por=administrator,
+            periodo=self.periodo,
+            tipo='PENALIZACION',
+            motivo='Incumplimiento justificado',
+            valor_porcentaje=2,
+            estado='PENDIENTE',
+        )
+        incentivo.aprobarAjuste(administrator)
+        penalizacion.aprobarAjuste(administrator)
+
+        metricas = calcular_metricas_funcionario(self.funcionario, self.periodo, self.today)
+
+        self.assertEqual(metricas['items'][0]['cumplimiento_pct'], 10.0)
+        self.assertEqual(metricas['total_ponderado_pct'], 10.0)
+        self.assertEqual(sum(item['aporte_ponderado'] for item in metricas['items']), 10.0)
+        self.assertEqual(metricas['total_ajustado_pct'], 13.0)
+        self.assertEqual(
+            [ajuste['efecto_pct'] for ajuste in metricas['ajustes']],
+            [5.0, -2.0],
+        )
+        self.assertEqual(metricas['ajustes'][0]['responsable'], administrator.username)
+
+    def test_incentive_adjustment_workflow_audits_creation_and_approval(self):
+        administrator = Usuario.objects.create_user(
+            username='admin.registro.ajuste',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        self.client.force_login(administrator)
+        manager_page = self.client.get('/ajustes/', {'periodo': self.periodo.pk})
+        self.assertEqual(manager_page.status_code, 200)
+        self.assertContains(manager_page, 'Registrar ajuste')
+
+        response = self.client.post('/ajustes/', {
+            'periodo': str(self.periodo.pk),
+            'funcionario': str(self.funcionario.pk),
+            'tipo': 'BONIFICACION',
+            'motivo': 'Resultado destacado',
+            'valor_porcentaje': '7.5',
+        })
+
+        self.assertRedirects(response, f'/ajustes/?periodo={self.periodo.pk}')
+        ajuste = AjusteIncentivo.objects.get(funcionario=self.funcionario)
+        self.assertEqual(ajuste.estado, 'PENDIENTE')
+        self.assertEqual(ajuste.registrado_por, administrator)
+        registro_creacion = RegistroAuditoria.objects.get(
+            entidad='AjusteIncentivo',
+            identificador_registro=str(ajuste.pk),
+            accion='CREAR_AJUSTE_INCENTIVO',
+        )
+        self.assertEqual(registro_creacion.valor_nuevo['motivo'], 'Resultado destacado')
+        self.assertEqual(registro_creacion.valor_nuevo['registrado_por_id'], administrator.pk)
+
+        response = self.client.post(
+            f'/ajustes/{ajuste.pk}/decidir/',
+            {'decision': 'APROBAR'},
+        )
+
+        self.assertRedirects(response, f'/ajustes/?periodo={self.periodo.pk}')
+        ajuste.refresh_from_db()
+        self.assertEqual(ajuste.estado, 'APROBADO')
+        self.assertEqual(ajuste.aprobadoPor, administrator)
+        self.assertIsNotNone(ajuste.fechaAprobacion)
+        manager_page = self.client.get('/ajustes/', {'periodo': self.periodo.pk})
+        self.assertContains(manager_page, 'Resultado destacado')
+        self.assertEqual(manager_page.context['ajustes'][0].efecto_pct, 7.5)
+        self.assertContains(manager_page, 'Efecto:')
+        self.assertContains(manager_page, 'Resultado:')
+        self.assertContains(manager_page, administrator.username)
+        auditoria_aprobacion = RegistroAuditoria.objects.get(
+            entidad='AjusteIncentivo',
+            identificador_registro=str(ajuste.pk),
+            accion='APROBAR_AJUSTE_INCENTIVO',
+        )
+        self.assertEqual(auditoria_aprobacion.valor_anterior['estado'], 'PENDIENTE')
+        self.assertEqual(auditoria_aprobacion.valor_nuevo['estado'], 'APROBADO')
+
+        metricas = calcular_metricas_funcionario(self.funcionario, self.periodo, self.today)
+        self.assertEqual(metricas['total_ajustado_pct'], 7.5)
+        personal_response = self.client.get('/personal/', {
+            'id': self.funcionario.pk,
+            'periodo': self.periodo.pk,
+        })
+        self.assertEqual(personal_response.status_code, 200)
+        self.assertEqual(
+            personal_response.context['metricas']['total_ajustado_pct'],
+            7.5,
+        )
+        self.assertContains(personal_response, 'Resultado Ponderado Personal')
+
+    def test_incentive_adjustment_rejects_missing_reason_and_regular_user(self):
+        self.client.force_login(self.supervisor)
+        forbidden = Usuario.objects.create_user(
+            username='funcionario.sin.permiso.ajustes',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            delegacion=self.delegacion,
+        )
+        regular_client = Client()
+        regular_client.force_login(forbidden)
+
+        self.assertEqual(regular_client.get('/ajustes/').status_code, 403)
+        response = self.client.post('/ajustes/', {
+            'periodo': str(self.periodo.pk),
+            'funcionario': str(self.funcionario.pk),
+            'tipo': 'PENALIZACION',
+            'motivo': '   ',
+            'valor_porcentaje': '4',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'El motivo del ajuste es obligatorio.')
+        self.assertFalse(AjusteIncentivo.objects.exists())
+
+    def test_expected_daily_goal_never_exceeds_one_hundred_percent(self):
+        after_period = self.period_end + timedelta(days=1)
+
+        metrics = calcular_dias_periodo(self.periodo, after_period)
+
+        self.assertEqual(metrics['meta_esperada_pct'], 100.0)
+        self.assertLessEqual(metrics['meta_esperada_pct'], 100.0)
+
     def test_activity_registration_saves_requester_and_multiple_evidence(self):
         servicio = CatalogoServicio.objects.create(
             codigo='ACT-01',
@@ -635,6 +877,125 @@ class ActivityWorkflowTests(TestCase):
         )
         self.assertEqual(audit.valor_nuevo['evidencias'], [])
         self.assertIsNone(audit.valor_nuevo['compromiso_id'])
+
+    def test_activity_upload_records_real_format_size_and_uploader(self):
+        data = self.activity_form()
+        data['fotos'] = [self.upload('foto-original.jpg')]
+
+        with override_settings(MEDIA_ROOT=self.media_dir.name):
+            response = self.client.post('/actividad-diaria/registrar-actividad/', data)
+
+        self.assertEqual(response.status_code, 302)
+        evidencia = Evidencia.objects.get()
+        self.assertEqual(evidencia.subido_por, self.funcionario)
+        self.assertEqual(evidencia.metadatos['nombre_archivo'], 'foto-original.jpg')
+        self.assertEqual(evidencia.metadatos['formato'], 'JPEG')
+        self.assertEqual(evidencia.metadatos['mime_type'], 'image/jpeg')
+        self.assertGreater(evidencia.metadatos['tamano_bytes'], 0)
+        self.assertTrue(evidencia.archivo_foto.name.endswith('.jpg'))
+
+    def test_evidence_upload_rejects_mime_spoofing_and_oversized_files(self):
+        archivo_falso = SimpleUploadedFile(
+            'no-es-imagen.jpg',
+            b'contenido que no es una imagen',
+            content_type='image/jpeg',
+        )
+        with self.assertRaises(ValidationError):
+            validar_archivo_evidencia(archivo_falso)
+
+        with override_settings(EVIDENCE_MAX_FILE_SIZE=1):
+            with self.assertRaises(ValidationError):
+                validar_archivo_evidencia(self.upload('grande.jpg'))
+
+    def test_activity_api_rejects_spoofed_images_before_creating_activity(self):
+        response = self.client.post('/api/actividades/', {
+            'funcionario': self.funcionario.pk,
+            'delegacion': self.delegacion.pk,
+            'item_medicion': self.item.pk,
+            'fecha_actividad': self.today.isoformat(),
+            'actividad_solicitud': 'Actividad API de prueba',
+            'accion_ejecutada': 'Acción de prueba',
+            'direccion': 'La Serena',
+            'fotos': SimpleUploadedFile(
+                'foto-falsa.jpg',
+                b'no es una imagen',
+                content_type='image/jpeg',
+            ),
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('fotos', response.json())
+        self.assertFalse(Actividad.objects.exists())
+
+    def test_activity_api_records_uploader_and_metadata_for_uploaded_image(self):
+        with override_settings(MEDIA_ROOT=self.media_dir.name):
+            response = self.client.post('/api/actividades/', {
+                'funcionario': self.funcionario.pk,
+                'delegacion': self.delegacion.pk,
+                'item_medicion': self.item.pk,
+                'fecha_actividad': self.today.isoformat(),
+                'actividad_solicitud': 'Actividad API de prueba',
+                'accion_ejecutada': 'Acción de prueba',
+                'direccion': 'La Serena',
+                'fotos': self.upload('foto-api.jpg'),
+            })
+
+        self.assertEqual(response.status_code, 201, response.content)
+        evidencia = Evidencia.objects.get()
+        self.assertEqual(evidencia.subido_por, self.funcionario)
+        self.assertEqual(evidencia.metadatos['formato'], 'JPEG')
+        self.assertEqual(evidencia.metadatos['nombre_archivo'], 'foto-api.jpg')
+
+    def test_expired_evidence_retention_removes_file_but_keeps_metadata(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+        )
+        with override_settings(
+            MEDIA_ROOT=self.media_dir.name,
+            EVIDENCE_RETENTION_DAYS=30,
+        ):
+            evidencia = Evidencia.objects.create(
+                actividad=actividad,
+                subido_por=self.funcionario,
+                metadatos={'formato': 'JPEG', 'tamano_bytes': 123},
+            )
+            evidencia.archivo_foto.save('vencida.jpg', self.upload('foto.jpg'), save=True)
+            ruta_archivo = evidencia.archivo_foto.name
+            Evidencia.objects.filter(pk=evidencia.pk).update(
+                fecha_subida=timezone.now() - timedelta(days=31)
+            )
+
+            call_command('purgar_evidencias_vencidas', stdout=StringIO())
+
+            evidencia.refresh_from_db()
+            self.assertFalse(evidencia.archivo_foto)
+            self.assertIsNotNone(evidencia.archivos_eliminados_en)
+            self.assertEqual(
+                evidencia.metadatos,
+                {'formato': 'JPEG', 'tamano_bytes': 123},
+            )
+            self.assertFalse(evidencia.archivo_foto.storage.exists(ruta_archivo))
+
+    def test_deleting_evidence_record_deletes_its_uploaded_file(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+        )
+        with override_settings(MEDIA_ROOT=self.media_dir.name):
+            evidencia = Evidencia.objects.create(actividad=actividad)
+            evidencia.archivo_foto.save('eliminar.jpg', self.upload('foto.jpg'), save=True)
+            storage = evidencia.archivo_foto.storage
+            ruta_archivo = evidencia.archivo_foto.name
+            self.assertTrue(storage.exists(ruta_archivo))
+
+            evidencia.delete()
+
+            self.assertFalse(storage.exists(ruta_archivo))
 
     def test_activity_registration_rolls_back_all_related_records_if_audit_fails(self):
         data = self.activity_form()
@@ -793,6 +1154,33 @@ class ActivityWorkflowTests(TestCase):
         )
         self.assertEqual(audit.valor_anterior['version_de_parametro'], '1.0')
         self.assertEqual(audit.valor_nuevo['version_de_parametro'], '1.1')
+        item_audit = RegistroAuditoria.objects.get(
+            entidad='ItemMedicion',
+            evento='CREACION',
+        )
+        self.assertEqual(item_audit.valor_nuevo['nombre_item'], 'Segundo ítem versionado')
+        self.assertEqual(item_audit.valor_nuevo['meta_cuantitativa'], 10.0)
+
+    def test_productivity_gap_is_calculated_per_cargo(self):
+        resumenes = _agrupar_funcionarios_por_cargo([
+            {
+                'cargo_id': self.cargo.pk,
+                'cargo': self.cargo.nombre,
+                'total_ajustado_pct': 80,
+                'meta_esperada_pct': 60,
+            },
+            {
+                'cargo_id': self.cargo.pk,
+                'cargo': self.cargo.nombre,
+                'total_ajustado_pct': 50,
+                'meta_esperada_pct': 40,
+            },
+        ])
+
+        self.assertEqual(len(resumenes), 1)
+        self.assertEqual(resumenes[0]['promedio_ponderado_pct'], 65)
+        self.assertEqual(resumenes[0]['meta_esperada_pct'], 50)
+        self.assertEqual(resumenes[0]['brecha_pct'], 15)
 
     def test_period_threshold_change_is_versioned_and_audited(self):
         admin = Usuario.objects.create_user(
@@ -833,6 +1221,196 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(audit.valor_anterior['umbral_verde'], 80)
         self.assertEqual(audit.valor_nuevo['umbral_verde'], 85)
         self.assertEqual(audit.valor_nuevo['version_de_parametro'], '1.1')
+
+    def test_closed_period_rejects_parameter_changes_but_can_be_reopened(self):
+        self.periodo.cerrar_periodo()
+        self.periodo.umbral_verde = 85
+
+        with self.assertRaises(ValidationError):
+            self.periodo.save()
+
+        self.periodo.refresh_from_db()
+        self.assertTrue(self.periodo.cerrado)
+        self.assertEqual(self.periodo.umbral_verde, 80)
+
+        self.periodo.reabrir_periodo()
+        self.periodo.refresh_from_db()
+        self.assertFalse(self.periodo.cerrado)
+
+    def test_closed_period_rejects_item_meta_and_indicator_changes(self):
+        meta = MetaModel.objects.create(
+            nombre='Meta de prueba',
+            valor_meta=10,
+            ponderador=100,
+            periodo=self.periodo,
+            item=self.item,
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+        )
+        indicador = Indicador.objects.create(
+            avance=1,
+            cumplimiento=10,
+            ponderacion=100,
+            meta=meta,
+            periodo=self.periodo,
+        )
+        self.periodo.cerrar_periodo()
+
+        self.item.meta_cuantitativa = 20
+        with self.assertRaises(ValidationError):
+            self.item.save()
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.meta_cuantitativa, 10)
+
+        meta.valor_meta = 20
+        with self.assertRaises(ValidationError):
+            meta.save()
+        meta.refresh_from_db()
+        self.assertEqual(meta.valor_meta, 10)
+
+        indicador.avance = 2
+        with self.assertRaises(ValidationError):
+            indicador.save()
+        indicador.refresh_from_db()
+        self.assertEqual(indicador.avance, 1)
+
+    def test_closed_period_parameter_form_rejects_configuration_changes(self):
+        admin = Usuario.objects.create_user(
+            username='admin.periodo.cerrado',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        self.periodo.cerrar_periodo()
+        self.client.force_login(admin)
+
+        response = self.client.post(
+            f'/mantenedores/periodos/{self.periodo.pk}/modificar/',
+            {
+                'nombre': self.periodo.nombre,
+                'anio': str(self.period_start.year),
+                'trimestre': str((self.period_start.month - 1) // 3 + 1),
+                'fecha_inicio': self.period_start.isoformat(),
+                'fecha_termino': self.period_end.isoformat(),
+                'dias_computables': str((self.period_end - self.period_start).days + 1),
+                'umbral_verde': '85',
+                'umbral_ambar': '50',
+                'umbral_semaforo_verde': '100',
+                'umbral_semaforo_ambar': '60',
+                'umbral_colectivo': '80',
+                'tope_cumplimiento': '150',
+                'cerrado': 'on',
+                'estado': 'on',
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('__all__', response.context['form'].errors)
+        self.periodo.refresh_from_db()
+        self.assertEqual(self.periodo.umbral_verde, 80)
+        self.assertEqual(self.periodo.version_de_parametro, '1.0')
+
+    def test_audit_records_cannot_be_updated_or_deleted(self):
+        auditoria = RegistroAuditoria.objects.create(
+            usuario=self.funcionario,
+            funcionario=self.funcionario,
+            evento='CREACION',
+            accion='CREACION',
+            entidad='Actividad',
+            identificador_registro='1',
+            valor_anterior=None,
+            valor_nuevo={'solicitud': 'original'},
+        )
+
+        auditoria.valor_nuevo = {'solicitud': 'alterada'}
+        with self.assertRaises(ValidationError):
+            auditoria.save()
+        with self.assertRaises(ValidationError):
+            RegistroAuditoria.objects.filter(pk=auditoria.pk).update(
+                valor_nuevo={'solicitud': 'alterada'},
+            )
+        with self.assertRaises(ValidationError):
+            auditoria.delete()
+        with self.assertRaises(ValidationError):
+            RegistroAuditoria.objects.filter(pk=auditoria.pk).delete()
+
+        auditoria.refresh_from_db()
+        self.assertEqual(auditoria.valor_nuevo, {'solicitud': 'original'})
+        with self.assertRaises(ProtectedError):
+            self.funcionario.delete()
+        self.assertTrue(RegistroAuditoria.objects.filter(pk=auditoria.pk).exists())
+        admin = Usuario.objects.create_user(
+            username='admin.audit.view',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        self.client.force_login(admin)
+        response = self.client.get('/auditoria/')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'CREACION')
+        self.assertContains(response, 'Actividad')
+        self.assertContains(response, 'solicitud')
+        self.assertContains(
+            response,
+            timezone.localtime(auditoria.fecha).strftime('%d/%m/%Y %H:%M:%S'),
+        )
+
+    def test_administrator_can_create_a_delegado_with_required_role_and_scope(self):
+        admin = Usuario.objects.create_user(
+            username='admin.delegado.create',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        self.client.force_login(admin)
+
+        response = self.client.post('/mantenedores/funcionarios/crear/', {
+            'run': '12.345.678-5',
+            'nombre': 'Patricia',
+            'apellidoPaterno': 'Gestora',
+            'apellidoMaterno': 'Delegada',
+            'correo': 'patricia.delegada@example.com',
+            'rol': Usuario.Rol.SUPERVISOR,
+            'delegacion': str(self.delegacion.pk),
+            'es_delegado': 'on',
+            'estado': 'on',
+        })
+
+        self.assertRedirects(response, '/mantenedores/funcionarios/')
+        delegado = Usuario.objects.get(username='12.345.678-5')
+        self.assertEqual(delegado.rol, Usuario.Rol.SUPERVISOR)
+        self.assertTrue(delegado.es_delegado)
+        self.assertEqual(delegado.delegacion_id, self.delegacion.pk)
+        auditoria = RegistroAuditoria.objects.get(
+            entidad='Usuario',
+            identificador_registro=str(delegado.pk),
+            evento='CREACION',
+        )
+        self.assertEqual(auditoria.valor_nuevo['rol'], Usuario.Rol.SUPERVISOR)
+        self.assertTrue(auditoria.valor_nuevo['es_delegado'])
+        self.assertEqual(auditoria.valor_nuevo['delegacion_id'], self.delegacion.pk)
+
+    def test_delegado_form_rejects_missing_delegation_or_wrong_role(self):
+        admin = Usuario.objects.create_user(
+            username='admin.delegado.invalid',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        self.client.force_login(admin)
+
+        response = self.client.post('/mantenedores/funcionarios/crear/', {
+            'run': '12.345.678-5',
+            'nombre': 'Patricia',
+            'apellidoPaterno': 'Gestora',
+            'apellidoMaterno': 'Delegada',
+            'correo': 'patricia.delegada@example.com',
+            'rol': Usuario.Rol.ADMINISTRATIVO,
+            'es_delegado': 'on',
+            'estado': 'on',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('rol', response.context['form'].errors)
+        self.assertIn('delegacion', response.context['form'].errors)
+        self.assertFalse(Usuario.objects.filter(email='patricia.delegada@example.com').exists())
 
     def test_period_form_rejects_end_date_before_start(self):
         admin = Usuario.objects.create_user(
@@ -1397,6 +1975,50 @@ class ActivityWorkflowTests(TestCase):
             accion='VALIDAR_EVIDENCIA',
         ).exists())
 
+    def test_web_evidence_validation_can_request_correction_with_reason(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+        )
+        evidencia = Evidencia.objects.create(
+            actividad=actividad,
+            estado=Evidencia.Estado.PENDIENTE,
+        )
+        delegado = Usuario.objects.create_user(
+            username='delegado.validacion.correccion',
+            password='TestPassword123!',
+            rol=Usuario.Rol.SUPERVISOR,
+            es_delegado=True,
+            delegacion=self.delegacion,
+        )
+        self.client.force_login(delegado)
+
+        response = self.client.post(
+            f'/verificacion/{evidencia.pk}/validar/',
+            {
+                'decision': Evidencia.Estado.CORRECCION,
+                'observacion': 'Adjuntar una foto legible.',
+            },
+        )
+
+        self.assertRedirects(response, '/verificacion/')
+        evidencia.refresh_from_db()
+        self.assertEqual(evidencia.estado, Evidencia.Estado.CORRECCION)
+        self.assertEqual(evidencia.verificador, delegado)
+        self.assertEqual(
+            evidencia.observacion_rechazo,
+            'Adjuntar una foto legible.',
+        )
+        self.assertIsNotNone(evidencia.fecha_validacion)
+        self.assertTrue(RegistroAuditoria.objects.filter(
+            entidad='Evidencia',
+            identificador_registro=str(evidencia.pk),
+            usuario=delegado,
+            valor_nuevo__estado=Evidencia.Estado.CORRECCION,
+        ).exists())
+
     def test_evidence_validation_rolls_back_evidence_and_commitment_if_audit_fails(self):
         actividad = Actividad.objects.create(
             funcionario=self.funcionario,
@@ -1560,6 +2182,285 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(todos_response.context['totales_colectivos']['total'], 2)
         self.assertEqual(todos_response.context['totales_colectivos']['vencido'], 1)
 
+    def test_shared_agenda_exposes_same_delegation_commitments_but_not_other_delegations(self):
+        colega = Usuario.objects.create_user(
+            username='funcionario.agenda.colega',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            delegacion=self.delegacion,
+        )
+        delegacion_ajena = Delegacion.objects.create(
+            nombre='Delegación ajena',
+            codigo='AJN',
+        )
+        CompromisoAgenda.objects.create(
+            solicitante='Vecino visible para delegación',
+            delegacion=self.delegacion,
+            responsable=colega,
+            creado_por=colega,
+            fecha_compromiso=self.today,
+            fecha_comprometida=self.today,
+            descripcion='Compromiso compartido',
+        )
+        CompromisoAgenda.objects.create(
+            solicitante='Vecino de otra delegación',
+            delegacion=delegacion_ajena,
+            responsable=self.funcionario,
+            creado_por=self.funcionario,
+            fecha_compromiso=self.today,
+            fecha_comprometida=self.today,
+            descripcion='Compromiso de otro territorio',
+        )
+        delegado = Usuario.objects.create_user(
+            username='delegado.agenda.compartida',
+            password='TestPassword123!',
+            rol=Usuario.Rol.SUPERVISOR,
+            es_delegado=True,
+            delegacion=self.delegacion,
+        )
+        self.client.force_login(delegado)
+
+        response = self.client.get('/tubo/?periodo=todos')
+
+        self.assertEqual(response.status_code, 200)
+        compromiso_ids = {
+            compromiso.pk
+            for compromiso in response.context['todos_los_compromisos']
+        }
+        visible = CompromisoAgenda.objects.get(
+            solicitante='Vecino visible para delegación',
+        )
+        self.assertIn(visible.pk, compromiso_ids)
+        self.assertEqual(len(compromiso_ids), 1)
+
+    def test_operational_alerts_identify_overdue_low_performance_and_inactivity(self):
+        vencido = CompromisoAgenda.objects.create(
+            solicitante='Vecino con compromiso vencido',
+            delegacion=self.delegacion,
+            responsable=self.funcionario,
+            creado_por=self.supervisor,
+            fecha_compromiso=self.today - timedelta(days=1),
+            fecha_comprometida=self.today - timedelta(days=1),
+            descripcion='Revisar luminaria pendiente',
+            estado=CompromisoAgenda.Estado.EN_PROCESO,
+        )
+        delegado = Usuario.objects.create_user(
+            username='delegado.alertas.operativas',
+            password='TestPassword123!',
+            rol=Usuario.Rol.SUPERVISOR,
+            es_delegado=True,
+            delegacion=self.delegacion,
+        )
+        self.client.force_login(delegado)
+
+        response = self.client.get(
+            f'/alertas/?periodo={self.periodo.pk}',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        alertas_por_tipo = {
+            alerta['tipo']: alerta
+            for alerta in response.context['alertas']
+        }
+        self.assertIn('VENCIMIENTO', alertas_por_tipo)
+        self.assertIn('RENDIMIENTO_BAJO', alertas_por_tipo)
+        self.assertIn('INACTIVIDAD', alertas_por_tipo)
+        alerta_vencimiento = alertas_por_tipo['VENCIMIENTO']
+        self.assertEqual(alerta_vencimiento['responsable'], self.funcionario.username)
+        self.assertEqual(alerta_vencimiento['fecha'], vencido.fecha_compromiso)
+        self.assertIn(f'compromiso-{vencido.pk}', alerta_vencimiento['url'])
+        self.assertEqual(alertas_por_tipo['INACTIVIDAD']['fecha'], self.periodo.fecha_inicio)
+
+    def test_activity_metrics_recalculate_after_a_validated_activity_is_added(self):
+        anterior = calcular_metricas_funcionario(
+            self.funcionario,
+            self.periodo,
+            self.today,
+        )
+        self.assertEqual(anterior['total_actividades'], 0)
+        self.assertIsNone(anterior['ultima_actividad'])
+
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Actividad validada de prueba',
+        )
+        Evidencia.objects.create(
+            actividad=actividad,
+            estado=Evidencia.Estado.APROBADA,
+        )
+
+        actual = calcular_metricas_funcionario(
+            self.funcionario,
+            self.periodo,
+            self.today,
+        )
+        self.assertEqual(actual['total_actividades'], 1)
+        self.assertEqual(actual['items'][0]['avance_aprobado'], 1)
+        self.assertIsNotNone(actual['ultima_actividad'])
+        self.assertEqual(actual['dias_sin_ingreso'], 0)
+
+    def test_operational_report_filters_and_csv_keep_selected_criteria(self):
+        activity_match = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Reparar luminaria sector norte',
+            accion_ejecutada='Luminaria reparada',
+        )
+        otra_delegacion = Delegacion.objects.create(
+            nombre='Delegación para informe',
+            codigo='INF',
+        )
+        funcionario_ajeno = Usuario.objects.create_user(
+            username='funcionario.informe.ajeno',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            delegacion=otra_delegacion,
+        )
+        Actividad.objects.create(
+            funcionario=funcionario_ajeno,
+            delegacion=otra_delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Otra solicitud',
+        )
+        self.client.force_login(self.supervisor)
+        filtros = (
+            f'periodo={self.periodo.pk}&delegacion={self.delegacion.pk}'
+            f'&funcionario={self.funcionario.pk}&item={self.item.pk}&q=luminaria'
+        )
+
+        html_response = self.client.get(f'/informes/?{filtros}')
+        self.assertEqual(html_response.status_code, 200)
+        self.assertEqual(html_response.context['total_resultados'], 1)
+        self.assertEqual(
+            html_response.context['pagina'][0].pk,
+            activity_match.pk,
+        )
+
+        csv_response = self.client.get(f'/informes/?{filtros}&formato=csv')
+        self.assertEqual(csv_response.status_code, 200)
+        self.assertIn('text/csv', csv_response['Content-Type'])
+        self.assertIn('attachment;', csv_response['Content-Disposition'])
+        contenido = csv_response.content.decode('utf-8-sig')
+        self.assertIn('Generado', contenido)
+        self.assertIn('luminaria', contenido)
+        self.assertIn('Reparar luminaria sector norte', contenido)
+        self.assertNotIn('Otra solicitud', contenido)
+
+    def test_operational_report_handles_unconfigured_current_period(self):
+        admin = Usuario.objects.create_user(
+            username='admin.informe.sin.periodo',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        periodo_no_guardado = PeriodoMedicion(
+            nombre='Período actual sin configurar',
+            fecha_inicio=self.period_start,
+            fecha_termino=self.period_end,
+        )
+        self.client.force_login(admin)
+
+        with patch(
+            'sgr_app.web_views.get_periodo_activo',
+            return_value=periodo_no_guardado,
+        ):
+            response = self.client.get('/informes/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['total_resultados'], 0)
+        self.assertFalse(response.context['items'].exists())
+
+    def test_operational_report_applies_each_filter_independently(self):
+        otro_item = ItemMedicion.objects.create(
+            cargo=self.cargo,
+            periodo=self.periodo,
+            nombre_item='Ítem alternativo para informe',
+            meta_cuantitativa=10,
+            ponderador=0,
+        )
+        otro_funcionario = Usuario.objects.create_user(
+            username='funcionario.filtro.informe',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            delegacion=self.delegacion,
+        )
+        otra_delegacion = Delegacion.objects.create(
+            nombre='Delegación filtro informe',
+            codigo='FIR',
+        )
+        funcionario_otra_delegacion = Usuario.objects.create_user(
+            username='funcionario.otra.delegacion.informe',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            delegacion=otra_delegacion,
+        )
+        actividad_objetivo = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Reparación de luminaria',
+        )
+        actividad_otro_funcionario = Actividad.objects.create(
+            funcionario=otro_funcionario,
+            delegacion=self.delegacion,
+            item_medicion=otro_item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Poda de árbol',
+        )
+        actividad_otra_delegacion = Actividad.objects.create(
+            funcionario=funcionario_otra_delegacion,
+            delegacion=otra_delegacion,
+            item_medicion=otro_item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Mantención de plaza',
+        )
+        actividad_fuera_periodo = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.period_start - timedelta(days=1),
+            actividad_solicitud='Luminaria en período anterior',
+        )
+        self.client.force_login(self.supervisor)
+
+        filtros_esperados = (
+            (
+                {'periodo': self.periodo.pk},
+                {actividad_objetivo.pk, actividad_otro_funcionario.pk, actividad_otra_delegacion.pk},
+            ),
+            (
+                {'periodo': self.periodo.pk, 'delegacion': self.delegacion.pk},
+                {actividad_objetivo.pk, actividad_otro_funcionario.pk},
+            ),
+            (
+                {'periodo': self.periodo.pk, 'funcionario': self.funcionario.pk},
+                {actividad_objetivo.pk},
+            ),
+            (
+                {'periodo': self.periodo.pk, 'item': self.item.pk},
+                {actividad_objetivo.pk},
+            ),
+            (
+                {'periodo': self.periodo.pk, 'q': 'luminaria'},
+                {actividad_objetivo.pk},
+            ),
+        )
+        for filtros, ids_esperados in filtros_esperados:
+            with self.subTest(filtros=filtros):
+                response = self.client.get('/informes/', filtros)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    {actividad.pk for actividad in response.context['pagina']},
+                    ids_esperados,
+                )
+
     def test_social_case_web_flow_records_three_ordered_attentions_on_one_case(self):
         self.client.force_login(self.supervisor)
         response = self.client.post('/casos-sociales/', {
@@ -1671,7 +2572,17 @@ class ActivityWorkflowTests(TestCase):
             rol=Usuario.Rol.ADMINISTRATIVO,
             delegacion=self.delegacion,
         )
-        self.client.force_login(self.supervisor)
+        delegacion_coordinadora = Delegacion.objects.create(
+            nombre='Delegación coordinadora',
+            codigo='COO',
+        )
+        coordinador = Usuario.objects.create_user(
+            username='supervisor.interdelegacional',
+            password='TestPassword123!',
+            rol=Usuario.Rol.SUPERVISOR,
+            delegacion=delegacion_coordinadora,
+        )
+        self.client.force_login(coordinador)
 
         response = self.client.post(
             f'/tubo/{compromiso.pk}/editar/',
@@ -1703,11 +2614,18 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(auditoria.valor_nuevo['responsable_id'], reemplazo.pk)
         self.assertEqual(auditoria.valor_nuevo['estado'], CompromisoAgenda.Estado.REALIZADO)
         observacion = ObservacionCompromiso.objects.get(compromiso=compromiso)
-        self.assertEqual(observacion.autor_id, self.supervisor.pk)
         self.assertEqual(observacion.texto, 'Trabajo verificado')
+        self.assertEqual(observacion.compromiso_id, compromiso.pk)
+        self.assertIsNotNone(observacion.creada_en)
+        self.assertEqual(observacion.autor_id, coordinador.pk)
         detail_response = self.client.get(f'/tubo/{compromiso.pk}/editar/')
         self.assertContains(detail_response, 'Historial de observaciones')
         self.assertContains(detail_response, 'Trabajo verificado')
+        self.assertContains(detail_response, coordinador.username)
+        self.assertContains(
+            detail_response,
+            timezone.localtime(observacion.creada_en).strftime('%d/%m/%Y %H:%M'),
+        )
 
     def test_commitment_update_rolls_back_if_audit_fails(self):
         compromiso = CompromisoAgenda.objects.create(
@@ -2039,3 +2957,50 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, 'Django Superadmin')
         self.assertNotContains(response, 'href="/admin/"')
+
+
+class ConcurrentActivityPersistenceTests(TransactionTestCase):
+    def setUp(self):
+        self.delegacion = Delegacion.objects.create(
+            nombre='Delegación concurrente',
+            codigo='CON',
+        )
+        self.funcionarios = [
+            Usuario.objects.create_user(
+                username=f'funcionario.concurrente.{index}',
+                password='TestPassword123!',
+                rol=Usuario.Rol.ADMINISTRATIVO,
+                delegacion=self.delegacion,
+            )
+            for index in range(2)
+        ]
+
+    def test_simultaneous_distinct_activities_are_both_persisted(self):
+        start = threading.Barrier(2)
+
+        def create_activity(funcionario, description):
+            close_old_connections()
+            try:
+                start.wait(timeout=5)
+                return Actividad.objects.create(
+                    funcionario=funcionario,
+                    delegacion=self.delegacion,
+                    solicitud_problema=description,
+                ).pk
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(create_activity, funcionario, f'Registro {index}')
+                for index, funcionario in enumerate(self.funcionarios, start=1)
+            ]
+            activity_ids = [future.result(timeout=10) for future in futures]
+
+        self.assertEqual(len(set(activity_ids)), 2)
+        activities = list(
+            Actividad.objects.filter(pk__in=activity_ids)
+            .order_by('solicitud_problema')
+            .values_list('solicitud_problema', flat=True)
+        )
+        self.assertEqual(activities, ['Registro 1', 'Registro 2'])

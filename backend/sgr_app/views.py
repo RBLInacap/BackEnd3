@@ -2,11 +2,17 @@ import json
 from datetime import date
 from django.utils import timezone
 from django.contrib.auth import authenticate, login
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.exceptions import PermissionDenied as DRFPermissionDenied
+from rest_framework.exceptions import (
+    NotFound,
+    PermissionDenied as DRFPermissionDenied,
+    ValidationError as DRFValidationError,
+)
 
 from sgr_app.permissions import AuditAccessPermission
 from sgr_app.models import (
@@ -28,6 +34,7 @@ from sgr_app.services.calculos import (
     calcular_resumen_delegacion,
     calcular_resumen_comunal
 )
+from sgr_app.services.evidencias import metadatos_archivo_evidencia, validar_archivo_evidencia
 
 
 def registrar_evento_auditoria(request, usuario, accion, entidad, identificador, val_ant=None, val_nuevo=None):
@@ -316,6 +323,19 @@ class ActividadViewSet(viewsets.ModelViewSet):
             if not data.get('delegacion') and request.user.delegacion:
                 data['delegacion'] = request.user.delegacion.id
 
+        fotos_multiples = request.FILES.getlist('fotos')
+        archivos_individuales = [
+            request.FILES[campo]
+            for campo in ('archivo_foto', 'archivo_foto_2', 'archivo_foto_3')
+            if campo in request.FILES
+        ]
+        archivos_subidos = fotos_multiples or archivos_individuales
+        try:
+            for archivo in archivos_subidos:
+                validar_archivo_evidencia(archivo)
+        except DjangoValidationError as exc:
+            raise DRFValidationError({'fotos': exc.messages}) from exc
+
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         actividad = serializer.save()
@@ -328,12 +348,13 @@ class ActividadViewSet(viewsets.ModelViewSet):
         url_simulada_2 = data.get('url_foto_simulada_2') or ''
         url_simulada_3 = data.get('url_foto_simulada_3') or ''
 
-        fotos_multiples = request.FILES.getlist('fotos')
         if fotos_multiples:
             evidencias = [
                 Evidencia.objects.create(
                     actividad=actividad,
                     archivo_foto=foto,
+                    subido_por=request.user,
+                    metadatos=metadatos_archivo_evidencia(foto, request.user),
                     estado=Evidencia.Estado.PENDIENTE,
                 )
                 for foto in fotos_multiples
@@ -345,6 +366,13 @@ class ActividadViewSet(viewsets.ModelViewSet):
                 archivo_foto=foto_archivo,
                 archivo_foto_2=foto_archivo_2,
                 archivo_foto_3=foto_archivo_3,
+                subido_por=request.user,
+                metadatos={
+                    'archivos': [
+                        metadatos_archivo_evidencia(archivo, request.user)
+                        for archivo in archivos_individuales
+                    ]
+                },
                 url_foto_simulada=url_simulada or 'https://images.unsplash.com/photo-1541888946425-d0fbb1861564?auto=format&fit=crop&w=600&q=80',
                 url_foto_simulada_2=url_simulada_2,
                 url_foto_simulada_3=url_simulada_3,
@@ -389,51 +417,75 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
         """
         Botón de validación del Delegado: Aprobar, Rechazar o Corrección.
         """
-        evidencia = self.get_object()
-        decision = request.data.get('decision') # APROBADA, RECHAZADA, CORRECCION
-        observacion = request.data.get('observacion', '')
-        verificador_id = request.data.get('verificador')
+        if not (
+            request.user.is_superuser
+            or request.user.rol == Usuario.Rol.ADMINISTRADOR
+            or request.user.es_supervisor
+            or request.user.es_delegado
+        ):
+            raise DRFPermissionDenied(
+                'Solo supervisores, delegados y administradores pueden validar evidencias.'
+            )
 
+        decision = request.data.get('decision')
+        observacion = (request.data.get('observacion') or '').strip()
         if decision not in Evidencia.Estado.values:
-            return Response({'error': f'Decisión no válida: {decision}'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': f'Decisión no válida: {decision}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if decision in (
+            Evidencia.Estado.RECHAZADA,
+            Evidencia.Estado.CORRECCION,
+        ) and not observacion:
+            return Response(
+                {'error': 'Indica el motivo del rechazo o la corrección solicitada.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        verificador = None
-        if verificador_id:
+        with transaction.atomic():
             try:
-                verificador = Usuario.objects.get(id=verificador_id)
-            except Usuario.DoesNotExist:
-                pass
-        elif request.user.is_authenticated:
-            verificador = request.user
-
-        # RN-009 y CA-07: Segregación de Funciones
-        if verificador:
-            if verificador.es_administrativo:
-                return Response(
-                    {'error': 'Segregación de funciones (RN-009): Un funcionario de terreno no puede auto-aprobar o validar evidencias.'},
-                    status=status.HTTP_403_FORBIDDEN
+                evidencia = self.get_queryset().select_for_update().get(pk=pk)
+            except Evidencia.DoesNotExist as exc:
+                raise NotFound() from exc
+            self.check_object_permissions(request, evidencia)
+            estado_anterior = evidencia.estado
+            evidencia.estado = decision
+            evidencia.observacion = observacion
+            evidencia.observacion_rechazo = (
+                observacion
+                if decision in (
+                    Evidencia.Estado.RECHAZADA,
+                    Evidencia.Estado.CORRECCION,
                 )
-            if verificador.es_delegado and verificador.delegacion:
-                if evidencia.actividad.delegacion_id != verificador.delegacion_id:
-                    return Response(
-                        {'error': f'Acceso restringido: Solo puedes validar evidencias de tu propia delegación ({verificador.delegacion.nombre}).'},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
+                else None
+            )
+            evidencia.verificador = request.user
+            evidencia.fecha_validacion = timezone.now()
+            evidencia.save()
 
-        antiguo_estado = evidencia.estado
-        evidencia.estado = decision
-        evidencia.observacion = observacion
-        evidencia.verificador = verificador
-        evidencia.fecha_validacion = timezone.now()
-        evidencia.save()
-
-        registrar_evento_auditoria(
-            request,
-            verificador,
-            'VALIDAR_EVIDENCIA', 'Evidencia', evidencia.id,
-            {'estado': antiguo_estado},
-            {'estado': decision, 'observacion': observacion, 'codigo': evidencia.codigo_verificador}
-        )
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                accion='VALIDAR_EVIDENCIA',
+                evento=(
+                    'APROBACION'
+                    if decision == Evidencia.Estado.APROBADA
+                    else 'MODIFICACION'
+                ),
+                entidad='Evidencia',
+                identificador=str(evidencia.pk),
+                identificador_registro=str(evidencia.pk),
+                valor_anterior={'estado': estado_anterior},
+                valor_nuevo={
+                    'estado': decision,
+                    'observacion': observacion,
+                    'codigo': evidencia.codigo_verificador,
+                    'verificador_id': request.user.pk,
+                    'fecha_validacion': evidencia.fecha_validacion.isoformat(),
+                },
+                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            )
 
         return Response(EvidenciaSerializer(evidencia).data)
 

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Informes operacionales | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <div class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <h3 class="fw-bold text-white mb-1">Informes operacionales</h3>
+    <p class="text-white-50 mb-0">Filtra actividades del período y exporta el resultado visible en CSV.</p>
+  </div>
+
+  <form method="get" class="card card-body">
+    <div class="row g-3 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label fw-semibold" for="periodo">Período</label>
+        <select class="form-select" id="periodo" name="periodo">
+          {% for opcion in periodos %}
+            <option value="{{ opcion.pk }}" {% if periodo_seleccionado.pk == opcion.pk %}selected{% endif %}>{{ opcion.nombre }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold" for="delegacion">Delegación</label>
+        <select class="form-select" id="delegacion" name="delegacion">
+          <option value="">Todas</option>
+          {% for opcion in delegaciones %}
+            <option value="{{ opcion.pk }}" {% if filtros.delegacion == opcion.pk|stringformat:"s" %}selected{% endif %}>{{ opcion.nombre }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold" for="funcionario">Funcionario</label>
+        <select class="form-select" id="funcionario" name="funcionario">
+          <option value="">Todos</option>
+          {% for opcion in funcionarios %}
+            <option value="{{ opcion.pk }}" {% if filtros.funcionario == opcion.pk|stringformat:"s" %}selected{% endif %}>{{ opcion.get_full_name|default:opcion.username }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold" for="item">Ítem</label>
+        <select class="form-select" id="item" name="item">
+          <option value="">Todos</option>
+          {% for opcion in items %}
+            <option value="{{ opcion.pk }}" {% if filtros.item == opcion.pk|stringformat:"s" %}selected{% endif %}>{{ opcion.nombre_item }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-9">
+        <label class="form-label fw-semibold" for="q">Texto</label>
+        <input class="form-control" id="q" name="q" value="{{ filtros.q }}" placeholder="Actividad, acción o dirección">
+      </div>
+      <div class="col-md-3 d-flex gap-2">
+        <button class="btn btn-danger flex-grow-1" type="submit">Aplicar filtros</button>
+        <button class="btn btn-outline-success" type="submit" name="formato" value="csv">CSV</button>
+      </div>
+    </div>
+  </form>
+
+  <div class="card">
+    <div class="card-header bg-white fw-semibold">{{ total_resultados }} resultado(s)</div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead><tr><th>ID</th><th>Fecha</th><th>Funcionario</th><th>Delegación</th><th>Ítem</th><th>Actividad</th><th>Acción</th></tr></thead>
+        <tbody>
+          {% for actividad in pagina %}
+            <tr>
+              <td>{{ actividad.pk }}</td>
+              <td>{{ actividad.fecha_actividad|date:"d/m/Y" }}</td>
+              <td>{{ actividad.funcionario.get_full_name|default:actividad.funcionario.username }}</td>
+              <td>{{ actividad.delegacion.nombre }}</td>
+              <td>{{ actividad.item_medicion.nombre_item|default:"—" }}</td>
+              <td>{{ actividad.actividad_solicitud }}</td>
+              <td>{{ actividad.accion_ejecutada }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="7" class="text-center text-secondary py-4">Sin resultados para los filtros seleccionados.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if pagina.has_other_pages %}
+      <nav class="card-footer d-flex justify-content-between">
+        {% if pagina.has_previous %}<a href="?{{ query_sin_pagina.urlencode }}&page={{ pagina.previous_page_number }}">Anterior</a>{% else %}<span></span>{% endif %}
+        <span>Página {{ pagina.number }} de {{ pagina.paginator.num_pages }}</span>
+        {% if pagina.has_next %}<a href="?{{ query_sin_pagina.urlencode }}&page={{ pagina.next_page_number }}">Siguiente</a>{% endif %}
+      </nav>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

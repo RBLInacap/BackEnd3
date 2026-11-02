@@ -23,6 +23,44 @@ ALLOWED_HOSTS = env(
     cast=Csv(),
 )
 
+EVIDENCE_MAX_FILE_SIZE = env(
+    'EVIDENCE_MAX_FILE_SIZE',
+    default=5 * 1024 * 1024,
+    cast=int,
+)
+EVIDENCE_MAX_IMAGE_PIXELS = env(
+    'EVIDENCE_MAX_IMAGE_PIXELS',
+    default=40_000_000,
+    cast=int,
+)
+EVIDENCE_ALLOWED_FORMATS = tuple(
+    formato.upper()
+    for formato in env(
+        'EVIDENCE_ALLOWED_FORMATS',
+        default='JPEG,PNG,WEBP',
+        cast=Csv(),
+    )
+)
+EVIDENCE_RETENTION_DAYS = env(
+    'EVIDENCE_RETENTION_DAYS',
+    default=365,
+    cast=int,
+)
+if (
+    EVIDENCE_MAX_FILE_SIZE <= 0
+    or EVIDENCE_MAX_IMAGE_PIXELS <= 0
+    or EVIDENCE_RETENTION_DAYS <= 0
+):
+    raise ImproperlyConfigured(
+        'Los límites de tamaño, resolución y retención de evidencia deben ser mayores que cero.'
+    )
+if not EVIDENCE_ALLOWED_FORMATS or not set(EVIDENCE_ALLOWED_FORMATS).issubset(
+    {'JPEG', 'PNG', 'WEBP'}
+):
+    raise ImproperlyConfigured(
+        'EVIDENCE_ALLOWED_FORMATS solo puede contener JPEG, PNG y WEBP.'
+    )
+
 
 # Aplicaciones instaladas y middleware.
 
@@ -194,6 +232,9 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = env(
 SECURE_HSTS_PRELOAD = env('SECURE_HSTS_PRELOAD', default=False, cast=bool)
 
 REST_FRAMEWORK = {
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.SessionAuthentication',
         'rest_framework.authentication.BasicAuthentication',
