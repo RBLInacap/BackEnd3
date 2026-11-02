@@ -49,6 +49,40 @@ Abre <http://127.0.0.1:8000/> para iniciar sesión en la aplicación SGR.
 
 > En PowerShell, si no permite activar scripts, abre una terminal nueva o ejecuta `Set-ExecutionPolicy -Scope Process RemoteSigned` en esa sesión.
 
+### Recuperación de contraseña por Gmail
+
+El flujo de recuperación ya está implementado. En desarrollo, Django imprime el
+mensaje en la consola cuando `DEBUG=True` y `EMAIL_BACKEND` está vacío. Para probar
+el envío real con Gmail, crea una contraseña de aplicación en la cuenta remitente:
+Google requiere tener activada la verificación en dos pasos. Usa esa contraseña de
+aplicación, no la contraseña normal de Gmail.
+
+Configura estas variables en `backend/.env`, que está excluido de Git:
+
+```dotenv
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_HOST_USER=tu-cuenta@gmail.com
+EMAIL_HOST_PASSWORD=tu_contrasena_de_aplicacion
+EMAIL_USE_TLS=True
+EMAIL_USE_SSL=False
+DEFAULT_FROM_EMAIL=tu-cuenta@gmail.com
+```
+
+Reinicia el servidor después de cambiar la configuración. Para comprobar SMTP,
+ejecuta desde `backend/` y reemplaza la dirección de destino por una cuenta que
+puedas revisar:
+
+```powershell
+python manage.py shell -c "from django.core.mail import send_mail; print(send_mail('Prueba SMTP SGR', 'Correo de prueba.', None, ['tu-correo-de-prueba@gmail.com']))"
+```
+
+Un resultado `1` significa que el servidor SMTP aceptó el mensaje para envío;
+confirma su recepción en la bandeja de entrada o spam. Luego prueba el formulario
+`/password-reset/` con un usuario activo cuyo correo registrado puedas consultar.
+Nunca subas `backend/.env` ni compartas la contraseña de aplicación.
+
 ### Datos de demostración (opcional)
 
 `python manage.py poblar_sgr` agrega delegaciones, cargos, cuentas de demostración y datos sintéticos. Úsalo solo en una base local desechable: **no lo ejecutes sobre una base que ya contenga información real**. El comando no establece contraseñas conocidas; asígnalas individualmente con `python manage.py changepassword <usuario>`.
