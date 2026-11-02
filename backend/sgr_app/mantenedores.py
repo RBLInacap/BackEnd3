@@ -1,3 +1,5 @@
+import secrets
+
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
@@ -941,7 +943,10 @@ class FuncionarioCreateView(AdministradorRequiredMixin, AuditedSaveMixin, Create
     form_class = FuncionarioForm
     template_name = 'mantenedores/form.html'
     success_url = reverse_lazy('mantenedor_funcionarios_list')
-    success_message = 'Funcionario creado correctamente. La clave inicial es su RUN.'
+    success_message = (
+        'Funcionario creado correctamente. Debe usar «¿Olvidaste tu contraseña?» '
+        'para configurar su acceso.'
+    )
     extra_context = {
         'title': 'Crear funcionario',
         'submit_label': 'Crear funcionario',
@@ -949,7 +954,7 @@ class FuncionarioCreateView(AdministradorRequiredMixin, AuditedSaveMixin, Create
     }
 
     def form_valid(self, form):
-        form.instance.set_password(form.cleaned_data['run'])
+        form.instance.set_password(secrets.token_urlsafe(32))
         return super().form_valid(form)
 
 

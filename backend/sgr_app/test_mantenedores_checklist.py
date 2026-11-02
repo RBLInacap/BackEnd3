@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 
-from django.test import TestCase
+from django.core import mail
+from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from sgr_app.forms import DelegacionForm, MantenedorPeriodoForm
@@ -431,6 +432,36 @@ class MantenedoresChecklistTests(TestCase):
         funcionario = Usuario.objects.get(email='delegada.prueba@example.com')
         self.assertEqual(funcionario.rol, Usuario.Rol.SUPERVISOR)
         self.assertTrue(funcionario.es_delegado)
+
+    @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_new_functionary_does_not_use_run_as_password_and_can_reset_it(self):
+        response = self.client.post('/mantenedores/funcionarios/crear/', {
+            'run': '12.345.678-5',
+            'nombre': 'Persona',
+            'apellidoPaterno': 'Clave',
+            'apellidoMaterno': 'Segura',
+            'correo': 'clave.segura@example.com',
+            'rol': 'FUNCIONARIO',
+            'area_entidad': str(self.area.pk),
+            'estado': 'on',
+        })
+        self.assertEqual(response.status_code, 302)
+
+        funcionario = Usuario.objects.get(email='clave.segura@example.com')
+        self.assertFalse(funcionario.check_password(funcionario.rut_anonimizado))
+        client = Client()
+        self.assertFalse(client.login(
+            username=funcionario.username,
+            password=funcionario.rut_anonimizado,
+        ))
+
+        response = client.post(
+            '/password-reset/',
+            {'email': funcionario.email},
+        )
+        self.assertRedirects(response, '/password-reset/done/')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [funcionario.email])
 
     def test_functionary_requires_area(self):
         response = self.client.post('/mantenedores/funcionarios/crear/', {
