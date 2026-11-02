@@ -20,9 +20,11 @@
           <a href="{% url 'mantenedor_solicitantes_list' %}" class="btn btn-outline-secondary">Limpiar</a>
         {% endif %}
       </form>
-      <a href="{{ create_url }}" class="btn btn-danger text-nowrap">
-        <i class="bi bi-plus-circle me-1"></i> Crear solicitante
-      </a>
+      {% if can_manage %}
+        <a href="{{ create_url }}" class="btn btn-danger text-nowrap">
+          <i class="bi bi-plus-circle me-1"></i> Crear solicitante
+        </a>
+      {% endif %}
     </div>
 
     <div class="table-responsive">
@@ -35,7 +37,7 @@
             <th scope="col">Tipo</th>
             <th scope="col">Teléfono</th>
             <th scope="col">Correo</th>
-            <th scope="col" class="text-end">Acciones</th>
+            {% if can_manage %}<th scope="col" class="text-end">Acciones</th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -47,14 +49,16 @@
             <td>{{ item.get_tipo_solicitante_display }}</td>
             <td>{{ item.telefono|default:"—" }}</td>
             <td>{{ item.correo|default:"—" }}</td>
-            <td class="text-end text-nowrap">
-              <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
-              <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
-            </td>
+            {% if can_manage %}
+              <td class="text-end text-nowrap">
+                <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
+                <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+              </td>
+            {% endif %}
           </tr>
           {% empty %}
           <tr>
-            <td colspan="7" class="text-center text-secondary py-4">
+            <td colspan="{% if can_manage %}7{% else %}6{% endif %}" class="text-center text-secondary py-4">
               {% if search_term %}No se encontraron solicitantes para esa búsqueda.{% else %}No hay solicitantes activos.{% endif %}
             </td>
           </tr>

@@ -16,21 +16,21 @@
         <button type="submit" class="btn btn-outline-danger">Buscar</button>
         {% if search_term %}<a href="{% url 'mantenedor_roles_list' %}" class="btn btn-outline-secondary">Limpiar</a>{% endif %}
       </form>
-      <a href="{{ create_url }}" class="btn btn-danger text-nowrap"><i class="bi bi-plus-circle me-1"></i> Crear rol</a>
+      {% if can_manage %}<a href="{{ create_url }}" class="btn btn-danger text-nowrap"><i class="bi bi-plus-circle me-1"></i> Crear rol</a>{% endif %}
     </div>
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
-        <thead><tr><th scope="col">Nombre</th><th scope="col">Descripción</th><th scope="col" class="text-end">Acciones</th></tr></thead>
+        <thead><tr><th scope="col">Nombre</th><th scope="col">Descripción</th>{% if can_manage %}<th scope="col" class="text-end">Acciones</th>{% endif %}</tr></thead>
         <tbody>
           {% for item in object_list %}
           <tr>
             <th scope="row">{{ item.nombre }}</th><td>{{ item.descripcion|default:"—" }}</td>
-            <td class="text-end text-nowrap">
+            {% if can_manage %}<td class="text-end text-nowrap">
               <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
               <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
-            </td>
+            </td>{% endif %}
           </tr>
-          {% empty %}<tr><td colspan="3" class="text-center text-secondary py-4">{% if search_term %}No se encontraron roles.{% else %}No hay roles activos.{% endif %}</td></tr>{% endfor %}
+          {% empty %}<tr><td colspan="{% if can_manage %}3{% else %}2{% endif %}" class="text-center text-secondary py-4">{% if search_term %}No se encontraron roles.{% else %}No hay roles activos.{% endif %}</td></tr>{% endfor %}
         </tbody>
       </table>
     </div>

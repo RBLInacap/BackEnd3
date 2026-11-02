@@ -350,6 +350,146 @@ class MantenedoresChecklistTests(TestCase):
         self.assertFalse(servicio.activo)
         self.assertTrue(CatalogoServicio.objects.filter(pk=servicio.pk).exists())
 
+    def test_maintenance_dropdown_uses_activity_dropdown_style(self):
+        response = self.client.get('/mantenedores/delegaciones/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'dropdown-menu nav-dropdown-menu')
+        self.assertContains(response, 'dropdown-item nav-dropdown-item active')
+        self.assertContains(response, 'bi-geo-alt')
+
+    def test_supervisor_can_read_maintainers_and_manage_requesters_and_catalog(self):
+        supervisor = Usuario.objects.create_user(
+            username='supervisor.checklist',
+            password='TestPassword123!',
+            rol=Usuario.Rol.SUPERVISOR,
+            delegacion=self.delegacion,
+        )
+        client = self.client
+        client.force_login(supervisor)
+
+        list_urls = (
+            '/mantenedores/delegaciones/',
+            '/mantenedores/cargos/',
+            '/mantenedores/items/',
+            '/mantenedores/periodos/',
+            '/mantenedores/solicitantes/',
+            '/mantenedores/funcionarios/',
+            '/mantenedores/roles/',
+            '/mantenedores/areas/',
+        )
+        for url in list_urls:
+            with self.subTest(url=url):
+                response = client.get(url)
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, 'Mantenedores')
+                if url == '/mantenedores/solicitantes/':
+                    self.assertTrue(response.context['can_manage'])
+                else:
+                    self.assertFalse(response.context['can_manage'])
+                if url == '/mantenedores/items/':
+                    self.assertFalse(response.context['can_manage_items'])
+                    self.assertTrue(response.context['can_manage_catalog'])
+
+        restricted_objects = (
+            ('delegaciones', self.delegacion),
+            ('cargos', self.cargo),
+            (
+                'items',
+                ItemMedicion.objects.create(
+                    cargo=self.cargo,
+                    periodo=self.periodo,
+                    nombre_item='Ítem restringido',
+                    ponderador=10,
+                ),
+            ),
+            ('periodos', self.periodo),
+            ('funcionarios', self.admin),
+            ('roles', Rol.objects.create(nombre_rol='Rol restringido')),
+            ('areas', Area.objects.create(nombre='Área restringida')),
+        )
+        for name, obj in restricted_objects:
+            with self.subTest(mantenedor=name):
+                base_url = f'/mantenedores/{name}/'
+                self.assertEqual(
+                    client.post(f'{base_url}crear/', {}).status_code,
+                    403,
+                )
+                self.assertEqual(
+                    client.post(f'{base_url}{obj.pk}/modificar/', {}).status_code,
+                    403,
+                )
+                self.assertEqual(
+                    client.post(f'{base_url}{obj.pk}/desactivar/').status_code,
+                    403,
+                )
+
+        requester_data = {
+            'run': '11.111.111-1',
+            'nombre': 'Solicitante Supervisor',
+            'apellido_paterno': 'Apellido',
+            'apellido_materno': 'Prueba',
+            'tipo_solicitante': 'VECINO',
+            'telefono': '',
+            'correo': 'solicitante.supervisor@example.com',
+            'estado': 'on',
+        }
+        response = client.post(
+            '/mantenedores/solicitantes/crear/',
+            requester_data,
+        )
+        self.assertRedirects(response, '/mantenedores/solicitantes/')
+        requester = Solicitante.objects.get(run='11.111.111-1')
+        response = client.get('/mantenedores/solicitantes/')
+        self.assertContains(response, 'Crear solicitante')
+        self.assertContains(response, 'Modificar')
+
+        requester_data['nombre'] = 'Solicitante actualizado'
+        response = client.post(
+            f'/mantenedores/solicitantes/{requester.pk}/modificar/',
+            requester_data,
+        )
+        self.assertRedirects(response, '/mantenedores/solicitantes/')
+        requester.refresh_from_db()
+        self.assertEqual(requester.nombre, 'Solicitante actualizado')
+
+        response = client.post(
+            f'/mantenedores/solicitantes/{requester.pk}/desactivar/',
+        )
+        self.assertRedirects(response, '/mantenedores/solicitantes/')
+        requester.refresh_from_db()
+        self.assertFalse(requester.estado)
+
+        catalog_url = '/mantenedores/items/'
+        response = client.get(catalog_url)
+        self.assertContains(response, 'Agregar servicio')
+        self.assertNotContains(response, 'Crear ítem')
+        response = client.post(catalog_url, {
+            'action': 'guardar_catalogo',
+            'codigo': 'SVC-SUPERVISOR',
+            'nombre': 'Servicio Supervisor',
+            'area': 'Territorio',
+        })
+        self.assertRedirects(response, catalog_url)
+        service = CatalogoServicio.objects.get(codigo='SVC-SUPERVISOR')
+        response = client.post(catalog_url, {
+            'action': 'guardar_catalogo',
+            'catalogo_id': str(service.pk),
+            'codigo': 'SVC-SUPERVISOR',
+            'nombre': 'Servicio Supervisor actualizado',
+            'area': 'Operaciones',
+        })
+        self.assertRedirects(response, catalog_url)
+        service.refresh_from_db()
+        self.assertEqual(service.nombre, 'Servicio Supervisor actualizado')
+        response = client.post(catalog_url, {
+            'action': 'desactivar_catalogo',
+            'catalogo_id': str(service.pk),
+        })
+        self.assertRedirects(response, catalog_url)
+        service.refresh_from_db()
+        self.assertFalse(service.activo)
+
     def test_maintenance_api_allows_reads_but_rejects_all_writes(self):
         servicio = CatalogoServicio.objects.create(
             codigo='SVC-API',

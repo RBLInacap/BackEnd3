@@ -20,9 +20,11 @@
           <a href="{% url 'mantenedor_periodos_list' %}" class="btn btn-outline-secondary">Limpiar</a>
         {% endif %}
       </form>
-      <a href="{{ create_url }}" class="btn btn-danger text-nowrap">
-        <i class="bi bi-plus-circle me-1"></i> Crear período
-      </a>
+      {% if can_manage %}
+        <a href="{{ create_url }}" class="btn btn-danger text-nowrap">
+          <i class="bi bi-plus-circle me-1"></i> Crear período
+        </a>
+      {% endif %}
     </div>
 
     <div class="table-responsive">
@@ -36,7 +38,7 @@
             <th scope="col">Término</th>
             <th scope="col">Días</th>
             <th scope="col">Estado</th>
-            <th scope="col" class="text-end">Acciones</th>
+            {% if can_manage %}<th scope="col" class="text-end">Acciones</th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -55,14 +57,16 @@
                 <span class="badge text-bg-success">Abierto</span>
               {% endif %}
             </td>
-            <td class="text-end text-nowrap">
-              <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
-              <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
-            </td>
+            {% if can_manage %}
+              <td class="text-end text-nowrap">
+                <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
+                <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+              </td>
+            {% endif %}
           </tr>
           {% empty %}
           <tr>
-            <td colspan="8" class="text-center text-secondary py-4">
+            <td colspan="{% if can_manage %}8{% else %}7{% endif %}" class="text-center text-secondary py-4">
               {% if search_term %}No se encontraron períodos para esa búsqueda.{% else %}No hay períodos activos.{% endif %}
             </td>
           </tr>

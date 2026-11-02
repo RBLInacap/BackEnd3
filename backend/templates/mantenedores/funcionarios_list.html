@@ -17,14 +17,14 @@
         <button type="submit" class="btn btn-outline-danger">Buscar</button>
         {% if search_term %}<a href="{% url 'mantenedor_funcionarios_list' %}" class="btn btn-outline-secondary">Limpiar</a>{% endif %}
       </form>
-      <a href="{{ create_url }}" class="btn btn-danger text-nowrap"><i class="bi bi-plus-circle me-1"></i> Crear funcionario</a>
+      {% if can_manage %}<a href="{{ create_url }}" class="btn btn-danger text-nowrap"><i class="bi bi-plus-circle me-1"></i> Crear funcionario</a>{% endif %}
     </div>
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
         <thead>
           <tr>
             <th scope="col">RUN</th><th scope="col">Nombre</th><th scope="col">Apellidos</th>
-            <th scope="col">Correo</th><th scope="col">Rol</th><th scope="col" class="text-end">Acciones</th>
+            <th scope="col">Correo</th><th scope="col">Rol</th>{% if can_manage %}<th scope="col" class="text-end">Acciones</th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -35,13 +35,13 @@
             <td>{{ item.last_name|default:"—" }}</td>
             <td>{{ item.email|default:"—" }}</td>
             <td>{{ item.get_rol_display }}</td>
-            <td class="text-end text-nowrap">
+            {% if can_manage %}<td class="text-end text-nowrap">
               <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
               <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
-            </td>
+            </td>{% endif %}
           </tr>
           {% empty %}
-          <tr><td colspan="6" class="text-center text-secondary py-4">{% if search_term %}No se encontraron funcionarios.{% else %}No hay funcionarios activos.{% endif %}</td></tr>
+          <tr><td colspan="{% if can_manage %}6{% else %}5{% endif %}" class="text-center text-secondary py-4">{% if search_term %}No se encontraron funcionarios.{% else %}No hay funcionarios activos.{% endif %}</td></tr>
           {% endfor %}
         </tbody>
       </table>

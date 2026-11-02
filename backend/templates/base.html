@@ -450,22 +450,22 @@
               {% if request.user.es_administrativo %}Panel Administrativo{% elif request.user.es_delegado %}Panel Delegado{% elif request.user.es_supervisor %}Panel Supervisor{% else %}Panel Administrador{% endif %}
             </a>
           </li>
-          {% if request.user.rol == 'ADMINISTRADOR' or request.user.is_superuser %}
+          {% if request.user.rol == 'ADMINISTRADOR' or request.user.is_superuser or request.user.es_supervisor %}
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle {% if 'mantenedor_' in request.resolver_match.url_name %}active{% endif %}"
                href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
               <i class="bi bi-gear me-1"></i> Mantenedores
             </a>
-            <ul class="dropdown-menu">
-              <li><a class="dropdown-item" href="{% url 'mantenedor_delegaciones_list' %}">Delegaciones</a></li>
-              <li><a class="dropdown-item" href="{% url 'mantenedor_cargos_list' %}">Cargos</a></li>
-              <li><a class="dropdown-item" href="{% url 'mantenedor_items_list' %}">Ítems</a></li>
-              <li><a class="dropdown-item" href="{% url 'mantenedor_periodos_list' %}">Períodos</a></li>
-              <li><a class="dropdown-item" href="{% url 'mantenedor_solicitantes_list' %}">Solicitantes</a></li>
+            <ul class="dropdown-menu nav-dropdown-menu">
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_delegaciones_list' %}active{% endif %}" href="{% url 'mantenedor_delegaciones_list' %}"><i class="bi bi-geo-alt me-2"></i>Delegaciones</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_cargos_list' %}active{% endif %}" href="{% url 'mantenedor_cargos_list' %}"><i class="bi bi-briefcase me-2"></i>Cargos</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_items_list' %}active{% endif %}" href="{% url 'mantenedor_items_list' %}"><i class="bi bi-list-check me-2"></i>Ítems</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_periodos_list' %}active{% endif %}" href="{% url 'mantenedor_periodos_list' %}"><i class="bi bi-calendar3 me-2"></i>Períodos</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_solicitantes_list' %}active{% endif %}" href="{% url 'mantenedor_solicitantes_list' %}"><i class="bi bi-person-lines-fill me-2"></i>Solicitantes</a></li>
               <li><hr class="dropdown-divider"></li>
-              <li><a class="dropdown-item" href="{% url 'mantenedor_funcionarios_list' %}">Funcionarios</a></li>
-              <li><a class="dropdown-item" href="{% url 'mantenedor_roles_list' %}">Roles</a></li>
-              <li><a class="dropdown-item" href="{% url 'mantenedor_areas_list' %}">Áreas</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_funcionarios_list' %}active{% endif %}" href="{% url 'mantenedor_funcionarios_list' %}"><i class="bi bi-people me-2"></i>Funcionarios</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_roles_list' %}active{% endif %}" href="{% url 'mantenedor_roles_list' %}"><i class="bi bi-shield-lock me-2"></i>Roles</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_areas_list' %}active{% endif %}" href="{% url 'mantenedor_areas_list' %}"><i class="bi bi-diagram-3 me-2"></i>Áreas</a></li>
             </ul>
           </li>
           {% endif %}

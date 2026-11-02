@@ -35,13 +35,15 @@ from sgr_app.models import (
 
 
 class AdministradorRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
+    allow_supervisor = False
+    supervisor_can_manage = False
+
     def test_func(self):
-        return (
-            self.request.user.is_authenticated
-            and (
-                self.request.user.is_superuser
-                or self.request.user.rol == Usuario.Rol.ADMINISTRADOR
-            )
+        user = self.request.user
+        return user.is_authenticated and (
+            user.is_superuser
+            or user.rol == Usuario.Rol.ADMINISTRADOR
+            or (self.allow_supervisor and user.es_supervisor)
         )
 
 
@@ -179,6 +181,15 @@ class ActivoListView(AdministradorRequiredMixin, ListView):
             'update_url_name': self.update_url_name,
             'delete_url_name': self.delete_url_name,
             'search_term': self.request.GET.get('q', '').strip(),
+            'can_manage': (
+                self.request.user.is_superuser
+                or self.request.user.rol == Usuario.Rol.ADMINISTRADOR
+                or (
+                    self.allow_supervisor
+                    and self.supervisor_can_manage
+                    and self.request.user.es_supervisor
+                )
+            ),
         })
         return context
 
@@ -244,6 +255,15 @@ class ActivoBooleanListView(AdministradorRequiredMixin, ListView):
             'update_url_name': self.update_url_name,
             'delete_url_name': self.delete_url_name,
             'search_term': self.request.GET.get('q', '').strip(),
+            'can_manage': (
+                self.request.user.is_superuser
+                or self.request.user.rol == Usuario.Rol.ADMINISTRADOR
+                or (
+                    self.allow_supervisor
+                    and self.supervisor_can_manage
+                    and self.request.user.es_supervisor
+                )
+            ),
         })
         return context
 
@@ -294,6 +314,7 @@ class AuditedSoftDeleteView(AdministradorRequiredMixin, DeleteView):
 
 
 class DelegacionListView(ActivoListView):
+    allow_supervisor = True
     model = Delegacion
     template_name = 'mantenedores/list.html'
     context_object_name = 'object_list'
@@ -344,6 +365,7 @@ class DelegacionDeleteView(SoftDeleteView):
 
 
 class CargoListView(ActivoListView):
+    allow_supervisor = True
     model = Cargo
     template_name = 'mantenedores/list.html'
     context_object_name = 'object_list'
@@ -395,6 +417,8 @@ class CargoDeleteView(SoftDeleteView):
 
 
 class ItemListView(ActivoBooleanListView):
+    allow_supervisor = True
+    supervisor_can_manage_catalog = True
     model = ItemMedicion
     queryset = ItemMedicion.objects.select_related('cargo', 'periodo')
     template_name = 'mantenedores/items_list.html'
@@ -409,6 +433,7 @@ class ItemListView(ActivoBooleanListView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         catalogo_form = kwargs.get('catalogo_form') or CatalogoServicioForm()
+        user = self.request.user
         context.update({
             'catalogo_servicios': CatalogoServicio.objects.filter(activo=True).order_by(
                 'area', 'nombre'
@@ -416,6 +441,14 @@ class ItemListView(ActivoBooleanListView):
             'catalogo_form': catalogo_form,
             'catalogo_form_title': (
                 'Modificar servicio' if catalogo_form.instance.pk else 'Agregar servicio'
+            ),
+            'can_manage_items': (
+                user.is_superuser or user.rol == Usuario.Rol.ADMINISTRADOR
+            ),
+            'can_manage_catalog': (
+                user.is_superuser
+                or user.rol == Usuario.Rol.ADMINISTRADOR
+                or (self.supervisor_can_manage_catalog and user.es_supervisor)
             ),
         })
         return context
@@ -542,6 +575,7 @@ class ItemDeleteView(AuditedSoftDeleteView):
 
 
 class PeriodoListView(ActivoBooleanListView):
+    allow_supervisor = True
     model = PeriodoMedicion
     template_name = 'mantenedores/periodos_list.html'
     activo_field = 'estado'
@@ -618,6 +652,8 @@ class PeriodoDeleteView(AuditedSoftDeleteView):
 
 
 class SolicitanteListView(ActivoBooleanListView):
+    allow_supervisor = True
+    supervisor_can_manage = True
     model = Solicitante
     template_name = 'mantenedores/solicitantes_list.html'
     activo_field = 'estado'
@@ -640,6 +676,7 @@ class SolicitanteCreateView(
     AuditedSaveMixin,
     CreateView,
 ):
+    allow_supervisor = True
     model = Solicitante
     form_class = MantenedorSolicitanteForm
     template_name = 'mantenedores/form.html'
@@ -657,6 +694,7 @@ class SolicitanteUpdateView(
     AuditedSaveMixin,
     UpdateView,
 ):
+    allow_supervisor = True
     model = Solicitante
     form_class = MantenedorSolicitanteForm
     template_name = 'mantenedores/form.html'
@@ -673,6 +711,7 @@ class SolicitanteUpdateView(
 
 
 class SolicitanteDeleteView(AuditedSoftDeleteView):
+    allow_supervisor = True
     model = Solicitante
     template_name = 'mantenedores/confirm_delete.html'
     activo_field = 'estado'
@@ -682,6 +721,7 @@ class SolicitanteDeleteView(AuditedSoftDeleteView):
 
 
 class FuncionarioListView(ActivoBooleanListView):
+    allow_supervisor = True
     model = Usuario
     template_name = 'mantenedores/funcionarios_list.html'
     activo_field = 'is_active'
@@ -736,6 +776,7 @@ class FuncionarioDeleteView(AuditedSoftDeleteView):
 
 
 class RolListView(ActivoBooleanListView):
+    allow_supervisor = True
     model = Rol
     template_name = 'mantenedores/roles_list.html'
     activo_field = 'estado'
@@ -786,6 +827,7 @@ class RolDeleteView(AuditedSoftDeleteView):
 
 
 class AreaListView(ActivoBooleanListView):
+    allow_supervisor = True
     model = Area
     template_name = 'mantenedores/areas_list.html'
     activo_field = 'estado'

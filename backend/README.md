@@ -149,3 +149,9 @@ consultar delegaciones, cargos, usuarios, períodos, catálogo de servicios e í
 pero sus endpoints de mantenimiento son de solo lectura; las operaciones
 transaccionales de la API conservan sus permisos por rol. La acción Eliminar de los
 mantenedores desactiva el registro y conserva sus relaciones e historial.
+
+Los supervisores pueden consultar los ocho mantenedores, pero solo pueden crear,
+modificar y desactivar solicitantes y servicios del catálogo. La configuración de
+usuarios/funcionarios, roles, áreas, delegaciones, cargos, períodos e ítems queda
+reservada al Administrador. El perfil Delegado no obtiene acceso al menú de
+mantenedores.

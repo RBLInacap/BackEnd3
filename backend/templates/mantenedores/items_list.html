@@ -20,9 +20,11 @@
           <a href="{% url 'mantenedor_items_list' %}" class="btn btn-outline-secondary">Limpiar</a>
         {% endif %}
       </form>
-      <a href="{{ create_url }}" class="btn btn-danger text-nowrap">
-        <i class="bi bi-plus-circle me-1"></i> Crear ítem
-      </a>
+      {% if can_manage_items %}
+        <a href="{{ create_url }}" class="btn btn-danger text-nowrap">
+          <i class="bi bi-plus-circle me-1"></i> Crear ítem
+        </a>
+      {% endif %}
     </div>
 
     <div class="table-responsive">
@@ -34,7 +36,7 @@
             <th scope="col">Unidad</th>
             <th scope="col">Cargo</th>
             <th scope="col">Período</th>
-            <th scope="col" class="text-end">Acciones</th>
+            {% if can_manage_items %}<th scope="col" class="text-end">Acciones</th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -45,14 +47,16 @@
             <td>{{ item.get_tipo_unidad_display }}</td>
             <td>{{ item.cargo }}</td>
             <td>{{ item.periodo.nombre }}</td>
-            <td class="text-end text-nowrap">
-              <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
-              <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
-            </td>
+            {% if can_manage_items %}
+              <td class="text-end text-nowrap">
+                <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
+                <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
+              </td>
+            {% endif %}
           </tr>
           {% empty %}
           <tr>
-            <td colspan="6" class="text-center text-secondary py-4">
+            <td colspan="{% if can_manage_items %}6{% else %}5{% endif %}" class="text-center text-secondary py-4">
               {% if search_term %}No se encontraron ítems para esa búsqueda.{% else %}No hay ítems activos.{% endif %}
             </td>
           </tr>
@@ -63,6 +67,7 @@
     {% include "mantenedores/pagination.html" %}
   </section>
 
+  {% if can_manage_catalog %}
   <section class="card shadow-sm border-0">
     <div class="card-body">
       <h2 class="h5 fw-bold mb-1">Catálogo de actividades y servicios</h2>
@@ -131,5 +136,6 @@
       </div>
     </div>
   </section>
+  {% endif %}
 </div>
 {% endblock %}
