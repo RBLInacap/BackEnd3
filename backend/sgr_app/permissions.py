@@ -1,8 +1,18 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 
+READ_ONLY_MAINTENANCE_VIEWSETS = frozenset({
+    'DelegacionViewSet',
+    'CargoViewSet',
+    'UsuarioViewSet',
+    'PeriodoMedicionViewSet',
+    'CatalogoServicioViewSet',
+    'ItemMedicionViewSet',
+})
+
+
 class AuthenticatedRolePermission(BasePermission):
-    """Require login for reads and an authorized role for API mutations."""
+    """Require login, keep maintenance APIs read-only, and authorize other mutations."""
 
     def has_permission(self, request, view):
         user = request.user
@@ -10,6 +20,17 @@ class AuthenticatedRolePermission(BasePermission):
             return False
         if request.method in SAFE_METHODS:
             return True
+
+        if (
+            view.__class__.__name__ in READ_ONLY_MAINTENANCE_VIEWSETS
+            and getattr(view, 'action', None) in {
+                'create',
+                'update',
+                'partial_update',
+                'destroy',
+            }
+        ):
+            return False
 
         role = getattr(user, 'rol', None)
         if user.is_superuser or role == 'ADMINISTRADOR' or user.es_supervisor:
