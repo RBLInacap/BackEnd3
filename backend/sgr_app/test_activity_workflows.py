@@ -1762,6 +1762,103 @@ class ActivityWorkflowTests(TestCase):
         compromiso.refresh_from_db()
         self.assertEqual(compromiso.fecha_compromiso, nueva_fecha)
         self.assertEqual(compromiso.fecha_comprometida, nueva_fecha)
+        actividad.refresh_from_db()
+        self.assertEqual(actividad.compromiso_agenda_id, compromiso.pk)
+
+    def test_tube_commitment_form_can_link_an_existing_activity(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Atención pendiente de seguimiento',
+        )
+        response = self.client.post('/tubo/crear/', {
+            'solicitante': 'Solicitante de prueba',
+            'origen': 'EXT',
+            'territorio': 'Sector Centro',
+            'delegacion': str(self.delegacion.pk),
+            'responsable': str(self.funcionario.pk),
+            'fecha_comprometida': self.today.isoformat(),
+            'actividad': str(actividad.pk),
+            'area_apoyo': 'Operaciones y Territorio',
+            'descripcion': 'Dar seguimiento a la solicitud',
+            'estado': CompromisoAgenda.Estado.PENDIENTE,
+            'observacion': '',
+        }, secure=True)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, '/tubo/')
+        compromiso = CompromisoAgenda.objects.get(actividad=actividad)
+        actividad.refresh_from_db()
+        self.assertEqual(actividad.compromiso_agenda_id, compromiso.pk)
+
+    def test_commitment_form_preselects_activity_from_personal_activity_link(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Actividad para asignar',
+        )
+
+        response = self.client.get(
+            f'/tubo/crear/?actividad_id={actividad.pk}',
+            secure=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'<option value="{actividad.pk}" selected>')
+
+    def test_tube_new_commitment_modal_lists_available_activities(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Actividad disponible',
+        )
+
+        response = self.client.get('/tubo/', secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'name="actividad"')
+        self.assertContains(
+            response,
+            f'<option value="{actividad.pk}" data-delegacion="{self.delegacion.pk}">',
+        )
+
+    def test_tube_commitment_form_rejects_activity_from_another_functionary(self):
+        another_functionary = Usuario.objects.create_user(
+            username='otro.funcionario.compromiso',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            cargo=self.cargo,
+            delegacion=self.delegacion,
+        )
+        actividad = Actividad.objects.create(
+            funcionario=another_functionary,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+        )
+
+        response = self.client.post('/tubo/crear/', {
+            'solicitante': 'Solicitante de prueba',
+            'origen': 'EXT',
+            'territorio': 'Sector Centro',
+            'delegacion': str(self.delegacion.pk),
+            'responsable': str(self.funcionario.pk),
+            'fecha_comprometida': self.today.isoformat(),
+            'actividad': str(actividad.pk),
+            'area_apoyo': 'Operaciones y Territorio',
+            'descripcion': 'Dar seguimiento a la solicitud',
+            'estado': CompromisoAgenda.Estado.PENDIENTE,
+            'observacion': '',
+        }, secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(CompromisoAgenda.objects.filter(actividad=actividad).exists())
 
     def test_workflow_pages_render(self):
         actividad = Actividad.objects.create(

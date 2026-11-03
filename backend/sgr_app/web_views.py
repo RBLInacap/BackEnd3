@@ -1586,6 +1586,16 @@ def web_tubo(request):
     compromisos = list(compromisos_queryset.select_related(
         'delegacion', 'responsable', 'creado_por', 'actividad'
     ).prefetch_related('actividad__evidencias').order_by('fecha_comprometida'))
+    actividades_queryset = Actividad.objects.select_related(
+        'funcionario', 'delegacion'
+    )
+    if request.user.es_administrativo:
+        actividades_queryset = actividades_queryset.filter(funcionario=request.user)
+    else:
+        actividades_queryset = _filtrar_por_delegacion(
+            actividades_queryset,
+            request.user,
+        )
     # Resumen colectivo por Colaborador (Slide 14 de la presentación municipal)
     resumen_colaboradores = []
     totales_colectivos = {
@@ -1660,14 +1670,11 @@ def web_tubo(request):
         'periodo_todos': periodo_filtro == 'todos' or periodo_seleccionado is None,
         'fecha_min_periodo': periodo_activo.fecha_inicio if periodo_activo else hoy,
         'fecha_max_periodo': periodo_activo.fecha_termino if periodo_activo else hoy,
-        'actividades': (
-            Actividad.objects.select_related('funcionario', 'delegacion').filter(funcionario=request.user)
-            if request.user.es_administrativo
-            else _filtrar_por_delegacion(
-                Actividad.objects.select_related('funcionario', 'delegacion'),
-                request.user,
-            )
-        ).order_by('-fecha_actividad')[:200],
+        'actividades': actividades_queryset.order_by('-fecha_actividad')[:200],
+        'actividades_sin_compromiso': actividades_queryset.filter(
+            compromiso_agenda__isnull=True,
+            compromisos__isnull=True,
+        ).order_by('-fecha_actividad', '-pk'),
         'territorios': [
             'Sector Centro', 'El Milagro', 'La Pampa', 'Las Compañías',
             'La Antena', 'Avenida del Mar', 'Sector Rural', 'Otro',
@@ -1872,6 +1879,17 @@ class CompromisoCreateView(LoginRequiredMixin, CreateView):
             'estado': CompromisoAgenda.Estado.PENDIENTE,
             'origen': 'INT',
         })
+        actividad_id = self.request.GET.get('actividad_id', '')
+        if actividad_id.isdecimal():
+            actividades = Actividad.objects.filter(pk=int(actividad_id))
+            if user.es_administrativo:
+                actividades = actividades.filter(funcionario=user)
+            elif user.es_delegado:
+                actividades = actividades.filter(delegacion_id=user.delegacion_id)
+            actividad = actividades.first()
+            if actividad:
+                initial['actividad'] = actividad.pk
+                initial['delegacion'] = actividad.delegacion_id
         return initial
 
     def get_context_data(self, **kwargs):
@@ -1888,6 +1906,11 @@ class CompromisoCreateView(LoginRequiredMixin, CreateView):
             compromiso.creado_por = self.request.user
             compromiso.save()
             form.save_m2m()
+            if compromiso.actividad_id:
+                compromiso.actividad.compromiso_agenda = compromiso
+                compromiso.actividad.save(
+                    update_fields=['compromiso_agenda', 'actualizado_en']
+                )
             self.object = compromiso
             RegistroAuditoria.objects.create(
                 usuario=self.request.user,
@@ -1947,9 +1970,27 @@ class CompromisoUpdateView(LoginRequiredMixin, UpdateView):
     def form_valid(self, form):
         with transaction.atomic():
             snapshot_anterior = self.valor_anterior
+            actividad_anterior = self.object.actividad
             compromiso = form.save(commit=False)
             compromiso.save()
             form.save_m2m()
+            if (
+                actividad_anterior
+                and actividad_anterior != compromiso.actividad
+                and actividad_anterior.compromiso_agenda_id == compromiso.pk
+            ):
+                actividad_anterior.compromiso_agenda = None
+                actividad_anterior.save(
+                    update_fields=['compromiso_agenda', 'actualizado_en']
+                )
+            if (
+                compromiso.actividad_id
+                and compromiso.actividad.compromiso_agenda_id != compromiso.pk
+            ):
+                compromiso.actividad.compromiso_agenda = compromiso
+                compromiso.actividad.save(
+                    update_fields=['compromiso_agenda', 'actualizado_en']
+                )
             self.object = compromiso
             snapshot_nuevo = _compromiso_audit_snapshot(compromiso)
             RegistroAuditoria.objects.create(

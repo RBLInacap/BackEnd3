@@ -1,9 +1,11 @@
 from django import forms
 from django.core.exceptions import ValidationError
 from django.contrib.auth.password_validation import validate_password
+from django.db.models import Q
 from django.utils import timezone
 
 from sgr_app.models import (
+    Actividad,
     Area,
     AjusteIncentivo,
     Cargo,
@@ -94,6 +96,12 @@ class AjusteDecisionForm(forms.Form):
 
 
 class CompromisoAgendaForm(forms.ModelForm):
+    actividad = forms.ModelChoiceField(
+        queryset=Actividad.objects.none(),
+        label='Actividad asociada',
+        required=False,
+        empty_label='Sin actividad asociada',
+    )
     fecha_comprometida = forms.DateField(
         label='Fecha comprometida',
         widget=forms.DateInput(attrs={'type': 'date'}),
@@ -108,6 +116,7 @@ class CompromisoAgendaForm(forms.ModelForm):
             'delegacion',
             'responsable',
             'fecha_comprometida',
+            'actividad',
             'area_apoyo',
             'descripcion',
             'estado',
@@ -127,6 +136,7 @@ class CompromisoAgendaForm(forms.ModelForm):
                 'delegacion': 'delegacion_id',
                 'responsable': 'responsable_id',
                 'observacion': 'observaciones',
+                'actividad': 'actividad_id',
             }
 
             def set_value(name, value):
@@ -144,6 +154,7 @@ class CompromisoAgendaForm(forms.ModelForm):
                 value = getattr(instance, f'{name}_id', None) if name in (
                     'delegacion',
                     'responsable',
+                    'actividad',
                 ) else getattr(instance, name)
                 set_value(name, value)
             if 'data' in kwargs:
@@ -155,6 +166,48 @@ class CompromisoAgendaForm(forms.ModelForm):
         self.periodo = periodo
         self.fields['delegacion'].queryset = Delegacion.objects.filter(activo=True)
         self.fields['responsable'].queryset = Usuario.objects.filter(is_active=True)
+        actividades = Actividad.objects.select_related(
+            'funcionario', 'delegacion'
+        ).all()
+        if user.es_administrativo:
+            if self.instance.pk:
+                actividades = actividades.filter(
+                    Q(funcionario=user) | Q(pk=self.instance.actividad_id)
+                )
+            else:
+                actividades = actividades.filter(funcionario=user)
+        elif user.es_delegado:
+            if self.instance.pk:
+                actividades = actividades.filter(
+                    Q(delegacion_id=user.delegacion_id)
+                    | Q(pk=self.instance.actividad_id)
+                )
+            else:
+                actividades = actividades.filter(
+                    delegacion_id=user.delegacion_id
+                )
+
+        if self.instance.pk:
+            actividades = actividades.filter(
+                Q(compromiso_agenda__isnull=True)
+                | Q(compromiso_agenda_id=self.instance.pk),
+                Q(compromisos__isnull=True)
+                | Q(compromisos__pk=self.instance.pk),
+            )
+        else:
+            actividades = actividades.filter(
+                compromiso_agenda__isnull=True,
+                compromisos__isnull=True,
+            )
+        self.fields['actividad'].queryset = actividades.distinct().order_by(
+            '-fecha_actividad', '-pk'
+        )
+        self.fields['actividad'].label_from_instance = (
+            lambda actividad: (
+                f'#{actividad.pk} · {actividad.fecha_actividad:%d/%m/%Y} · '
+                f'{actividad.actividad_solicitud or actividad.solicitud_problema or "Actividad"}'
+            )
+        )
 
         if self.instance.pk:
             self.initial['fecha_comprometida'] = (
@@ -208,6 +261,7 @@ class CompromisoAgendaForm(forms.ModelForm):
         delegation = cleaned_data.get('delegacion')
         responsible = cleaned_data.get('responsable')
         committed_date = cleaned_data.get('fecha_comprometida')
+        actividad = cleaned_data.get('actividad')
 
         if delegation and responsible and responsible.delegacion_id != delegation.pk:
             self.add_error(
@@ -218,6 +272,16 @@ class CompromisoAgendaForm(forms.ModelForm):
             self.add_error('delegacion', 'Solo puedes gestionar compromisos de tu delegación.')
         if self.user.es_administrativo and responsible and responsible.pk != self.user.pk:
             self.add_error('responsable', 'Solo puedes asignarte compromisos a ti mismo.')
+        if actividad and delegation and actividad.delegacion_id != delegation.pk:
+            self.add_error(
+                'actividad',
+                'La actividad seleccionada debe pertenecer a la delegación del compromiso.',
+            )
+        if actividad and (
+            actividad.compromiso_agenda_id not in (None, self.instance.pk)
+            or actividad.compromisos.exclude(pk=self.instance.pk).exists()
+        ):
+            self.add_error('actividad', 'La actividad ya está vinculada a otro compromiso.')
         if committed_date:
             if not self.periodo:
                 self.add_error(
@@ -231,7 +295,6 @@ class CompromisoAgendaForm(forms.ModelForm):
                     'fecha_comprometida',
                     'La fecha debe estar dentro del período trimestral activo.',
                 )
-        actividad = self.instance.actividad if self.instance.pk else None
         if committed_date and actividad and committed_date < actividad.fecha_actividad:
             self.add_error(
                 'fecha_comprometida',

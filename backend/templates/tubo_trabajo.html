@@ -216,10 +216,15 @@
                           </div>
                           <div class="mb-3">
                             <label class="form-label text-secondary fw-bold text-uppercase">Actividad asociada</label>
-                            <select name="actividad_id" class="form-select">
-                              <option value="">Sin cambios</option>
-                              {% for actividad in actividades %}
-                                <option value="{{ actividad.id }}" {% if c.actividad_id == actividad.id %}selected{% endif %}>#{{ actividad.id }} · {{ actividad.fecha_actividad|date:'d/m/Y' }} · {{ actividad.actividad_solicitud|truncatechars:45 }}</option>
+                            <select name="actividad" class="form-select">
+                              <option value="">Sin actividad asociada</option>
+                              {% if c.actividad %}
+                                <option value="{{ c.actividad.id }}" selected>#{{ c.actividad.id }} · {{ c.actividad.fecha_actividad|date:'d/m/Y' }} · {{ c.actividad.actividad_solicitud|truncatechars:45 }}</option>
+                              {% endif %}
+                              {% for actividad in actividades_sin_compromiso %}
+                                {% if actividad.id != c.actividad_id %}
+                                  <option value="{{ actividad.id }}">#{{ actividad.id }} · {{ actividad.fecha_actividad|date:'d/m/Y' }} · {{ actividad.actividad_solicitud|truncatechars:45 }}</option>
+                                {% endif %}
                               {% endfor %}
                             </select>
                           </div>
@@ -495,18 +500,18 @@
             <div class="row g-3 mb-3">
               <div class="col-md-6">
                 <label class="form-label text-secondary fw-bold text-uppercase">Delegación</label>
-                <select name="delegacion_id" class="form-select" required>
+                <select id="nuevo-compromiso-delegacion" name="delegacion" class="form-select" required>
                   {% for d in delegaciones %}
-                    <option value="{{ d.id }}">{{ d.nombre }} ({{ d.codigo }})</option>
+                    <option value="{{ d.id }}" {% if d.id == request.user.delegacion_id %}selected{% endif %}>{{ d.nombre }} ({{ d.codigo }})</option>
                   {% endfor %}
                 </select>
               </div>
 
               <div class="col-md-6">
                 <label class="form-label text-secondary fw-bold text-uppercase">Responsable Asignado</label>
-                <select name="responsable_id" class="form-select" required>
+                <select name="responsable" class="form-select" required>
                   {% for u in usuarios_terreno %}
-                    <option value="{{ u.id }}">{{ u.get_full_name|default:u.username }} ({{ u.delegacion.codigo|default:'Central' }})</option>
+                    <option value="{{ u.id }}" {% if u.id == request.user.id %}selected{% endif %}>{{ u.get_full_name|default:u.username }} ({{ u.delegacion.codigo|default:'Central' }})</option>
                   {% endfor %}
                 </select>
               </div>
@@ -527,6 +532,17 @@
                 <label class="form-label text-secondary fw-bold text-uppercase">Fecha Comprometida (período activo)</label>
                 <input type="date" name="fecha_comprometida" min="{{ fecha_min_periodo|date:'Y-m-d' }}" max="{{ fecha_max_periodo|date:'Y-m-d' }}" class="form-control" required>
               </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label text-secondary fw-bold text-uppercase" for="nuevo-compromiso-actividad">Actividad asociada (opcional)</label>
+              <select id="nuevo-compromiso-actividad" name="actividad" class="form-select">
+                <option value="">Sin actividad asociada</option>
+                {% for actividad in actividades_sin_compromiso %}
+                  <option value="{{ actividad.id }}" data-delegacion="{{ actividad.delegacion_id }}">#{{ actividad.id }} · {{ actividad.fecha_actividad|date:'d/m/Y' }} · {{ actividad.actividad_solicitud|default:actividad.solicitud_problema|truncatechars:55 }}</option>
+                {% endfor %}
+              </select>
+              <div class="form-text">Solo se muestran actividades disponibles para vincular.</div>
             </div>
 
             <div class="row g-3 mb-3">
@@ -552,7 +568,7 @@
 
             <div class="mb-3">
               <label class="form-label text-secondary fw-bold text-uppercase">Avance u Observaciones</label>
-              <textarea name="observaciones" rows="2" class="form-control" placeholder="Observaciones de derivación o seguimiento..."></textarea>
+              <textarea name="observacion" rows="2" class="form-control" placeholder="Observaciones de derivación o seguimiento..."></textarea>
             </div>
           </div>
           <div class="modal-footer border-top">
@@ -564,4 +580,22 @@
     </div>
   </div>
 </div>
+<script>
+  (() => {
+    const delegacion = document.getElementById('nuevo-compromiso-delegacion');
+    const actividad = document.getElementById('nuevo-compromiso-actividad');
+    if (!delegacion || !actividad) return;
+
+    const filtrarActividades = () => {
+      Array.from(actividad.options).forEach((opcion) => {
+        if (!opcion.value) return;
+        opcion.disabled = opcion.dataset.delegacion !== delegacion.value;
+      });
+      if (actividad.selectedOptions[0]?.disabled) actividad.value = '';
+    };
+
+    delegacion.addEventListener('change', filtrarActividades);
+    filtrarActividades();
+  })();
+</script>
 {% endblock %}

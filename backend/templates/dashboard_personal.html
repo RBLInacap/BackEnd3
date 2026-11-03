@@ -306,7 +306,9 @@
                     {% else %}{{ act.compromiso_agenda.get_estado_display }}{% endif %}
                   </a>
                 {% else %}
-                  <span class="text-muted small">-</span>
+                  <a href="{% url 'web_crear_compromiso' %}?actividad_id={{ act.id }}" class="btn btn-outline-danger btn-sm">
+                    <i class="bi bi-link-45deg"></i> Asignar compromiso
+                  </a>
                 {% endif %}
               </td>
               <td class="text-end ps-2 pe-4 py-3 text-nowrap">
