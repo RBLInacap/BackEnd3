@@ -22,6 +22,7 @@ ALLOWED_HOSTS = env(
     default='127.0.0.1,localhost',
     cast=Csv(),
 )
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 EVIDENCE_MAX_FILE_SIZE = env(
     'EVIDENCE_MAX_FILE_SIZE',
@@ -183,14 +184,18 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Evidencias en almacenamiento local o en Amazon S3.
 if USE_S3:
-    AWS_ACCESS_KEY_ID = env('AWS_ACCESS_KEY_ID', default='')
-    AWS_SECRET_ACCESS_KEY = env('AWS_SECRET_ACCESS_KEY', default='')
+    AWS_ACCESS_KEY_ID = env('AWS_ACCESS_KEY_ID', default='').strip() or None
+    AWS_SECRET_ACCESS_KEY = env('AWS_SECRET_ACCESS_KEY', default='').strip() or None
     AWS_STORAGE_BUCKET_NAME = env('AWS_STORAGE_BUCKET_NAME', default='')
     AWS_S3_REGION_NAME = env('AWS_S3_REGION_NAME', default='us-east-1')
     AWS_S3_CUSTOM_DOMAIN = env(
         'AWS_S3_CUSTOM_DOMAIN',
-        default=f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com',
-    )
+        default='',
+    ).strip() or None
+    if not AWS_STORAGE_BUCKET_NAME:
+        raise ImproperlyConfigured(
+            'Configura AWS_STORAGE_BUCKET_NAME cuando USE_S3=True.'
+        )
     AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=86400'}
     AWS_DEFAULT_ACL = None
     AWS_QUERYSTRING_AUTH = True
@@ -203,7 +208,13 @@ if USE_S3:
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
         },
     }
-    MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/media/'
+    if AWS_S3_CUSTOM_DOMAIN:
+        MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
+    else:
+        MEDIA_URL = (
+            f'https://{AWS_STORAGE_BUCKET_NAME}.s3.'
+            f'{AWS_S3_REGION_NAME}.amazonaws.com/'
+        )
 else:
     MEDIA_URL = '/media/'
     MEDIA_ROOT = BASE_DIR / 'media'
@@ -219,6 +230,8 @@ CSRF_TRUSTED_ORIGINS = env('CSRF_TRUSTED_ORIGINS', default='', cast=Csv())
 SECURE_SSL_REDIRECT = env('SECURE_SSL_REDIRECT', default=not DEBUG, cast=bool)
 SESSION_COOKIE_SECURE = env('SESSION_COOKIE_SECURE', default=not DEBUG, cast=bool)
 CSRF_COOKIE_SECURE = env('CSRF_COOKIE_SECURE', default=not DEBUG, cast=bool)
+if env('TRUST_PROXY_SSL_HEADER', default=False, cast=bool):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SECURE_HSTS_SECONDS = env(
     'SECURE_HSTS_SECONDS',
     default=31536000 if not DEBUG else 0,
