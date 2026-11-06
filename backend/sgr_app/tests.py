@@ -12,7 +12,7 @@ from django.db import IntegrityError
 from sgr_app.models import (
     Area, Delegacion, Cargo, Usuario, PeriodoMedicion, ItemMedicion,
     Actividad, Evidencia, CompromisoAgenda, CasoSocial, AtencionSocial,
-    MetaModel, RegistroAuditoria, generar_codigo_evidencia
+    MetaModel, PasswordResetCode, RegistroAuditoria, generar_codigo_evidencia,
 )
 from sgr_app.services.calculos import (
     calcular_dias_periodo,
@@ -698,6 +698,9 @@ class MatrizSGRTestSuite(TestCase):
         admin_response = client.get('/dashboard/')
         self.assertEqual(admin_response.status_code, 200)
         self.assertTemplateUsed(admin_response, 'dashboard_admin.html')
+        self.assertIn('no-store', admin_response.headers['Cache-Control'])
+        self.assertContains(admin_response, 'actualización automática cada minuto')
+        self.assertContains(admin_response, 'dashboard-refresh-now')
 
         client.force_login(self.usuario)
         administrativo_response = client.get('/dashboard/')
@@ -813,7 +816,7 @@ class MatrizSGRTestSuite(TestCase):
         self.assertEqual(evidencia_ajena.estado, Evidencia.Estado.PENDIENTE)
 
     @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
-    def test_password_reset_completo_por_correo(self):
+    def test_password_reset_uses_one_time_code_then_changes_password(self):
         usuario = Usuario.objects.create_user(
             username='recuperacion.test',
             password='OldPassword123!',
@@ -833,34 +836,56 @@ class MatrizSGRTestSuite(TestCase):
         done_response = client.get('/password-reset/done/')
         self.assertEqual(done_response.status_code, 200)
         self.assertTemplateUsed(done_response, 'registration/password_reset_done.html')
+        self.assertEqual(list(done_response.context['form'].fields), ['code'])
+        self.assertNotContains(done_response, 'seis dígitos')
+        self.assertNotContains(done_response, '123 456')
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, [usuario.email])
-        self.assertTrue(mail.outbox[0].alternatives)
-        self.assertEqual(mail.outbox[0].alternatives[0].mimetype, 'text/html')
+        code_match = re.search(r'(\d{3} \d{3})', mail.outbox[0].body)
+        self.assertIsNotNone(code_match)
+        code = code_match.group(1)
+        reset_code = PasswordResetCode.objects.get(user=usuario)
+        self.assertNotEqual(reset_code.code_hash, ''.join(code.split()))
+        self.assertGreater(reset_code.expires_at, timezone.now())
 
-        match = re.search(
-            r'/reset/([^/]+)/([^/\s]+)',
-            mail.outbox[0].body,
-        )
-        self.assertIsNotNone(match)
-        uidb64, token = match.groups()
+        client.post('/password-reset/', {'email': usuario.email})
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(PasswordResetCode.objects.get(user=usuario).pk, reset_code.pk)
 
-        confirm_response = client.get(f'/reset/{uidb64}/{token}/', follow=True)
+        invalid_code_response = client.post('/password-reset/done/', {
+            'code': '000 000' if code != '000 000' else '111 111',
+        })
+        self.assertEqual(invalid_code_response.status_code, 200)
+        self.assertContains(invalid_code_response, 'no es válido')
+        self.assertEqual(PasswordResetCode.objects.get(user=usuario).attempts, 1)
+
+        verify_response = client.post('/password-reset/done/', {
+            'code': code,
+        })
+        self.assertRedirects(verify_response, '/password-reset/change/')
+        confirm_response = client.get('/password-reset/change/')
         self.assertEqual(confirm_response.status_code, 200)
         self.assertTemplateUsed(confirm_response, 'registration/password_reset_confirm.html')
-        complete_response = client.post(
-            f'/reset/{uidb64}/set-password/',
-            {
-                'new_password1': 'NewSecurePassword456!',
-                'new_password2': 'NewSecurePassword456!',
-            },
-        )
-        self.assertRedirects(complete_response, '/reset/complete/')
+        mismatch_response = client.post('/password-reset/change/', {
+            'new_password1': 'NewSecurePassword456!',
+            'new_password2': 'DifferentSecurePassword789!',
+        })
+        self.assertEqual(mismatch_response.status_code, 200)
+        self.assertContains(mismatch_response, 'Las contraseñas no coinciden.')
+        usuario.refresh_from_db()
+        self.assertTrue(usuario.check_password('OldPassword123!'))
+
+        complete_response = client.post('/password-reset/change/', {
+            'new_password1': 'NewSecurePassword456!',
+            'new_password2': 'NewSecurePassword456!',
+        })
+        self.assertRedirects(complete_response, '/password-reset/complete/')
         usuario.refresh_from_db()
         self.assertTrue(usuario.check_password('NewSecurePassword456!'))
         self.assertFalse(usuario.check_password('OldPassword123!'))
+        self.assertFalse(PasswordResetCode.objects.filter(user=usuario).exists())
 
-        final_response = client.get('/reset/complete/')
+        final_response = client.get('/password-reset/complete/')
         self.assertEqual(final_response.status_code, 200)
         self.assertTemplateUsed(final_response, 'registration/password_reset_complete.html')
 
@@ -873,6 +898,41 @@ class MatrizSGRTestSuite(TestCase):
         )
         self.assertRedirects(response, '/password-reset/done/')
         self.assertEqual(mail.outbox, [])
+
+    @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_password_reset_code_expires_and_locks_after_five_attempts(self):
+        usuario = Usuario.objects.create_user(
+            username='recuperacion.limite',
+            password='OldPassword123!',
+            email='recuperacion.limite@example.com',
+        )
+        client = Client()
+        with patch('sgr_app.web_views.secrets.randbelow', return_value=123456):
+            client.post('/password-reset/', {'email': usuario.email})
+        reset_code = PasswordResetCode.objects.get(user=usuario)
+
+        for _ in range(5):
+            response = client.post('/password-reset/done/', {
+                'code': '000 000',
+            })
+            self.assertEqual(response.status_code, 200)
+        reset_code.refresh_from_db()
+        self.assertEqual(reset_code.attempts, 5)
+
+        response = client.post('/password-reset/done/', {
+            'code': '123456',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(reset_code.attempts, 5)
+
+        reset_code.attempts = 0
+        reset_code.expires_at = timezone.now() - timedelta(seconds=1)
+        reset_code.save(update_fields=['attempts', 'expires_at'])
+        response = client.post('/password-reset/done/', {
+            'code': '123 456',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('password_reset_otp_id', client.session)
 
     def test_mantenedores_delegaciones_y_cargos_requieren_administrador(self):
         client = Client()

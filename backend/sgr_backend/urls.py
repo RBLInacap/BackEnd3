@@ -14,11 +14,10 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
-from django.urls import path, include, reverse_lazy
+from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib.auth.decorators import login_not_required, login_required
-from django.contrib.auth import views as auth_views
 from sgr_app import mantenedores, web_views
 
 urlpatterns = [
@@ -27,6 +26,11 @@ urlpatterns = [
     path('login/', web_views.web_login, name='web_login'),
     path('logout/', web_views.web_logout, name='web_logout'),
     path('verificar-2fa/', web_views.web_verificar_2fa, name='web_verificar_2fa'),
+    path(
+        'crear-contrasena/',
+        login_not_required(web_views.web_initial_password),
+        name='web_initial_password',
+    ),
     path('mantenedores/delegaciones/', mantenedores.DelegacionListView.as_view(), name='mantenedor_delegaciones_list'),
     path('mantenedores/delegaciones/crear/', mantenedores.DelegacionCreateView.as_view(), name='mantenedor_delegaciones_create'),
     path('mantenedores/delegaciones/<int:pk>/modificar/', mantenedores.DelegacionUpdateView.as_view(), name='mantenedor_delegaciones_update'),
@@ -51,6 +55,11 @@ urlpatterns = [
     path('mantenedores/solicitantes/<int:pk>/desactivar/', mantenedores.SolicitanteDeleteView.as_view(), name='mantenedor_solicitantes_delete'),
     path('mantenedores/funcionarios/', mantenedores.FuncionarioListView.as_view(), name='mantenedor_funcionarios_list'),
     path('mantenedores/funcionarios/crear/', mantenedores.FuncionarioCreateView.as_view(), name='mantenedor_funcionarios_create'),
+    path(
+        'mantenedores/funcionarios/<int:pk>/renovar-acceso/',
+        mantenedores.FuncionarioRenewAccessView.as_view(),
+        name='mantenedor_funcionarios_renew_access',
+    ),
     path('mantenedores/funcionarios/<int:pk>/modificar/', mantenedores.FuncionarioUpdateView.as_view(), name='mantenedor_funcionarios_update'),
     path('mantenedores/funcionarios/<int:pk>/desactivar/', mantenedores.FuncionarioDeleteView.as_view(), name='mantenedor_funcionarios_delete'),
     path('mantenedores/roles/', mantenedores.RolListView.as_view(), name='mantenedor_roles_list'),
@@ -61,37 +70,20 @@ urlpatterns = [
     path('mantenedores/areas/crear/', mantenedores.AreaCreateView.as_view(), name='mantenedor_areas_create'),
     path('mantenedores/areas/<int:pk>/modificar/', mantenedores.AreaUpdateView.as_view(), name='mantenedor_areas_update'),
     path('mantenedores/areas/<int:pk>/desactivar/', mantenedores.AreaDeleteView.as_view(), name='mantenedor_areas_delete'),
-    path(
-        'password-reset/',
-        login_not_required(auth_views.PasswordResetView.as_view(
-            template_name='registration/password_reset_form.html',
-            email_template_name='registration/password_reset_email.txt',
-            subject_template_name='registration/password_reset_subject.txt',
-            html_email_template_name='registration/password_reset_email.html',
-            success_url=reverse_lazy('password_reset_done'),
-        )),
-        name='password_reset',
-    ),
+    path('password-reset/', web_views.web_password_reset_request, name='password_reset'),
     path(
         'password-reset/done/',
-        login_not_required(auth_views.PasswordResetDoneView.as_view(
-            template_name='registration/password_reset_done.html',
-        )),
+        web_views.web_password_reset_done,
         name='password_reset_done',
     ),
     path(
-        'reset/<uidb64>/<token>/',
-        login_not_required(auth_views.PasswordResetConfirmView.as_view(
-            template_name='registration/password_reset_confirm.html',
-            success_url=reverse_lazy('password_reset_complete'),
-        )),
-        name='password_reset_confirm',
+        'password-reset/change/',
+        web_views.web_password_reset_change,
+        name='password_reset_change',
     ),
     path(
-        'reset/complete/',
-        login_not_required(auth_views.PasswordResetCompleteView.as_view(
-            template_name='registration/password_reset_complete.html',
-        )),
+        'password-reset/complete/',
+        web_views.web_password_reset_complete,
         name='password_reset_complete',
     ),
     path('dashboard/', web_views.web_dashboard, name='web_dashboard'),

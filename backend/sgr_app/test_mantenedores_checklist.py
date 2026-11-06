@@ -405,6 +405,7 @@ class MantenedoresChecklistTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         role_field = response.context['form'].fields['rol']
+        self.assertTrue(response.context['form'].fields['estado'].initial)
         self.assertEqual(
             list(role_field.choices),
             [
@@ -462,6 +463,93 @@ class MantenedoresChecklistTests(TestCase):
         self.assertRedirects(response, '/password-reset/done/')
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, [funcionario.email])
+
+    def test_functionary_first_login_requires_matching_new_password(self):
+        response = self.client.post('/mantenedores/funcionarios/crear/', {
+            'run': '12.345.678-5',
+            'nombre': 'Persona',
+            'apellidoPaterno': 'Clave',
+            'apellidoMaterno': 'Segura',
+            'correo': 'clave.segura@example.com',
+            'rol': 'FUNCIONARIO',
+            'area_entidad': str(self.area.pk),
+            'estado': 'on',
+        }, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Funcionario creado correctamente.')
+        self.assertContains(response, 'RUN sin puntos ni guion')
+
+        funcionario = Usuario.objects.get(email='clave.segura@example.com')
+        self.assertEqual(funcionario.username, funcionario.email)
+        self.assertTrue(funcionario.must_change_password)
+        self.assertGreater(funcionario.initial_login_expires_at, timezone.now())
+        self.assertTrue(funcionario.check_password('123456785'))
+
+        client = Client()
+        response = client.post('/login/', {
+            'username': 'clave.segura@example.com',
+            'password': '123456785',
+        })
+        self.assertRedirects(response, '/crear-contrasena/')
+        self.assertNotIn('_auth_user_id', client.session)
+
+        response = client.post('/crear-contrasena/', {
+            'new_password1': 'Faro.Cobre-2031!',
+            'new_password2': 'Faro.Cobre-2032!',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Las contraseñas no coinciden.')
+        funcionario.refresh_from_db()
+        self.assertTrue(funcionario.must_change_password)
+        self.assertTrue(funcionario.check_password('123456785'))
+
+        response = client.post('/crear-contrasena/', {
+            'new_password1': 'Faro.Cobre-2031!',
+            'new_password2': 'Faro.Cobre-2031!',
+        })
+        self.assertRedirects(response, '/dashboard/')
+        funcionario.refresh_from_db()
+        self.assertFalse(funcionario.must_change_password)
+        self.assertIsNone(funcionario.initial_login_expires_at)
+        self.assertTrue(client.session.get('_auth_user_id'))
+        self.assertTrue(funcionario.check_password('Faro.Cobre-2031!'))
+        self.assertFalse(funcionario.check_password('123456785'))
+
+    def test_functionary_first_login_expires_after_ten_minutes(self):
+        self.client.post('/mantenedores/funcionarios/crear/', {
+            'run': '12.345.678-5',
+            'nombre': 'Persona',
+            'apellidoPaterno': 'Clave',
+            'apellidoMaterno': 'Vencida',
+            'correo': 'clave.vencida@example.com',
+            'rol': 'FUNCIONARIO',
+            'area_entidad': str(self.area.pk),
+            'estado': 'on',
+        })
+        funcionario = Usuario.objects.get(email='clave.vencida@example.com')
+        funcionario.initial_login_expires_at = timezone.now() - timedelta(seconds=1)
+        funcionario.save(update_fields=['initial_login_expires_at'])
+
+        client = Client()
+        response = client.post('/login/', {
+            'username': funcionario.email,
+            'password': '123456785',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'El plazo de 10 minutos')
+        funcionario.refresh_from_db()
+        self.assertFalse(funcionario.is_active)
+
+        response = self.client.post(
+            f'/mantenedores/funcionarios/{funcionario.pk}/renovar-acceso/',
+        )
+        self.assertRedirects(response, '/mantenedores/funcionarios/')
+        funcionario.refresh_from_db()
+        self.assertTrue(funcionario.is_active)
+        self.assertTrue(funcionario.must_change_password)
+        self.assertGreater(funcionario.initial_login_expires_at, timezone.now())
+        self.assertTrue(funcionario.check_password('123456785'))
 
     def test_functionary_requires_area(self):
         response = self.client.post('/mantenedores/funcionarios/crear/', {

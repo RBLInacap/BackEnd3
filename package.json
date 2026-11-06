@@ -2,6 +2,6 @@
   "name": "matriz-sgr",
   "private": true,
   "scripts": {
-    "dev": "set \"DEBUG=True\" && set \"SECURE_SSL_REDIRECT=False\" && set \"USE_MYSQL=False\" && python backend/manage.py runserver 127.0.0.1:8000"
+    "dev": "set \"DEBUG=True\" && set \"SECURE_SSL_REDIRECT=False\" && set \"USE_MYSQL=False\" && if exist \"backend\\.venv\\Scripts\\python.exe\" (\"backend\\.venv\\Scripts\\python.exe\" backend\\manage.py runserver 127.0.0.1:8000) else (py -3.12 backend\\manage.py runserver 127.0.0.1:8000)"
   }
 }

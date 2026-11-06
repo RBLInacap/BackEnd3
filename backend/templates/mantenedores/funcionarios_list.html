@@ -56,6 +56,12 @@
                 <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
                 <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
               {% endif %}
+              {% if item.must_change_password %}
+                <form method="post" action="{% url 'mantenedor_funcionarios_renew_access' item.pk %}" class="d-inline">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-sm btn-outline-primary">Renovar acceso</button>
+                </form>
+              {% endif %}
             </td>{% endif %}
           </tr>
           {% empty %}

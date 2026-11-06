@@ -341,6 +341,8 @@ class Usuario(AbstractUser):
     totp_secret = models.CharField(max_length=64, blank=True, null=True, help_text="Preparado para 2FA")
     requires_2fa = models.BooleanField(default=False)
     is_2fa_verified = models.BooleanField(default=False)
+    must_change_password = models.BooleanField(default=False)
+    initial_login_expires_at = models.DateTimeField(null=True, blank=True)
     objects = UsuarioManager()
 
     class Meta:
@@ -547,6 +549,23 @@ class Usuario(AbstractUser):
         }
 
     verDashboardPersonal = ver_dashboard_personal
+
+
+class PasswordResetCode(models.Model):
+    user = models.OneToOneField(
+        Usuario,
+        on_delete=models.CASCADE,
+        related_name='password_reset_code',
+    )
+    code_hash = models.CharField(max_length=256)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    verified_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'Código de recuperación de contraseña'
+        verbose_name_plural = 'Códigos de recuperación de contraseña'
 
 
 # =============================================================================

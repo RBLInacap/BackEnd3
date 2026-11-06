@@ -49,11 +49,27 @@ Abre <http://127.0.0.1:8000/> para iniciar sesión en la aplicación SGR.
 
 > En PowerShell, si no permite activar scripts, abre una terminal nueva o ejecuta `Set-ExecutionPolicy -Scope Process RemoteSigned` en esa sesión.
 
-### Recuperación de contraseña por Gmail
+### Alta y primer acceso de funcionarios
 
-El flujo de recuperación ya está implementado. En desarrollo, Django imprime el
-mensaje en la consola cuando `DEBUG=True` y `EMAIL_BACKEND` está vacío. Para probar
-el envío real con Gmail, crea una contraseña de aplicación en la cuenta remitente:
+Al crear un funcionario desde el mantenedor, su usuario es el correo electrónico
+y su contraseña temporal es el RUN sin puntos ni guion. Debe iniciar sesión
+dentro de los 10 minutos siguientes a la creación. En el primer acceso se solicita
+ingresar y confirmar una contraseña nueva antes de entrar al sistema. Si el plazo
+vence, el administrador puede usar «Renovar acceso» en el mantenedor de
+funcionarios para iniciar un nuevo plazo de 10 minutos.
+
+### Recuperación de contraseña por código de un solo uso
+
+En `/password-reset/`, el funcionario ingresa el correo de su cuenta y recibe un
+código de verificación. En la pantalla siguiente ingresa únicamente ese código,
+sin volver a escribir el correo. El código vence en 10 minutos, solo se puede
+usar una vez y permite como máximo cinco intentos. Tras validarlo, debe ingresar
+y confirmar su nueva contraseña. Las solicitudes se limitan a un código por
+minuto y la respuesta no revela si el correo está registrado.
+
+En desarrollo, Django imprime el mensaje en la consola cuando `DEBUG=True` y
+`EMAIL_BACKEND` está vacío. Para enviar el código por Gmail, crea una contraseña
+de aplicación en la cuenta remitente:
 Google requiere tener activada la verificación en dos pasos. Usa esa contraseña de
 aplicación, no la contraseña normal de Gmail.
 

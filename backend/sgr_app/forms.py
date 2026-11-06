@@ -1030,6 +1030,8 @@ class FuncionarioForm(MantenedorModelForm):
                     else 'FUNCIONARIO'
                 ),
             })
+        else:
+            self.fields['estado'].initial = True
 
     def clean_run(self):
         try:
@@ -1067,7 +1069,7 @@ class FuncionarioForm(MantenedorModelForm):
     def save(self, commit=True):
         funcionario = self.instance
         run = self.cleaned_data['run']
-        funcionario.username = funcionario.username or run
+        funcionario.username = self.cleaned_data['correo']
         funcionario.rut_anonimizado = run
         funcionario.first_name = self.cleaned_data['nombre'].strip()
         funcionario.last_name = ' '.join(filter(None, (
@@ -1085,6 +1087,71 @@ class FuncionarioForm(MantenedorModelForm):
         if commit:
             funcionario.save()
         return funcionario
+
+
+class InitialPasswordForm(forms.Form):
+    new_password1 = forms.CharField(
+        label='Nueva contraseña',
+        strip=False,
+        widget=forms.PasswordInput(attrs={
+            'class': 'form-control',
+            'autocomplete': 'new-password',
+        }),
+    )
+    new_password2 = forms.CharField(
+        label='Confirmar nueva contraseña',
+        strip=False,
+        widget=forms.PasswordInput(attrs={
+            'class': 'form-control',
+            'autocomplete': 'new-password',
+        }),
+    )
+
+    def __init__(self, *args, user, **kwargs):
+        self.user = user
+        super().__init__(*args, **kwargs)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        password1 = cleaned_data.get('new_password1')
+        password2 = cleaned_data.get('new_password2')
+        if password1 and password2:
+            if password1 != password2:
+                self.add_error('new_password2', 'Las contraseñas no coinciden.')
+            else:
+                try:
+                    validate_password(password1, user=self.user)
+                except ValidationError as exc:
+                    self.add_error('new_password1', exc)
+        return cleaned_data
+
+
+class PasswordResetRequestForm(forms.Form):
+    email = forms.EmailField(
+        label='Correo electrónico',
+        widget=forms.EmailInput(attrs={
+            'class': 'form-control',
+            'autocomplete': 'email',
+        }),
+    )
+
+
+class PasswordResetCodeForm(forms.Form):
+    code = forms.CharField(
+        label='Código de verificación',
+        max_length=64,
+        widget=forms.TextInput(attrs={
+            'class': 'form-control text-center font-monospace',
+            'autocomplete': 'one-time-code',
+        }),
+    )
+
+    def clean_code(self):
+        return ''.join(self.cleaned_data['code'].split())
+
+
+class PasswordResetSetPasswordForm(InitialPasswordForm):
+    pass
 
 
 class RolForm(MantenedorModelForm):

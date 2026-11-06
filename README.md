@@ -22,6 +22,10 @@ python manage.py runserver
 Abre <http://127.0.0.1:8000/>.
 
 También puedes iniciar el sistema desde Windows ejecutando `iniciar_sistema.bat` en la raíz.
+Si ya instalaste las dependencias Python y configuraste `backend/.env`, también puedes
+iniciarlo desde la raíz con `npm run dev` (requiere Node.js/npm). El comando usa
+automáticamente `backend/.venv` cuando existe. En PowerShell, si la política de
+ejecución bloquea `npm.ps1`, usa `npm.cmd run dev`.
 
 ## Documentación y pruebas
 

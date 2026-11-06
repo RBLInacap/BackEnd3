@@ -1426,7 +1426,7 @@ class ActivityWorkflowTests(TestCase):
         })
 
         self.assertRedirects(response, '/mantenedores/funcionarios/')
-        delegado = Usuario.objects.get(username='12.345.678-5')
+        delegado = Usuario.objects.get(username='patricia.delegada@example.com')
         self.assertEqual(delegado.rol, Usuario.Rol.SUPERVISOR)
         self.assertTrue(delegado.es_delegado)
         self.assertEqual(delegado.delegacion_id, self.delegacion.pk)

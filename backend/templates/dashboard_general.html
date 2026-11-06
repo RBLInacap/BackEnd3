@@ -116,6 +116,15 @@
         </div>
         <h4 class="fw-bold mb-0 text-light">Semáforo y Seguimiento de Avance al Día</h4>
         <small class="text-secondary">Monitoreo proporcional según días corridos del trimestre y sus umbrales configurados.</small>
+        <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+          <small class="text-secondary" aria-live="polite">
+            <i class="bi bi-arrow-repeat me-1" aria-hidden="true"></i>
+            Actualizado <time id="dashboard-updated-at"></time>; actualización automática cada minuto.
+          </small>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="dashboard-refresh-now">
+            Actualizar ahora
+          </button>
+        </div>
         <div class="mt-2">
           <a href="{% url 'web_semaforo' %}" class="btn btn-sm btn-danger fw-bold shadow-xs">
             <i class="bi bi-traffic-light me-1"></i> Ver Pantalla Completa: Semáforo al Día &rarr;
@@ -431,4 +440,26 @@
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script>
+  (() => {
+    const updatedAt = document.getElementById('dashboard-updated-at');
+    const refreshButton = document.getElementById('dashboard-refresh-now');
+    if (!updatedAt || !refreshButton) return;
+
+    updatedAt.dateTime = new Date().toISOString();
+    updatedAt.textContent = new Intl.DateTimeFormat('es-CL', {
+      dateStyle: 'short',
+      timeStyle: 'short'
+    }).format(new Date());
+
+    refreshButton.addEventListener('click', () => window.location.reload());
+    window.setInterval(() => {
+      if (document.visibilityState === 'visible') window.location.reload();
+    }, 60_000);
+  })();
+</script>
 {% endblock %}

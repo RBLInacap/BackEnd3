@@ -13,11 +13,16 @@ import base64
 import binascii
 import hashlib
 import hmac
+import secrets
 import time
+from datetime import timedelta
 from django.core.exceptions import ValidationError
 from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError, transaction
+from django.contrib.auth.hashers import check_password, make_password
+from django.core.mail import send_mail
 from django.contrib.auth.decorators import login_not_required, login_required
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import CreateView, UpdateView
@@ -30,6 +35,10 @@ from sgr_app.forms import (
     CasoSocialForm,
     CompromisoAgendaForm,
     CompromisoEstadoForm,
+    InitialPasswordForm,
+    PasswordResetCodeForm,
+    PasswordResetRequestForm,
+    PasswordResetSetPasswordForm,
     MiFichaPersonalForm,
     SolicitanteForm,
     ValidarEvidenciaForm,
@@ -39,6 +48,7 @@ from sgr_app.models import (
     AjusteIncentivo, Delegacion, Cargo, Usuario, PeriodoMedicion, ItemMedicion,
     Actividad, Evidencia, CompromisoAgenda, CasoSocial, AtencionSocial, Solicitante,
     RegistroAuditoria, MetaModel, ObservacionCompromiso, CatalogoServicio,
+    PasswordResetCode,
 )
 from sgr_app.services.calculos import (
     calcular_dias_periodo,
@@ -58,6 +68,178 @@ ACTIVIDAD_AREAS_APOYO = (
     'DIDECO / Social', 'Tránsito y Transporte', 'Seguridad Ciudadana',
     'Medio Ambiente', 'SECPLAN / Proyectos',
 )
+
+PASSWORD_RESET_CODE_TTL = timedelta(minutes=10)
+PASSWORD_RESET_RESEND_DELAY = timedelta(seconds=60)
+PASSWORD_RESET_MAX_ATTEMPTS = 5
+
+
+@login_not_required
+def web_password_reset_request(request):
+    if request.method == 'POST':
+        form = PasswordResetRequestForm(request.POST)
+        if form.is_valid():
+            email = form.cleaned_data['email'].strip().lower()
+            user = Usuario.objects.filter(
+                email__iexact=email,
+                is_active=True,
+                must_change_password=False,
+            ).first()
+            request.session.pop('password_reset_otp_id', None)
+
+            if user:
+                now = timezone.now()
+                code = None
+                send_code = False
+                with transaction.atomic():
+                    user = Usuario.objects.select_for_update().get(pk=user.pk)
+                    existing = PasswordResetCode.objects.select_for_update().filter(
+                        user=user,
+                    ).first()
+                    if not existing or existing.created_at <= now - PASSWORD_RESET_RESEND_DELAY:
+                        if existing:
+                            existing.delete()
+                        code = f'{secrets.randbelow(1_000_000):06d}'
+                        send_code = True
+                        reset_code = PasswordResetCode.objects.create(
+                            user=user,
+                            code_hash=make_password(code),
+                            expires_at=now + PASSWORD_RESET_CODE_TTL,
+                        )
+                    else:
+                        reset_code = existing
+
+                request.session['password_reset_otp_id'] = reset_code.pk
+                request.session.set_expiry(PASSWORD_RESET_CODE_TTL)
+                if send_code:
+                    send_mail(
+                        subject='Código para recuperar tu contraseña - SGR',
+                        message=(
+                            f'Hola {user.get_full_name() or user.username},\n\n'
+                            'Tu código de recuperación es: '
+                            f'{code[:3]} {code[3:]}\n\n'
+                            'Es de un solo uso y vence en 10 minutos. '
+                            'Si no solicitaste este cambio, ignora este correo.'
+                        ),
+                        from_email=None,
+                        recipient_list=[user.email],
+                        fail_silently=False,
+                    )
+
+            return redirect('password_reset_done')
+    else:
+        form = PasswordResetRequestForm()
+
+    return render(request, 'registration/password_reset_form.html', {'form': form})
+
+
+@login_not_required
+def web_password_reset_done(request):
+    if request.method == 'POST':
+        form = PasswordResetCodeForm(request.POST)
+        if form.is_valid():
+            code = form.cleaned_data['code']
+            now = timezone.now()
+            reset_id = request.session.get('password_reset_otp_id')
+            reset_request = PasswordResetCode.objects.select_related('user').filter(
+                pk=reset_id,
+                user__is_active=True,
+                user__must_change_password=False,
+                verified_at__isnull=True,
+            ).first() if reset_id else None
+
+            if reset_request:
+                with transaction.atomic():
+                    reset_request = PasswordResetCode.objects.select_for_update().filter(
+                        pk=reset_request.pk,
+                    ).first()
+                    now = timezone.now()
+                    if (
+                        reset_request
+                        and reset_request.expires_at > now
+                        and reset_request.attempts < PASSWORD_RESET_MAX_ATTEMPTS
+                        and check_password(code, reset_request.code_hash)
+                    ):
+                        reset_request.verified_at = now
+                        reset_request.code_hash = ''
+                        reset_request.save(update_fields=['verified_at', 'code_hash'])
+                        request.session['password_reset_otp_id'] = reset_request.pk
+                        request.session.set_expiry(PASSWORD_RESET_CODE_TTL)
+                        return redirect('password_reset_change')
+                    if (
+                        reset_request
+                        and reset_request.attempts < PASSWORD_RESET_MAX_ATTEMPTS
+                    ):
+                        reset_request.attempts += 1
+                        reset_request.save(update_fields=['attempts'])
+
+            if reset_request and reset_request.expires_at <= now:
+                request.session.pop('password_reset_otp_id', None)
+
+            form.add_error(
+                None,
+                'El código no es válido, venció o superó los intentos permitidos.',
+            )
+    else:
+        form = PasswordResetCodeForm()
+
+    return render(request, 'registration/password_reset_done.html', {'form': form})
+
+
+@login_not_required
+def web_password_reset_change(request):
+    reset_id = request.session.get('password_reset_otp_id')
+    reset_request = PasswordResetCode.objects.select_related('user').filter(
+        pk=reset_id,
+        user__is_active=True,
+        user__must_change_password=False,
+    ).first() if reset_id else None
+    now = timezone.now()
+
+    if (
+        not reset_request
+        or not reset_request.verified_at
+        or reset_request.verified_at <= now - PASSWORD_RESET_CODE_TTL
+        or reset_request.expires_at <= now
+    ):
+        request.session.pop('password_reset_otp_id', None)
+        messages.error(request, 'El código de recuperación venció. Solicita uno nuevo.')
+        return redirect('password_reset')
+
+    if request.method == 'POST':
+        form = PasswordResetSetPasswordForm(request.POST, user=reset_request.user)
+        if form.is_valid():
+            with transaction.atomic():
+                reset_request = PasswordResetCode.objects.select_for_update().select_related(
+                    'user',
+                ).filter(pk=reset_id).first()
+                now = timezone.now()
+                if (
+                    not reset_request
+                    or not reset_request.verified_at
+                    or reset_request.verified_at <= now - PASSWORD_RESET_CODE_TTL
+                    or reset_request.expires_at <= now
+                ):
+                    request.session.pop('password_reset_otp_id', None)
+                    messages.error(request, 'El código de recuperación venció. Solicita uno nuevo.')
+                    return redirect('password_reset')
+
+                reset_request.user.set_password(form.cleaned_data['new_password1'])
+                reset_request.user.save(update_fields=['password'])
+                reset_request.delete()
+
+            request.session.pop('password_reset_otp_id', None)
+            return redirect('password_reset_complete')
+    else:
+        form = PasswordResetSetPasswordForm(user=reset_request.user)
+
+    return render(request, 'registration/password_reset_confirm.html', {'form': form})
+
+
+@login_not_required
+def web_password_reset_complete(request):
+    return render(request, 'registration/password_reset_complete.html')
+
 
 def es_codigo_2fa_valido(user, code):
     secret = getattr(user, 'totp_secret', None)
@@ -376,13 +558,38 @@ def web_login(request):
         if not password:
             return render(request, 'login.html', {'error': 'La contraseña es obligatoria.'})
 
-        user_obj = Usuario.objects.filter(username=username).first()
+        user_obj = Usuario.objects.filter(
+            Q(username__iexact=username) | Q(email__iexact=username)
+        ).first()
         if user_obj and not user_obj.is_active:
             return render(request, 'login.html', {'error': 'Usuario bloqueado o inactivo.'})
 
-        user = authenticate(request, username=username, password=password)
+        if user_obj and user_obj.must_change_password and (
+            not user_obj.initial_login_expires_at
+            or user_obj.initial_login_expires_at <= timezone.now()
+        ):
+            user_obj.is_active = False
+            user_obj.save(update_fields=['is_active'])
+            return render(request, 'login.html', {
+                'error': (
+                    'El plazo de 10 minutos para activar esta cuenta venció. '
+                    'Contacte al administrador para renovar el acceso.'
+                ),
+                'username_val': username,
+            })
+
+        user = authenticate(
+            request,
+            username=user_obj.username if user_obj else username,
+            password=password,
+        )
 
         if user is not None:
+            if user.must_change_password:
+                request.session['pending_initial_password_user_id'] = user.pk
+                request.session.set_expiry(600)
+                return redirect('web_initial_password')
+
             # Flujo 2FA
             if user.requires_2fa:
                 request.session['pending_2fa_user_id'] = user.pk
@@ -427,6 +634,64 @@ def web_login(request):
 
     return render(request, 'login.html')
 
+
+@login_not_required
+def web_initial_password(request):
+    user_id = request.session.get('pending_initial_password_user_id')
+    if not user_id:
+        messages.error(request, 'Inicia sesión con tu correo y RUN para continuar.')
+        return redirect('web_login')
+
+    user = Usuario.objects.filter(pk=user_id, is_active=True).first()
+    if not user or not user.must_change_password:
+        request.session.pop('pending_initial_password_user_id', None)
+        return redirect('web_login')
+
+    if request.method == 'POST':
+        form = InitialPasswordForm(request.POST, user=user)
+        if form.is_valid():
+            user.set_password(form.cleaned_data['new_password1'])
+            user.must_change_password = False
+            user.initial_login_expires_at = None
+            user.save(update_fields=[
+                'password',
+                'must_change_password',
+                'initial_login_expires_at',
+            ])
+            request.session.pop('pending_initial_password_user_id', None)
+
+            if user.requires_2fa:
+                request.session['pending_2fa_user_id'] = user.pk
+                request.session.set_expiry(300)
+                messages.success(
+                    request,
+                    'Contraseña guardada. Completa la verificación de dos factores.',
+                )
+                return render(request, 'login.html', {
+                    'show_2fa': True,
+                    'user_id': user.pk,
+                })
+
+            login(request, user)
+            RegistroAuditoria.objects.create(
+                usuario=user,
+                accion='INICIO_SESION',
+                entidad='Usuario',
+                identificador_registro=str(user.pk),
+                valor_nuevo={'username': user.username},
+                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            )
+            messages.success(request, 'Contraseña guardada. Sesión iniciada correctamente.')
+            return redirect('web_dashboard')
+    else:
+        form = InitialPasswordForm(user=user)
+
+    return render(request, 'initial_password.html', {
+        'form': form,
+        'email': user.email,
+    })
+
+
 @login_not_required
 def web_verificar_2fa(request):
     if request.method == 'POST':
@@ -462,6 +727,7 @@ def web_logout(request):
     logout(request)
     return redirect('web_login')
 
+@never_cache
 def web_dashboard(request):
     if request.user.es_administrativo:
         actividades = Actividad.objects.filter(funcionario=request.user)

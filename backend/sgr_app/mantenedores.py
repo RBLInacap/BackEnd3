@@ -1,4 +1,4 @@
-import secrets
+from datetime import timedelta
 
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
@@ -8,6 +8,7 @@ from django.db.models import Q
 from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from django.urls import reverse_lazy
+from django.utils import timezone
 from django.views.generic import CreateView, DeleteView, ListView, UpdateView, View
 
 from sgr_app.forms import (
@@ -944,8 +945,9 @@ class FuncionarioCreateView(AdministradorRequiredMixin, AuditedSaveMixin, Create
     template_name = 'mantenedores/form.html'
     success_url = reverse_lazy('mantenedor_funcionarios_list')
     success_message = (
-        'Funcionario creado correctamente. Debe usar «¿Olvidaste tu contraseña?» '
-        'para configurar su acceso.'
+        'Funcionario creado correctamente. Debe iniciar sesión con su correo y '
+        'su RUN sin puntos ni guion dentro de 10 minutos; al ingresar deberá '
+        'crear y confirmar una contraseña nueva.'
     )
     extra_context = {
         'title': 'Crear funcionario',
@@ -954,8 +956,70 @@ class FuncionarioCreateView(AdministradorRequiredMixin, AuditedSaveMixin, Create
     }
 
     def form_valid(self, form):
-        form.instance.set_password(secrets.token_urlsafe(32))
+        run_inicial = form.cleaned_data['run'].replace('.', '').replace('-', '')
+        form.instance.set_password(run_inicial)
+        form.instance.must_change_password = True
+        form.instance.initial_login_expires_at = (
+            timezone.now() + timedelta(minutes=10)
+        )
         return super().form_valid(form)
+
+
+class FuncionarioRenewAccessView(AdministradorRequiredMixin, View):
+    def post(self, request, *args, **kwargs):
+        funcionario = get_object_or_404(Usuario, pk=kwargs['pk'])
+        if not funcionario.must_change_password:
+            messages.error(request, 'Este funcionario ya completó su primer acceso.')
+            return HttpResponseRedirect(reverse_lazy('mantenedor_funcionarios_list'))
+        if not funcionario.rut_anonimizado:
+            messages.error(request, 'El funcionario no tiene un RUN registrado para renovar el acceso.')
+            return HttpResponseRedirect(reverse_lazy('mantenedor_funcionarios_list'))
+
+        run_inicial = (
+            funcionario.rut_anonimizado.replace('.', '').replace('-', '')
+        )
+        activo_anterior = funcionario.is_active
+        fecha_anterior = funcionario.initial_login_expires_at
+        with transaction.atomic():
+            funcionario.set_password(run_inicial)
+            funcionario.is_active = True
+            funcionario.initial_login_expires_at = (
+                timezone.now() + timedelta(minutes=10)
+            )
+            funcionario.save(update_fields=[
+                'password',
+                'is_active',
+                'initial_login_expires_at',
+            ])
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                evento='MODIFICACION',
+                accion='RENOVAR_ACCESO_FUNCIONARIO',
+                entidad='Usuario',
+                identificador=str(funcionario.pk),
+                identificador_registro=str(funcionario.pk),
+                valor_anterior={
+                    'activo': activo_anterior,
+                    'initial_login_expires_at': (
+                        fecha_anterior.isoformat() if fecha_anterior else None
+                    ),
+                },
+                valor_nuevo={
+                    'activo': True,
+                    'initial_login_expires_at': (
+                        funcionario.initial_login_expires_at.isoformat()
+                    ),
+                },
+                ip_origen=request.META.get('REMOTE_ADDR'),
+            )
+
+        messages.success(
+            request,
+            'Acceso renovado por 10 minutos. El funcionario debe usar su correo '
+            'y su RUN sin puntos ni guion como contraseña inicial.',
+        )
+        return HttpResponseRedirect(reverse_lazy('mantenedor_funcionarios_list'))
 
 
 class FuncionarioUpdateView(AdministradorRequiredMixin, AuditedSaveMixin, UpdateView):
