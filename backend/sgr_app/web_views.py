@@ -1,7 +1,8 @@
 import csv
+from math import isfinite
 from django.shortcuts import render, redirect, get_object_or_404
 from django.core.paginator import Paginator
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.db.models import Exists, OuterRef, Q
 from django.urls import reverse
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
@@ -23,7 +24,7 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from django.contrib.auth.decorators import login_not_required, login_required
 from django.views.decorators.cache import never_cache
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import CreateView, UpdateView
 from django.urls import reverse_lazy
@@ -48,7 +49,7 @@ from sgr_app.models import (
     AjusteIncentivo, Delegacion, Cargo, Usuario, PeriodoMedicion, ItemMedicion,
     Actividad, Evidencia, CompromisoAgenda, CasoSocial, AtencionSocial, Solicitante,
     RegistroAuditoria, MetaModel, ObservacionCompromiso, CatalogoServicio,
-    PasswordResetCode,
+    PasswordResetCode, TipoActividad, TipoAtencionSocial, SubatencionSocial,
 )
 from sgr_app.services.calculos import (
     calcular_dias_periodo,
@@ -58,6 +59,7 @@ from sgr_app.services.calculos import (
     determinar_color_semaforo
 )
 from sgr_app.services.evidencias import metadatos_archivo_evidencia, validar_archivo_evidencia
+from sgr_app.validators import normalize_chilean_phone
 
 ACTIVIDAD_TERRITORIOS = (
     'Sector Centro', 'El Milagro', 'La Pampa', 'Las Compañías',
@@ -265,9 +267,9 @@ def get_periodo_activo():
 
 
 def _puede_gestionar_compromiso(user, compromiso=None):
-    if user.is_superuser or user.rol == Usuario.Rol.ADMINISTRADOR or user.es_supervisor:
+    if user.es_admin() or user.es_supervisor:
         return True
-    if user.es_delegado:
+    if user.esta_limitado_a_delegacion:
         return bool(user.delegacion_id and compromiso and compromiso.delegacion_id == user.delegacion_id)
     return bool(
         user.es_administrativo
@@ -281,7 +283,7 @@ def _resumen_comunal_visible(user, periodo):
     if not periodo:
         return None
 
-    if user.es_delegado:
+    if user.esta_limitado_a_delegacion:
         if not user.delegacion_id:
             return None
         resumen = calcular_resumen_delegacion(
@@ -305,7 +307,7 @@ def _resumen_comunal_visible(user, periodo):
 
 
 def _filtrar_por_delegacion(queryset, user, campo='delegacion_id'):
-    if not user.es_delegado:
+    if not user.esta_limitado_a_delegacion:
         return queryset
     if not user.delegacion_id:
         return queryset.none()
@@ -351,7 +353,7 @@ def _puede_gestionar_ajustes(user):
         user.is_authenticated
         and (
             user.is_superuser
-            or user.rol == Usuario.Rol.ADMINISTRADOR
+            or user.es_admin()
             or user.es_supervisor
         )
     )
@@ -749,7 +751,7 @@ def web_dashboard(request):
     delegaciones = Delegacion.objects.filter(activo=True)
     comunal = _resumen_comunal_visible(request.user, periodo)
 
-    if request.user.es_delegado:
+    if request.user.esta_limitado_a_delegacion:
         delegaciones = delegaciones.filter(pk=request.user.delegacion_id) if request.user.delegacion_id else delegaciones.none()
         delegacion_seleccionada = request.user.delegacion_id
     else:
@@ -808,10 +810,10 @@ def web_dashboard(request):
         'funcionarios_lista': funcionarios_lista,
         'resumenes_por_cargo': _agrupar_funcionarios_por_cargo(funcionarios_lista),
         'delegaciones_filtradas': delegaciones_filtradas,
-        'delegacion_actual': request.user.delegacion if request.user.es_delegado else None,
+        'delegacion_actual': request.user.delegacion if request.user.esta_limitado_a_delegacion else None,
     }
 
-    if request.user.rol == Usuario.Rol.ADMINISTRADOR or request.user.is_superuser:
+    if request.user.es_admin():
         template = 'dashboard_admin.html'
     else:
         template = 'dashboard_supervisor.html'
@@ -826,7 +828,7 @@ def web_semaforo(request):
     delegaciones = Delegacion.objects.filter(activo=True)
 
     comunal = _resumen_comunal_visible(request.user, periodo)
-    if request.user.es_delegado:
+    if request.user.esta_limitado_a_delegacion:
         delegaciones = delegaciones.filter(pk=request.user.delegacion_id) if request.user.delegacion_id else delegaciones.none()
         delegacion_seleccionada = request.user.delegacion_id
     else:
@@ -1013,7 +1015,7 @@ def web_alertas_operativas(request):
 def web_reportes(request):
     if not (
         request.user.is_superuser
-        or request.user.rol == Usuario.Rol.ADMINISTRADOR
+        or request.user.es_admin()
         or request.user.es_supervisor
     ):
         raise PermissionDenied
@@ -1310,9 +1312,10 @@ def web_mi_ficha(request):
 
     return render(request, 'mi_ficha.html', {'form': form})
 
-def _actividad_error(request, funcionario_id, error_code):
+def _actividad_error(request, funcionario_id, error_code, field_errors=None):
     campos_formulario = (
         'fecha_actividad', 'item_medicion_id', 'catalogo_servicio_id', 'solicitante_id',
+        'contacto_telefono',
         'direccion', 'solicitud_problema',
         'accion_ejecutada', 'compromiso_fecha',
         'compromiso_territorio', 'compromiso_area_apoyo', 'compromiso_descripcion',
@@ -1322,6 +1325,7 @@ def _actividad_error(request, funcionario_id, error_code):
         field: request.POST.get(field, '').strip()
         for field in campos_formulario
     }
+    request.session['activity_field_errors'] = field_errors or []
     return redirect(f"{reverse('web_registrar_actividad_diaria')}?funcionario_id={funcionario_id}&activity_error={error_code}")
 
 def _fecha_en_periodo(fecha, periodo):
@@ -1384,19 +1388,102 @@ def _recalcular_metas_evidencia(evidencia):
 
     return resultados
 
+def _funcionarios_disponibles_actividad(user):
+    funcionarios = Usuario.objects.filter(
+        rol=Usuario.Rol.ADMINISTRATIVO,
+        es_delegado=False,
+        is_active=True,
+    )
+    return _filtrar_por_delegacion(funcionarios, user)
+
+
+def _items_medicion_funcionario(funcionario, periodo):
+    if not funcionario or not periodo or not periodo.pk or not funcionario.cargo_id:
+        return ItemMedicion.objects.none()
+    return ItemMedicion.objects.filter(
+        periodo=periodo,
+        cargo_id=funcionario.cargo_id,
+        activo=True,
+    ).order_by('pk')
+
+
+def _tipos_actividad_funcionario(funcionario):
+    tipos = TipoActividad.objects.filter(
+        activo=True,
+        area__estado=True,
+    )
+    if funcionario and funcionario.area_entidad_id:
+        tipos = tipos.filter(area_id=funcionario.area_entidad_id)
+    return tipos.select_related('area').order_by('nombre')
+
+
+@require_GET
+def web_items_medicion_funcionario(request):
+    if not request.user.is_authenticated:
+        return JsonResponse(
+            {'error': 'Debes iniciar sesión para consultar los ítems.'},
+            status=401,
+        )
+
+    funcionario_id = request.GET.get('funcionario_id', '')
+    if request.user.es_administrativo:
+        if funcionario_id and funcionario_id != str(request.user.pk):
+            return JsonResponse(
+                {'error': 'Solo puedes consultar tus propios ítems.'},
+                status=403,
+            )
+        funcionario = request.user
+    elif not funcionario_id:
+        funcionario = None
+    elif not funcionario_id.isdecimal():
+        return JsonResponse(
+            {'error': 'El funcionario seleccionado no es válido.'},
+            status=400,
+        )
+    else:
+        funcionario = _funcionarios_disponibles_actividad(
+            request.user
+        ).filter(pk=int(funcionario_id)).first()
+        if not funcionario:
+            return JsonResponse(
+                {'error': 'El funcionario seleccionado no está disponible.'},
+                status=404,
+            )
+
+    periodo = get_periodo_activo()
+    items = list(_items_medicion_funcionario(funcionario, periodo))
+    tipos_actividad = list(_tipos_actividad_funcionario(funcionario))
+
+    return JsonResponse({
+        'items': [
+            {
+                'id': item.pk,
+                'label': (
+                    f'{item.nombre_item} (Meta: {item.meta_cuantitativa}, '
+                    f'ponderador: {item.ponderador}%)'
+                ),
+            }
+            for item in items
+        ],
+        'required': bool(items),
+        'tipos_actividad': [
+            {
+                'id': tipo.pk,
+                'label': tipo.nombre,
+            }
+            for tipo in tipos_actividad
+        ],
+        'tipo_actividad_required': bool(tipos_actividad),
+    })
+
+
 def web_registrar_actividad_personal(request):
     if not request.user.is_authenticated:
         messages.error(request, "Debe iniciar sesión para registrar actividades.")
         return redirect('web_login')
 
     periodo = get_periodo_activo()
-    funcionarios_disponibles = Usuario.objects.filter(
-        rol=Usuario.Rol.ADMINISTRATIVO,
-        es_delegado=False,
-        is_active=True,
-    )
-    funcionarios_disponibles = _filtrar_por_delegacion(
-        funcionarios_disponibles,
+    funcionarios_disponibles = _funcionarios_disponibles_actividad(
         request.user,
     )
     requester_queryset = Solicitante.objects.all()
@@ -1404,7 +1491,13 @@ def web_registrar_actividad_personal(request):
         requester_queryset = requester_queryset.filter(estado=True)
     catalogo_queryset = CatalogoServicio.objects.filter(activo=True).order_by('area', 'nombre')
 
-    def render_activity_form(form, funcionario=None, form_data=None, error_code=''):
+    def render_activity_form(
+        form,
+        funcionario=None,
+        form_data=None,
+        error_code='',
+        field_errors=None,
+    ):
         selected_requester = None
         if form_data:
             requester_id = form_data.get('solicitante_id', '')
@@ -1412,34 +1505,41 @@ def web_registrar_actividad_personal(request):
             requester_id = request.GET.get('solicitante_id', '')
         if str(requester_id).isdigit():
             selected_requester = requester_queryset.filter(pk=int(requester_id)).first()
+        contacto_telefono_inicial = (
+            form_data.get('contacto_telefono', '')
+            if form_data is not None and 'contacto_telefono' in form_data
+            else selected_requester.telefono if selected_requester else ''
+        )
 
-        if funcionario and periodo and periodo.pk:
-            item_queryset = ItemMedicion.objects.filter(
-                periodo=periodo,
-                activo=True,
-                cargo=funcionario.cargo,
-            ) if periodo and funcionario.cargo_id else ItemMedicion.objects.none()
-        else:
-            item_queryset = ItemMedicion.objects.none()
+        item_queryset = _items_medicion_funcionario(funcionario, periodo)
+        tipo_actividad_queryset = _tipos_actividad_funcionario(funcionario)
 
         form.fields['item_medicion_id'].queryset = item_queryset
+        form.fields['tipo_actividad_id'].queryset = tipo_actividad_queryset
+        form.fields['tipo_actividad_id'].required = tipo_actividad_queryset.exists()
         return render(request, 'registrar_actividad.html', {
             'form': form,
             'funcionario': funcionario,
             'funcionarios': funcionarios_disponibles.order_by('last_name', 'first_name'),
             'items_funcionario': item_queryset,
+            'tipos_actividad': tipo_actividad_queryset,
             'solicitantes': requester_queryset.order_by(
                 'nombre', 'apellido_paterno', 'apellido_materno'
             ),
             'catalogos_servicios': catalogo_queryset,
             'selected_requester': selected_requester,
+            'contacto_telefono_inicial': contacto_telefono_inicial,
             'activity_form_data': form_data or {},
+            'activity_field_errors': field_errors or [],
             'activity_error': {
                 'fecha_futura': 'La fecha de la actividad no puede ser posterior a hoy.',
                 'fecha_invalida': 'La fecha de la actividad no es válida.',
+                'fecha_periodo': 'La fecha de actividad debe pertenecer al período del ítem seleccionado.',
                 'fecha_compromiso': 'La fecha del compromiso debe pertenecer al período activo y no ser anterior a la actividad.',
                 'solicitante': 'Selecciona un solicitante registrado.',
+                'telefono': 'Ingresa un teléfono de contacto chileno válido.',
                 'item_invalido': 'Selecciona un ítem válido para el período y cargo.',
+                'tipo_actividad': 'Selecciona un tipo de actividad válido para el área.',
                 'ubicacion_invalida': 'La ubicación debe incluir coordenadas válidas.',
                 'compromiso_datos': 'Completa datos válidos para crear el compromiso opcional.',
                 'datos_invalidos': 'Revisa los datos del formulario.',
@@ -1458,15 +1558,12 @@ def web_registrar_actividad_personal(request):
     else:
         funcionario = funcionarios_disponibles.first()
 
-    item_queryset = ItemMedicion.objects.filter(
-        periodo=periodo,
-        activo=True,
-        cargo=funcionario.cargo,
-    ) if periodo and periodo.pk and funcionario and funcionario.cargo_id else ItemMedicion.objects.none()
+    item_queryset = _items_medicion_funcionario(funcionario, periodo)
 
     if request.method == 'GET':
         activity_error = request.GET.get('activity_error', '')
         form_data = request.session.pop('activity_form_data', {}) if activity_error else {}
+        field_errors = request.session.pop('activity_field_errors', []) if activity_error else []
         form = ActividadTerrenoForm(
             initial={
                 'funcionario_id': funcionario.pk if funcionario else '',
@@ -1474,35 +1571,60 @@ def web_registrar_actividad_personal(request):
             },
             funcionario_queryset=funcionarios_disponibles,
             item_queryset=item_queryset,
+            tipo_actividad_queryset=_tipos_actividad_funcionario(funcionario),
             catalogo_queryset=catalogo_queryset,
             periodo=periodo,
         )
-        return render_activity_form(form, funcionario, form_data, activity_error)
+        return render_activity_form(
+            form,
+            funcionario,
+            form_data,
+            activity_error,
+            field_errors,
+        )
 
     form = ActividadTerrenoForm(
         request.POST,
         request.FILES,
         funcionario_queryset=funcionarios_disponibles,
         item_queryset=item_queryset,
+        tipo_actividad_queryset=_tipos_actividad_funcionario(funcionario),
         catalogo_queryset=catalogo_queryset,
         periodo=periodo,
     )
     form.fields['funcionario_id'].required = not request.user.es_administrativo
     if not form.is_valid():
         if funcionario:
-            field_errors = set(form.errors.keys())
+            invalid_fields = set(form.errors.keys())
+            field_errors = [
+                {
+                    'field': form.fields[field].label if field in form.fields else field,
+                    'messages': [str(error) for error in errors],
+                }
+                for field, errors in form.errors.items()
+            ]
             error_code = 'datos_invalidos'
-            if 'fecha_actividad' in field_errors:
-                error_code = 'fecha_futura' if 'posterior a hoy' in str(form.errors['fecha_actividad']) else 'fecha_invalida'
-            elif 'solicitante_id' in field_errors:
+            if 'fecha_actividad' in invalid_fields:
+                date_errors = str(form.errors['fecha_actividad'])
+                if 'posterior a hoy' in date_errors:
+                    error_code = 'fecha_futura'
+                elif 'período' in date_errors:
+                    error_code = 'fecha_periodo'
+                else:
+                    error_code = 'fecha_invalida'
+            elif 'solicitante_id' in invalid_fields:
                 error_code = 'solicitante'
-            elif 'item_medicion_id' in field_errors:
+            elif 'contacto_telefono' in invalid_fields:
+                error_code = 'telefono'
+            elif 'item_medicion_id' in invalid_fields:
                 error_code = 'item_invalido'
-            elif field_errors.intersection({'latitud', 'longitud'}):
+            elif 'tipo_actividad_id' in invalid_fields:
+                error_code = 'tipo_actividad'
+            elif invalid_fields.intersection({'latitud', 'longitud'}):
                 error_code = 'ubicacion_invalida'
-            elif 'compromiso_fecha' in field_errors:
+            elif 'compromiso_fecha' in invalid_fields:
                 error_code = 'fecha_compromiso'
-            elif field_errors.intersection({
+            elif invalid_fields.intersection({
                 'compromiso_fecha',
                 'compromiso_territorio',
                 'compromiso_area_apoyo',
@@ -1510,7 +1632,12 @@ def web_registrar_actividad_personal(request):
             }):
                 error_code = 'compromiso_datos'
             messages.error(request, 'Revisa los datos del formulario antes de continuar.')
-            return _actividad_error(request, funcionario.pk, error_code)
+            return _actividad_error(
+                request,
+                funcionario.pk,
+                error_code,
+                field_errors,
+            )
         messages.error(request, 'Selecciona un funcionario responsable válido.')
         return redirect('web_registrar_actividad_diaria')
 
@@ -1535,10 +1662,11 @@ def web_registrar_actividad_personal(request):
                 delegacion=delegacion,
                 solicitante=solicitante,
                 item_medicion=item_medicion,
+                tipo_actividad=data['tipo_actividad_id'],
                 catalogo_servicio=data['catalogo_servicio_id'],
                 fecha_actividad=data['fecha_actividad'],
                 contacto_nombre=str(solicitante),
-                contacto_telefono=solicitante.telefono or '',
+                contacto_telefono=data['contacto_telefono'],
                 solicitud_problema=data['solicitud_problema'].strip(),
                 actividad_solicitud=data['solicitud_problema'].strip(),
                 accion=data['accion_ejecutada'].strip(),
@@ -1586,7 +1714,32 @@ def web_registrar_actividad_personal(request):
             )
     except ValidationError as exc:
         messages.error(request, '; '.join(exc.messages))
-        return _actividad_error(request, funcionario.pk, 'datos_invalidos')
+        validation_errors = (
+            exc.error_dict.items()
+            if hasattr(exc, 'error_dict')
+            else [('__all__', exc.error_list)]
+        )
+        field_labels = {
+            'item_medicion': 'Ítem de medición',
+            'tipo_actividad': 'Tipo de actividad',
+        }
+        field_errors = [
+            {
+                'field': (
+                    form.fields[field].label
+                    if field in form.fields
+                    else field_labels.get(field, field.replace('_', ' ').capitalize())
+                ),
+                'messages': [str(error) for error in errors],
+            }
+            for field, errors in validation_errors
+        ]
+        return _actividad_error(
+            request,
+            funcionario.pk,
+            'datos_invalidos',
+            field_errors,
+        )
 
     msg_exito = f"Actividad #{actividad.pk} registrada correctamente."
     if evidencias:
@@ -1606,7 +1759,7 @@ def web_agregar_evidencia(request, actividad_id):
     if request.user.es_administrativo and actividad.funcionario_id != request.user.id:
         messages.error(request, 'Solo puedes agregar evidencias a tus propias actividades.')
         return redirect('web_personal')
-    if request.user.es_delegado and actividad.delegacion_id != request.user.delegacion_id:
+    if request.user.esta_limitado_a_delegacion and actividad.delegacion_id != request.user.delegacion_id:
         messages.error(request, 'Solo puedes agregar evidencias a actividades de tu delegación.')
         return redirect('web_personal')
     if request.method != 'POST':
@@ -1646,7 +1799,7 @@ def web_verificacion(request):
     if not request.user.is_authenticated:
         return redirect('web_login')
 
-    if request.user.es_administrativo:
+    if not request.user.puede_aprobar_evidencias:
         messages.warning(request, "Acceso restringido: La bandeja de Validación 'Check' está reservada para Delegados Municipales y Jefaturas (Segregación de Funciones RN-009).")
         return redirect('web_personal')
 
@@ -1659,7 +1812,7 @@ def web_verificacion(request):
     estado_filtro = request.GET.get('estado', 'PENDIENTE')
 
     evidencias = Evidencia.objects.all()
-    if request.user.es_delegado:
+    if request.user.esta_limitado_a_delegacion:
         if request.user.delegacion_id:
             evidencias = evidencias.filter(actividad__delegacion_id=request.user.delegacion_id)
         else:
@@ -1685,17 +1838,16 @@ def web_verificacion(request):
     })
 
 def web_validar_evidencia(request, evidencia_id):
-    if not request.user.is_authenticated or not (
-        request.user.es_delegado
-        or request.user.es_supervisor
-        or request.user.rol == Usuario.Rol.ADMINISTRADOR
+    if (
+        not request.user.is_authenticated
+        or not request.user.puede_aprobar_evidencias
     ):
         messages.error(request, "Acceso denegado: Un funcionario no puede auto-aprobar evidencias. Solo Delegados Municipales, Coordinadores y Administradores tienen facultades de validación (Regla RN-009 y Criterio CA-07).")
         return redirect('web_verificacion')
 
     if request.method == 'POST':
         evidencias = Evidencia.objects.all()
-        if request.user.es_delegado:
+        if request.user.esta_limitado_a_delegacion:
             if not request.user.delegacion_id:
                 messages.error(request, 'Debes tener una delegación asignada para validar evidencias.')
                 return redirect('web_verificacion')
@@ -2032,14 +2184,14 @@ def web_crear_compromiso(request):
         origen = request.POST.get('origen') or 'INT'
         territorio = (request.POST.get('territorio') or '').strip() or 'La Serena'
         delegacion_id = request.POST.get('delegacion_id') or request.user.delegacion_id
-        if request.user.rol != Usuario.Rol.ADMINISTRADOR and not request.user.es_supervisor and (
+        if not request.user.es_admin() and not request.user.es_supervisor and (
             not request.user.delegacion_id or str(delegacion_id) != str(request.user.delegacion_id)
         ):
             raise PermissionDenied
         responsable_id = request.POST.get('responsable_id') or request.user.id
         if request.user.es_administrativo:
             responsable_id = request.user.id
-        elif request.user.es_delegado:
+        elif request.user.esta_limitado_a_delegacion:
             responsable = get_object_or_404(Usuario, id=responsable_id)
             if responsable.delegacion_id != request.user.delegacion_id:
                 raise PermissionDenied
@@ -2150,7 +2302,7 @@ class CompromisoCreateView(LoginRequiredMixin, CreateView):
             actividades = Actividad.objects.filter(pk=int(actividad_id))
             if user.es_administrativo:
                 actividades = actividades.filter(funcionario=user)
-            elif user.es_delegado:
+            elif user.esta_limitado_a_delegacion:
                 actividades = actividades.filter(delegacion_id=user.delegacion_id)
             actividad = actividades.first()
             if actividad:
@@ -2311,12 +2463,12 @@ def web_editar_compromiso(request, compromiso_id):
             delegacion = get_object_or_404(Delegacion, id=delegacion_id)
         if responsable_id:
             responsable = get_object_or_404(Usuario, id=responsable_id)
-        if request.user.rol != Usuario.Rol.ADMINISTRADOR and not request.user.es_supervisor:
+        if not request.user.es_admin() and not request.user.es_supervisor:
             if delegacion.pk != request.user.delegacion_id:
                 raise PermissionDenied
             if request.user.es_administrativo and responsable.pk != request.user.pk:
                 raise PermissionDenied
-            if request.user.es_delegado and responsable.delegacion_id != request.user.delegacion_id:
+            if request.user.esta_limitado_a_delegacion and responsable.delegacion_id != request.user.delegacion_id:
                 raise PermissionDenied
 
         fecha_comp = None
@@ -2495,15 +2647,19 @@ def web_terreno(request):
         return redirect('web_login')
 
     periodo = get_periodo_activo()
-    items_medicion = ItemMedicion.objects.filter(
-        periodo=periodo, activo=True, cargo=request.user.cargo
-    ) if periodo and periodo.pk and request.user.cargo_id else []
+    items_medicion = ItemMedicion.objects.none()
+    if periodo and periodo.pk and request.user.cargo_id:
+        items_medicion = ItemMedicion.objects.filter(
+            periodo=periodo,
+            activo=True,
+            cargo=request.user.cargo,
+        )
     actividades = Actividad.objects.select_related(
         'delegacion', 'funcionario', 'item', 'item_medicion'
     ).order_by('-fecha_actividad')
     if request.user.es_administrativo:
         actividades = actividades.filter(funcionario=request.user)
-    elif request.user.es_delegado:
+    elif request.user.esta_limitado_a_delegacion:
         actividades = _filtrar_por_delegacion(actividades, request.user)
 
     if request.method == 'POST':
@@ -2525,22 +2681,79 @@ def web_terreno(request):
 
         direccion = (request.POST.get('direccion') or '').strip()
         accion = (request.POST.get('accion_ejecutada') or '').strip()
+        telefono = (request.POST.get('contacto_telefono') or '').strip()
         fotos = request.FILES.getlist('fotos')
-        if not direccion or not accion or not fotos:
-            messages.error(request, 'Para crear una actividad nueva completa la dirección, la acción y adjunta al menos una foto.')
-            return redirect('web_terreno')
+        validation_errors = []
+        if not direccion:
+            validation_errors.append(('Dirección', 'Este campo es obligatorio.'))
+        if not accion:
+            validation_errors.append(('Acción ejecutada', 'Este campo es obligatorio.'))
+        if not fotos:
+            validation_errors.append(('Fotografías', 'Adjunta al menos una fotografía.'))
+        if not telefono:
+            validation_errors.append(('Teléfono de contacto', 'Este campo es obligatorio.'))
+            contacto_telefono = ''
+        else:
+            try:
+                contacto_telefono = normalize_chilean_phone(telefono)
+            except ValidationError as exc:
+                validation_errors.append(
+                    ('Teléfono de contacto', '; '.join(exc.messages))
+                )
+                contacto_telefono = ''
         item_id = request.POST.get('item_medicion')
-        item = ItemMedicion.objects.filter(
-            id=item_id, periodo=periodo, cargo=request.user.cargo, activo=True
-        ).first() if item_id and periodo else None
+        item = (
+            items_medicion.filter(pk=int(item_id)).first()
+            if item_id and item_id.isdecimal()
+            else None
+        )
         if item_id and not item:
-            messages.error(request, 'El ítem seleccionado no corresponde al período o cargo actual.')
+            validation_errors.append(
+                ('Ítem de medición', 'No corresponde al período o cargo actual.')
+            )
+        elif not item_id and items_medicion.exists():
+            validation_errors.append(
+                ('Ítem de medición', 'Selecciona un ítem vigente para el período y cargo actual.')
+            )
+
+        fecha_actividad = timezone.localdate()
+        if item and not (
+            item.periodo.fecha_inicio <= fecha_actividad <= item.periodo.fecha_termino
+        ):
+            validation_errors.append(
+                ('Fecha de actividad', 'Debe pertenecer al período del ítem seleccionado.')
+            )
+
+        latitud_raw = request.POST.get('latitud', '').strip()
+        longitud_raw = request.POST.get('longitud', '').strip()
+        latitud = longitud = None
+        if bool(latitud_raw) != bool(longitud_raw):
+            validation_errors.append(
+                ('Ubicación', 'Debes ingresar latitud y longitud conjuntamente.')
+            )
+        elif latitud_raw:
+            try:
+                latitud = float(latitud_raw)
+                longitud = float(longitud_raw)
+                if (
+                    not isfinite(latitud)
+                    or not isfinite(longitud)
+                    or not -90 <= latitud <= 90
+                    or not -180 <= longitud <= 180
+                ):
+                    validation_errors.append(
+                        ('Ubicación', 'La latitud y longitud deben estar dentro de rangos válidos.')
+                    )
+            except (TypeError, ValueError):
+                validation_errors.append(
+                    ('Ubicación', 'Ingresa coordenadas numéricas válidas.')
+                )
+
+        if validation_errors:
+            for field, error in validation_errors:
+                messages.error(request, f'{field}: {error}')
             return redirect('web_terreno')
-        try:
-            latitud = float(request.POST.get('latitud', ''))
-            longitud = float(request.POST.get('longitud', ''))
-        except (TypeError, ValueError):
-            latitud = longitud = None
+
         delegacion = request.user.delegacion or Delegacion.objects.first()
         if not delegacion:
             messages.error(request, 'No hay una delegación configurada para registrar la actividad.')
@@ -2551,7 +2764,8 @@ def web_terreno(request):
                     funcionario=request.user,
                     delegacion=delegacion,
                     item_medicion=item,
-                    fecha_actividad=timezone.localdate(),
+                    fecha_actividad=fecha_actividad,
+                    contacto_telefono=contacto_telefono,
                     direccion=direccion,
                     latitud=latitud,
                     longitud=longitud,
@@ -2595,7 +2809,7 @@ def web_casos_sociales(request):
         raise PermissionDenied
 
     casos = CasoSocial.objects.all()
-    if user.es_delegado:
+    if user.esta_limitado_a_delegacion:
         casos = casos.filter(delegacion_id=user.delegacion_id) if user.delegacion_id else casos.none()
 
     case_form = CasoSocialForm(user=user)
@@ -2638,16 +2852,25 @@ def web_casos_sociales(request):
             form = AtencionSocialForm(
                 request.POST,
                 etapa=min(etapa, 3),
+                area_id=user.area_entidad_id,
             )
             if form.is_valid():
                 try:
                     with transaction.atomic():
                         atencion = caso.registrar_atencion(
                             funcionario=user,
-                            tipo_atencion=form.cleaned_data['tipo_atencion'],
+                            tipo_atencion=form.cleaned_data[
+                                'tipo_atencion_catalogo_id'
+                            ].nombre,
                             detalle=form.cleaned_data['detalle'],
                             resultado=form.cleaned_data['resultado'],
                             fecha_gestion=form.cleaned_data['fecha_gestion'],
+                            tipo_atencion_catalogo=form.cleaned_data[
+                                'tipo_atencion_catalogo_id'
+                            ],
+                            subatencion_catalogo=form.cleaned_data[
+                                'subatencion_catalogo_id'
+                            ],
                         )
                         RegistroAuditoria.objects.create(
                             usuario=user,
@@ -2687,16 +2910,29 @@ def web_casos_sociales(request):
             raise PermissionDenied
 
     casos = casos.prefetch_related('atenciones').select_related('delegacion')
+    tipos_atencion = TipoAtencionSocial.objects.filter(
+        activo=True,
+        area__estado=True,
+    )
+    if user.area_entidad_id:
+        tipos_atencion = tipos_atencion.filter(area_id=user.area_entidad_id)
+    tipos_atencion = tipos_atencion.order_by('nombre')
+    subatenciones = SubatencionSocial.objects.filter(
+        activo=True,
+        tipo_atencion__in=tipos_atencion,
+    ).select_related('tipo_atencion').order_by('nombre')
     return render(request, 'casos_sociales.html', {
         'casos': casos,
         'case_form': case_form,
+        'tipos_atencion': tipos_atencion,
+        'subatenciones': subatenciones,
         'puede_crear_casos': True,
         'hoy': timezone.localdate(),
     })
 
 def web_auditoria(request):
     if not request.user.is_authenticated or not (
-        request.user.rol == Usuario.Rol.ADMINISTRADOR or request.user.es_supervisor
+        request.user.es_admin() or request.user.es_supervisor
     ):
         messages.warning(request, "Acceso restringido: El registro inmutable de auditoría está reservado para la Coordinación Comunal y Administradores (Seguridad RNF-008).")
         return redirect('web_dashboard')

@@ -15,6 +15,11 @@
       <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
     {% endfor %}
   {% endif %}
+  {% if not tipos_atencion %}
+    <div class="alert alert-warning" role="alert">
+      No hay tipos de atención configurados para tu área. Solicita al administrador que los cree en el mantenedor de tipos de atención social.
+    </div>
+  {% endif %}
 
   {% if puede_crear_casos %}
     <section class="card p-4 shadow-sm border-0">
@@ -57,7 +62,9 @@
             {% for at in c.atenciones.all %}
               <div class="position-relative mb-3">
                 <div class="small fw-bold text-dark">Etapa {{ at.etapa }}: {{ at.get_etapa_display }}</div>
-                <div class="small text-dark">{{ at.tipo_atencion }} - {{ at.detalle }}</div>
+                <div class="small text-dark">
+                  {{ at.tipo_atencion }}{% if at.subatencion %} / {{ at.subatencion }}{% endif %} - {{ at.detalle }}
+                </div>
                 <div class="small text-secondary" style="font-size: 0.7rem;">
                   {% if at.etapa == 1 %}
                     Visita programada: <strong>{{ at.fecha_visita_programada|date:"d/m/Y" }}</strong>
@@ -82,9 +89,27 @@
               <div class="row g-2">
                 <div class="col-12 col-md-4">
                   <label class="form-label" for="tipo-{{ c.pk }}">Tipo de atención</label>
-                  <input class="form-control" id="tipo-{{ c.pk }}" name="tipo_atencion" maxlength="100" required>
+                  <select class="form-select tipo-atencion-select" id="tipo-{{ c.pk }}"
+                          name="tipo_atencion_catalogo_id" required {% if not tipos_atencion %}disabled{% endif %}>
+                    <option value="">Selecciona un tipo de atención...</option>
+                    {% for tipo in tipos_atencion %}
+                      <option value="{{ tipo.pk }}">{{ tipo.nombre }} ({{ tipo.area.nombre }})</option>
+                    {% endfor %}
+                  </select>
                 </div>
-                <div class="col-12 col-md-5">
+                <div class="col-12 col-md-4">
+                  <label class="form-label" for="subatencion-{{ c.pk }}">Subatención</label>
+                  <select class="form-select subatencion-select" id="subatencion-{{ c.pk }}"
+                          name="subatencion_catalogo_id" disabled>
+                    <option value="">Selecciona un tipo de atención primero...</option>
+                    {% for subatencion in subatenciones %}
+                      <option value="{{ subatencion.pk }}" data-tipo-atencion="{{ subatencion.tipo_atencion_id }}">
+                        {{ subatencion.nombre }}
+                      </option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-12 col-md-8">
                   <label class="form-label" for="detalle-{{ c.pk }}">Detalle</label>
                   <textarea class="form-control" id="detalle-{{ c.pk }}" name="detalle" rows="2" required></textarea>
                 </div>
@@ -102,7 +127,7 @@
                          name="fecha_gestion" {% if c.atenciones.count == 0 %}min="{{ hoy|date:'Y-m-d' }}"{% else %}max="{{ hoy|date:'Y-m-d' }}"{% endif %} required>
                 </div>
                 <div class="col-12">
-                  <button type="submit" class="btn btn-outline-danger btn-sm">Guardar gestión</button>
+                  <button type="submit" class="btn btn-outline-danger btn-sm" {% if not tipos_atencion %}disabled{% endif %}>Guardar gestión</button>
                 </div>
               </div>
             </form>
@@ -114,4 +139,31 @@
     {% endfor %}
   </div>
 </div>
+<script>
+  document.querySelectorAll('.tipo-atencion-select').forEach(tipoSelect => {
+    const form = tipoSelect.closest('form');
+    const subatencionSelect = form.querySelector('.subatencion-select');
+    const options = Array.from(subatencionSelect.querySelectorAll('option[data-tipo-atencion]'));
+
+    const actualizarSubatenciones = () => {
+      const tipoId = tipoSelect.value;
+      let subatencionesActivas = 0;
+      options.forEach(option => {
+        const coincide = option.dataset.tipoAtencion === tipoId;
+        option.hidden = !coincide;
+        option.disabled = !coincide;
+        if (coincide) subatencionesActivas += 1;
+      });
+      subatencionSelect.value = '';
+      subatencionSelect.disabled = !tipoId || subatencionesActivas === 0;
+      subatencionSelect.required = subatencionesActivas > 0;
+      subatencionSelect.options[0].textContent = tipoId
+        ? (subatencionesActivas ? 'Selecciona una subatención...' : 'Sin subatenciones configuradas')
+        : 'Selecciona un tipo de atención primero...';
+    };
+
+    tipoSelect.addEventListener('change', actualizarSubatenciones);
+    actualizarSubatenciones();
+  });
+</script>
 {% endblock %}

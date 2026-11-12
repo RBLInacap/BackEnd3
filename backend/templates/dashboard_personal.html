@@ -12,7 +12,7 @@
       <span class="text-secondary small ms-2">Evaluación por período y desglose de avance por ítem</span>
     </div>
     <form method="GET" action="{% url 'web_personal' %}" class="d-flex flex-wrap align-items-center gap-2">
-      {% if request.user.rol == 'ADMINISTRADOR' or request.user.rol == 'SUPERVISOR' %}
+      {% if request.user.es_admin or request.user.es_supervisor %}
       <label for="funcionarioPeriodo" class="small fw-bold text-secondary text-uppercase mb-0 text-nowrap">Funcionario:</label>
       <select id="funcionarioPeriodo" name="id" class="form-select form-select-sm border fw-semibold" style="min-width: 200px;">
         {% for f in todos_funcionarios %}
@@ -87,6 +87,9 @@
             {% if not periodo_configurado %}
               <strong>Trimestre actual sin configurar.</strong>
               El conteo usa el trimestre calendario actual. Configura sus metas para calcular el cumplimiento ponderado y el semáforo.
+            {% elif not funcionario.cargo %}
+              <strong>Funcionario sin cargo asignado.</strong>
+              Asigna un cargo para consultar sus ítems y metas de medición.
             {% else %}
               <strong>Metas del trimestre sin configurar para este funcionario.</strong>
               Configura sus ítems de medición para calcular el cumplimiento ponderado y el semáforo.
@@ -99,7 +102,6 @@
 
   </div>
 
-  {% if periodo_configurado and metas_configuradas %}
   <!-- Matriz de Ponderación por Ítems de Medición -->
   <div class="card shadow-sm border-0 overflow-hidden">
     <div class="card-header bg-light p-3 border-bottom d-flex justify-content-between align-items-center">
@@ -114,11 +116,31 @@
         Meta esperada del día: <strong class="text-dark">{{ metricas.meta_esperada_pct }}%</strong>
       </div>
     </div>
-    <div class="px-3 py-2 small bg-light border-bottom text-secondary">
-      Cumplimiento por ítem = (actividades con evidencia aprobada / meta del ítem) x 100.
-      Aporte ponderado = ponderador x mínimo(cumplimiento, {{ periodo.tope_cumplimiento }}%) / 100.
-      El total es la suma de los aportes ponderados.
-    </div>
+    {% if periodo_configurado and metas_configuradas %}
+      <div class="px-3 py-2 small bg-light border-bottom text-secondary">
+        Cumplimiento por ítem = (actividades con evidencia aprobada / meta del ítem) x 100.
+        Aporte ponderado = ponderador x mínimo(cumplimiento, {{ periodo.tope_cumplimiento }}%) / 100.
+        El total es la suma de los aportes ponderados.
+      </div>
+    {% else %}
+      <div class="px-3 py-3 small bg-warning-subtle border-bottom text-secondary" role="status">
+        {% if not periodo_configurado %}
+          El período actual aún no está configurado. No hay metas ni ítems vigentes para calcular el cumplimiento.
+          {% if request.user.es_admin %}
+            <a class="d-block mt-1" href="{% url 'mantenedor_periodos_create' %}">Configurar el período</a>
+          {% endif %}
+        {% elif not funcionario.cargo %}
+          No hay un cargo asignado al funcionario, por lo que no se pueden determinar sus ítems ni metas.
+        {% else %}
+          No hay ítems de medición activos para el cargo {{ funcionario.cargo.nombre }} en este período.
+          {% if request.user.es_admin %}
+            <a class="d-block mt-1" href="{% url 'mantenedor_ponderaciones_config' %}?cargo={{ funcionario.cargo_id }}&periodo={{ periodo.pk }}">
+              Configurar ítems y metas
+            </a>
+          {% endif %}
+        {% endif %}
+      </div>
+    {% endif %}
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0 small">
         <thead class="bg-light text-secondary text-uppercase border-bottom" style="font-size: 0.75rem; letter-spacing: 0.05rem;">
@@ -135,6 +157,7 @@
           </tr>
         </thead>
         <tbody>
+          {% if periodo_configurado and metas_configuradas %}
           {% for it in metricas.items %}
             <tr>
               <td class="ps-4 pe-3 py-3">
@@ -170,7 +193,15 @@
               </td>
             </tr>
           {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="9" class="text-center text-secondary py-4">
+                La ficha no tiene datos ponderables para el período seleccionado.
+              </td>
+            </tr>
+          {% endif %}
         </tbody>
+        {% if periodo_configurado and metas_configuradas %}
         <tfoot class="bg-light fw-bold border-top">
           <tr>
             <td colspan="7" class="text-end text-uppercase text-secondary small py-3 pe-4">Puntaje Total Ponderado Personal:</td>
@@ -186,15 +217,10 @@
             </td>
           </tr>
         </tfoot>
+        {% endif %}
       </table>
     </div>
   </div>
-  {% else %}
-  <div class="card p-4 shadow-sm border-0">
-    <h5 class="fw-bold mb-2 text-dark">Matriz de Cumplimiento por Ítems Medibles</h5>
-    <p class="text-secondary mb-0">Configura el período actual y sus ítems de medición para consultar esta matriz.</p>
-  </div>
-  {% endif %}
 
   <!-- Segunda Tabla: Historial de Actividades y Evidencias Registradas (Todo en Uno) -->
   <div id="historial-actividades" class="card shadow-sm border-0 overflow-hidden">

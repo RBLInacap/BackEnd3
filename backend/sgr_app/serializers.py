@@ -33,11 +33,12 @@ class UsuarioSerializer(serializers.ModelSerializer):
     cargo_nombre = serializers.ReadOnlyField(source='cargo.nombre')
     delegacion_nombre = serializers.ReadOnlyField(source='delegacion.nombre')
     delegacion_codigo = serializers.ReadOnlyField(source='delegacion.codigo')
+    roles = serializers.StringRelatedField(many=True, read_only=True)
 
     class Meta:
         model = Usuario
         fields = [
-            'id', 'username', 'first_name', 'last_name', 'email', 'rol', 'es_delegado',
+            'id', 'username', 'first_name', 'last_name', 'email', 'rol', 'roles', 'es_delegado',
             'cargo', 'cargo_nombre', 'delegacion', 'delegacion_nombre', 'delegacion_codigo',
             'telefono', 'rut_anonimizado', 'requires_2fa', 'is_active'
         ]
@@ -203,7 +204,7 @@ class CompromisoAgendaSerializer(serializers.ModelSerializer):
 
 
 class ActividadSerializer(serializers.ModelSerializer):
-    contacto_telefono = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    contacto_telefono = serializers.CharField(required=True, allow_blank=False, allow_null=False)
     funcionario_nombre = serializers.ReadOnlyField(source='funcionario.get_full_name')
     delegacion_nombre = serializers.ReadOnlyField(source='delegacion.nombre')
     delegacion_codigo = serializers.ReadOnlyField(source='delegacion.codigo')
@@ -216,6 +217,7 @@ class ActividadSerializer(serializers.ModelSerializer):
             'id', 'fecha_registro', 'fecha_actividad', 'funcionario', 'funcionario_nombre',
             'delegacion', 'delegacion_nombre', 'delegacion_codigo', 'item_medicion', 'item_nombre',
             'catalogo_servicio', 'catalogo_servicio_nombre', 'catalogo_servicio_area',
+            'tipo_actividad', 'tipo_actividad_nombre', 'tipo_actividad_area',
             'actividad_solicitud', 'accion_ejecutada', 'direccion',
             'contacto_nombre', 'contacto_telefono', 'latitud', 'longitud',
             'compromiso_agenda', 'evidencia', 'creado_en', 'actualizado_en'
@@ -225,21 +227,93 @@ class ActividadSerializer(serializers.ModelSerializer):
             'fecha_registro',
             'catalogo_servicio_nombre',
             'catalogo_servicio_area',
+            'tipo_actividad_nombre',
+            'tipo_actividad_area',
             'creado_en',
             'actualizado_en',
         ]
 
     def validate_contacto_telefono(self, value):
         if not value:
-            return ''
+            raise serializers.ValidationError('El teléfono de contacto es obligatorio.')
         try:
             return normalize_chilean_phone(value)
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.messages) from exc
 
+    def validate(self, attrs):
+        errors = {}
+        fecha_actividad = attrs.get(
+            'fecha_actividad',
+            self.instance.fecha_actividad if self.instance else None,
+        )
+        item_medicion = attrs.get(
+            'item_medicion',
+            self.instance.item_medicion if self.instance else None,
+        )
+        tipo_actividad = attrs.get(
+            'tipo_actividad',
+            self.instance.tipo_actividad if self.instance else None,
+        )
+        funcionario = attrs.get(
+            'funcionario',
+            self.instance.funcionario if self.instance else None,
+        )
+        tipo_actividad_cambiado = (
+            self.instance is None
+            or attrs.get('tipo_actividad') not in (None, tipo_actividad)
+        )
+        item_context_changed = (
+            self.instance is None
+            or 'item_medicion' in attrs
+            or 'fecha_actividad' in attrs
+            or 'funcionario' in attrs
+        )
+
+        if fecha_actividad and fecha_actividad > timezone.localdate():
+            errors['fecha_actividad'] = 'La fecha de actividad no puede ser futura.'
+
+        if item_context_changed:
+            items_vigentes = ItemMedicion.objects.none()
+            if funcionario and funcionario.cargo_id and fecha_actividad:
+                items_vigentes = ItemMedicion.objects.filter(
+                    cargo_id=funcionario.cargo_id,
+                    activo=True,
+                    periodo__fecha_inicio__lte=fecha_actividad,
+                    periodo__fecha_termino__gte=fecha_actividad,
+                )
+
+            if items_vigentes.exists() and not item_medicion:
+                errors['item_medicion'] = (
+                    'Selecciona un ítem vigente para el cargo y período del funcionario.'
+                )
+            elif item_medicion and not items_vigentes.filter(pk=item_medicion.pk).exists():
+                errors['item_medicion'] = (
+                    'El ítem debe estar activo y corresponder al cargo y período de la actividad.'
+                )
+
+        if tipo_actividad and tipo_actividad_cambiado:
+            if not tipo_actividad.activo or not tipo_actividad.area.estado:
+                errors['tipo_actividad'] = 'El tipo de actividad seleccionado está inactivo.'
+            if (
+                funcionario
+                and funcionario.area_entidad_id
+                and tipo_actividad.area_id != funcionario.area_entidad_id
+            ):
+                errors['tipo_actividad'] = 'El tipo de actividad no pertenece al área del funcionario.'
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
 
 class AtencionSocialSerializer(serializers.ModelSerializer):
     funcionario_nombre = serializers.ReadOnlyField(source='funcionario.get_full_name')
+    tipo_atencion_area = serializers.ReadOnlyField()
+    subatencion = serializers.ReadOnlyField()
+    tipo_atencion = serializers.CharField(
+        required=False,
+        max_length=100,
+    )
 
     class Meta:
         model = AtencionSocial
@@ -276,6 +350,59 @@ class AtencionSocialSerializer(serializers.ModelSerializer):
         if etapa in (2, 3) and fecha > today:
             raise serializers.ValidationError({
                 fecha_field: 'La fecha de una gestión realizada no puede ser futura.'
+            })
+        tipo_atencion = attrs.get(
+            'tipo_atencion_catalogo',
+            self.instance.tipo_atencion_catalogo if self.instance else None,
+        )
+        funcionario = attrs.get(
+            'funcionario',
+            self.instance.funcionario if self.instance else None,
+        )
+        subatencion = attrs.get(
+            'subatencion_catalogo',
+            self.instance.subatencion_catalogo if self.instance else None,
+        )
+        tipo_atencion_cambiado = (
+            self.instance is None
+            or attrs.get('tipo_atencion_catalogo') not in (None, tipo_atencion)
+        )
+        if tipo_atencion and tipo_atencion_cambiado and (
+            not tipo_atencion.activo or not tipo_atencion.area.estado
+        ):
+            raise serializers.ValidationError({
+                'tipo_atencion_catalogo': 'El tipo de atención seleccionado está inactivo.'
+            })
+        if (
+            tipo_atencion
+            and tipo_atencion_cambiado
+            and funcionario
+            and funcionario.area_entidad_id
+            and tipo_atencion.area_id != funcionario.area_entidad_id
+        ):
+            raise serializers.ValidationError({
+                'tipo_atencion_catalogo': (
+                    'El tipo de atención no pertenece al área del funcionario.'
+                )
+            })
+        subatencion_cambiada = (
+            self.instance is None
+            or attrs.get('subatencion_catalogo') not in (None, subatencion)
+        )
+        if subatencion and subatencion_cambiada:
+            if not subatencion.activo:
+                raise serializers.ValidationError({
+                    'subatencion_catalogo': 'La subatención seleccionada está inactiva.'
+                })
+            if not tipo_atencion or subatencion.tipo_atencion_id != tipo_atencion.pk:
+                raise serializers.ValidationError({
+                    'subatencion_catalogo': (
+                        'La subatención debe pertenecer al tipo de atención seleccionado.'
+                    )
+                })
+        if not (attrs.get('tipo_atencion') or tipo_atencion):
+            raise serializers.ValidationError({
+                'tipo_atencion': 'El tipo de atención es obligatorio.'
             })
         return attrs
 

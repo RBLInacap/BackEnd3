@@ -1,10 +1,11 @@
 from datetime import timedelta
+from uuid import uuid4
 
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from django.urls import reverse_lazy
@@ -17,10 +18,13 @@ from sgr_app.forms import (
     CargoForm,
     DelegacionForm,
     FuncionarioForm,
-    MantenedorItemForm,
+    ItemPonderacionFormSet,
     MantenedorPeriodoForm,
     MantenedorSolicitanteForm,
     RolForm,
+    SubatencionSocialForm,
+    TipoActividadForm,
+    TipoAtencionSocialForm,
 )
 from sgr_app.models import (
     Actividad,
@@ -33,7 +37,11 @@ from sgr_app.models import (
     RegistroAuditoria,
     Rol,
     Solicitante,
+    SubatencionSocial,
+    TipoActividad,
+    TipoAtencionSocial,
     Usuario,
+    VersionConfiguracionPeriodo,
 )
 
 
@@ -44,8 +52,7 @@ class AdministradorRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
     def test_func(self):
         user = self.request.user
         return user.is_authenticated and (
-            user.is_superuser
-            or user.rol == Usuario.Rol.ADMINISTRADOR
+            user.es_admin()
             or (self.allow_supervisor and user.es_supervisor)
         )
 
@@ -57,14 +64,42 @@ def _auditoria_periodo_snapshot(periodo):
         'trimestre': periodo.trimestre,
         'fecha_inicio': periodo.fecha_inicio.isoformat(),
         'fecha_termino': periodo.fecha_termino.isoformat(),
-        'umbral_verde': periodo.umbral_verde,
-        'umbral_ambar': periodo.umbral_ambar,
         'umbral_semaforo_verde': periodo.umbral_semaforo_verde,
         'umbral_semaforo_ambar': periodo.umbral_semaforo_ambar,
         'umbral_colectivo': periodo.umbral_colectivo,
         'tope_cumplimiento': periodo.tope_cumplimiento,
         'version_de_parametro': periodo.version_de_parametro,
     }
+
+
+def _snapshot_configuracion_periodo(periodo):
+    return {
+        'periodo': _auditoria_periodo_snapshot(periodo),
+        'items': list(
+            ItemMedicion.objects.filter(periodo=periodo)
+            .order_by('cargo_id', 'pk')
+            .values(
+                'id',
+                'cargo_id',
+                'nombre_item',
+                'descripcion',
+                'tipo_unidad',
+                'meta_cuantitativa',
+                'ponderador',
+                'unidad_medida',
+                'activo',
+            )
+        ),
+    }
+
+
+def _guardar_version_configuracion_periodo(periodo, usuario):
+    VersionConfiguracionPeriodo.objects.create(
+        periodo=periodo,
+        version=periodo.version_de_parametro,
+        configuracion=_snapshot_configuracion_periodo(periodo),
+        creado_por=usuario,
+    )
 
 
 def _auditoria_valor(instance):
@@ -87,6 +122,27 @@ def _auditoria_valor(instance):
             'nombre': instance.nombre,
             'descripcion': instance.descripcion,
             'estado': instance.estado,
+        }
+    if isinstance(instance, TipoActividad):
+        return {
+            'area_id': instance.area_id,
+            'nombre': instance.nombre,
+            'descripcion': instance.descripcion,
+            'activo': instance.activo,
+        }
+    if isinstance(instance, TipoAtencionSocial):
+        return {
+            'area_id': instance.area_id,
+            'nombre': instance.nombre,
+            'descripcion': instance.descripcion,
+            'activo': instance.activo,
+        }
+    if isinstance(instance, SubatencionSocial):
+        return {
+            'tipo_atencion_id': instance.tipo_atencion_id,
+            'nombre': instance.nombre,
+            'descripcion': instance.descripcion,
+            'activo': instance.activo,
         }
     if isinstance(instance, Delegacion):
         return {
@@ -124,6 +180,10 @@ def _auditoria_valor(instance):
             'apellido': instance.last_name,
             'correo': instance.email,
             'rol': instance.rol,
+            'roles': list(instance.roles.order_by('nombre_rol').values_list(
+                'nombre_rol',
+                flat=True,
+            )),
             'es_delegado': instance.es_delegado,
             'area_id': instance.area_entidad_id,
             'cargo_id': instance.cargo_id,
@@ -134,6 +194,7 @@ def _auditoria_valor(instance):
         return {
             'nombre_rol': instance.nombre_rol,
             'descripcion': instance.descripcion,
+            'permisos': instance.permisos,
             'estado': instance.estado,
         }
     return str(instance)
@@ -199,6 +260,15 @@ class AuditedSaveMixin:
                             valor_nuevo=_auditoria_periodo_snapshot(periodo),
                             ip_origen=self.request.META.get('REMOTE_ADDR'),
                         )
+            if isinstance(self.object, PeriodoMedicion) and (
+                previous_value is None
+                or previous_value['version_de_parametro']
+                != self.object.version_de_parametro
+            ):
+                _guardar_version_configuracion_periodo(
+                    self.object,
+                    self.request.user,
+                )
             valor_nuevo = _auditoria_valor(self.object)
             RegistroAuditoria.objects.create(
                 usuario=self.request.user,
@@ -266,8 +336,7 @@ class ActivoListView(AdministradorRequiredMixin, ListView):
                 and self.request.GET.get('estado') == 'inactivas'
             ),
             'can_manage': (
-                self.request.user.is_superuser
-                or self.request.user.rol == Usuario.Rol.ADMINISTRADOR
+                self.request.user.es_admin()
                 or (
                     self.allow_supervisor
                     and self.supervisor_can_manage
@@ -349,8 +418,7 @@ class ActivoBooleanListView(AdministradorRequiredMixin, ListView):
                 and self.request.GET.get('estado') == 'inactivas'
             ),
             'can_manage': (
-                self.request.user.is_superuser
-                or self.request.user.rol == Usuario.Rol.ADMINISTRADOR
+                self.request.user.es_admin()
                 or (
                     self.allow_supervisor
                     and self.supervisor_can_manage
@@ -409,13 +477,33 @@ class AuditedSoftDeleteView(AdministradorRequiredMixin, DeleteView):
 REACTIVATABLE_RECORDS = {
     'delegaciones': (Delegacion, 'activo', 'mantenedor_delegaciones_list', False, False),
     'cargos': (Cargo, 'activo', 'mantenedor_cargos_list', False, False),
-    'items': (ItemMedicion, 'activo', 'mantenedor_items_list', False, False),
     'periodos': (PeriodoMedicion, 'estado', 'mantenedor_periodos_list', False, False),
     'solicitantes': (Solicitante, 'estado', 'mantenedor_solicitantes_list', True, True),
     'funcionarios': (Usuario, 'is_active', 'mantenedor_funcionarios_list', False, False),
     'roles': (Rol, 'estado', 'mantenedor_roles_list', False, False),
     'areas': (Area, 'estado', 'mantenedor_areas_list', False, False),
     'catalogos': (CatalogoServicio, 'activo', 'mantenedor_items_list', True, True),
+    'tipos-actividad': (
+        TipoActividad,
+        'activo',
+        'mantenedor_tipos_actividad_list',
+        False,
+        False,
+    ),
+    'tipos-atencion': (
+        TipoAtencionSocial,
+        'activo',
+        'mantenedor_tipos_atencion_list',
+        False,
+        False,
+    ),
+    'subatenciones': (
+        SubatencionSocial,
+        'activo',
+        'mantenedor_subatenciones_list',
+        False,
+        False,
+    ),
 }
 
 
@@ -621,13 +709,10 @@ class ItemListView(ActivoBooleanListView):
     queryset = ItemMedicion.objects.select_related('cargo', 'periodo')
     template_name = 'mantenedores/items_list.html'
     activo_field = 'activo'
-    reactivation_entity = 'items'
     ordering_field = 'nombre_item'
     search_fields = ('nombre_item', 'descripcion', 'tipo_unidad')
     title = 'Mantenedor de ítems'
-    create_url = reverse_lazy('mantenedor_items_create')
-    update_url_name = 'mantenedor_items_update'
-    delete_url_name = 'mantenedor_items_delete'
+    create_url = reverse_lazy('mantenedor_ponderaciones_config')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -646,11 +731,11 @@ class ItemListView(ActivoBooleanListView):
                 'Modificar servicio' if catalogo_form.instance.pk else 'Agregar servicio'
             ),
             'can_manage_items': (
-                user.is_superuser or user.rol == Usuario.Rol.ADMINISTRADOR
+                user.es_admin()
             ),
+            'ponderaciones_url': reverse_lazy('mantenedor_ponderaciones_config'),
             'can_manage_catalog': (
-                user.is_superuser
-                or user.rol == Usuario.Rol.ADMINISTRADOR
+                user.es_admin()
                 or (self.supervisor_can_manage_catalog and user.es_supervisor)
             ),
         })
@@ -739,42 +824,250 @@ class ItemListView(ActivoBooleanListView):
         return HttpResponseRedirect(self.request.path)
 
 
-class ItemCreateView(AdministradorRequiredMixin, AuditedSaveMixin, CreateView):
-    model = ItemMedicion
-    form_class = MantenedorItemForm
-    template_name = 'mantenedores/form.html'
-    success_url = reverse_lazy('mantenedor_items_list')
-    success_message = 'Ítem creado correctamente.'
-    extra_context = {
-        'title': 'Crear ítem',
-        'submit_label': 'Crear ítem',
-        'cancel_url': reverse_lazy('mantenedor_items_list'),
-    }
+class ConfigurarPonderacionesView(AdministradorRequiredMixin, View):
+    template_name = 'mantenedores/ponderaciones_form.html'
+    success_message = 'La configuración del cargo y período suma exactamente 100%.'
+
+    def _render(
+        self,
+        request,
+        cargo=None,
+        periodo=None,
+        formset=None,
+        error_message='',
+    ):
+        if formset is None and cargo and periodo:
+            formset = ItemPonderacionFormSet(
+                queryset=ItemMedicion.objects.filter(
+                    cargo=cargo,
+                    periodo=periodo,
+                ).order_by('pk'),
+                prefix='items',
+            )
+        total_actual = 0
+        if cargo and periodo:
+            total_actual = (
+                ItemMedicion.objects.filter(
+                    cargo=cargo,
+                    periodo=periodo,
+                    activo=True,
+                ).aggregate(total=Sum('ponderador'))['total']
+                or 0
+            )
+        return self.render_to_response(request, {
+            'title': 'Configurar ponderaciones',
+            'cargos': Cargo.objects.filter(activo=True).order_by('nombre'),
+            'periodos': PeriodoMedicion.objects.filter(
+                estado=True,
+            ).order_by('-fecha_inicio'),
+            'cargo': cargo,
+            'periodo': periodo,
+            'formset': formset,
+            'total_actual': total_actual,
+            'error_message': error_message,
+            'periodo_cerrado': bool(periodo and periodo.cerrado),
+        })
+
+    def render_to_response(self, request, context):
+        from django.shortcuts import render
+
+        return render(request, self.template_name, context)
+
+    def _selected_group(self, request):
+        source = request.POST if request.method == 'POST' else request.GET
+        cargo_id = source.get('cargo')
+        periodo_id = source.get('periodo')
+        if not (
+            cargo_id
+            and cargo_id.isdecimal()
+            and periodo_id
+            and periodo_id.isdecimal()
+        ):
+            return None, None
+        cargo = Cargo.objects.filter(pk=int(cargo_id), activo=True).first()
+        periodo = PeriodoMedicion.objects.filter(
+            pk=int(periodo_id),
+            estado=True,
+        ).first()
+        return cargo, periodo
+
+    def get(self, request, *args, **kwargs):
+        cargo, periodo = self._selected_group(request)
+        if (request.GET.get('cargo') or request.GET.get('periodo')) and (
+            not cargo or not periodo
+        ):
+            return self._render(
+                request,
+                error_message='Selecciona un cargo y período vigentes.',
+            )
+        return self._render(request, cargo=cargo, periodo=periodo)
+
+    def post(self, request, *args, **kwargs):
+        cargo, periodo = self._selected_group(request)
+        if not cargo or not periodo:
+            return self._render(
+                request,
+                error_message='Selecciona un cargo y período vigentes.',
+            )
+
+        with transaction.atomic():
+            periodo = PeriodoMedicion.objects.select_for_update().get(pk=periodo.pk)
+            cargo = Cargo.objects.select_for_update().get(pk=cargo.pk)
+            if periodo.cerrado:
+                return self._render(
+                    request,
+                    cargo=cargo,
+                    periodo=periodo,
+                    error_message='No se puede modificar un período cerrado.',
+                )
+
+            items_queryset = ItemMedicion.objects.select_for_update().filter(
+                cargo=cargo,
+                periodo=periodo,
+            ).order_by('pk')
+            ids_esperados = set(items_queryset.values_list('pk', flat=True))
+            formset = ItemPonderacionFormSet(
+                request.POST,
+                queryset=items_queryset,
+                prefix='items',
+            )
+            if not formset.is_valid():
+                return self._render(
+                    request,
+                    cargo=cargo,
+                    periodo=periodo,
+                    formset=formset,
+                )
+
+            ids_enviados = {
+                form.instance.pk
+                for form in formset.forms
+                if form.instance.pk is not None
+            }
+            if ids_enviados != ids_esperados:
+                return self._render(
+                    request,
+                    cargo=cargo,
+                    periodo=periodo,
+                    formset=formset,
+                    error_message=(
+                        'La lista de ítems cambió o está incompleta. '
+                        'Recarga la página antes de guardar.'
+                    ),
+                )
+
+            previous_items = {
+                item.pk: _auditoria_valor(item)
+                for item in ItemMedicion.objects.filter(
+                    pk__in=ids_esperados,
+                )
+            }
+            previous_periodo = _auditoria_periodo_snapshot(periodo)
+            changed_forms = [form for form in formset.forms if form.has_changed()]
+            if changed_forms:
+                items_to_save = []
+                changed_item_ids = set()
+                for form in formset.forms:
+                    if not form.instance.pk and not form.has_changed():
+                        continue
+                    item = form.save(commit=False)
+                    item.cargo = cargo
+                    item.periodo = periodo
+                    item.ponderador = float(item.ponderador)
+                    items_to_save.append(item)
+                    if form.has_changed() and item.pk:
+                        changed_item_ids.add(item.pk)
+
+                items_queryset.update(activo=False)
+                for item in items_queryset:
+                    ItemMedicion.objects.filter(pk=item.pk).update(
+                        nombre_item=f'__tmp_weight_{uuid4().hex}_{item.pk}'
+                    )
+
+                inactivos = [item for item in items_to_save if not item.activo]
+                activos = sorted(
+                    (item for item in items_to_save if item.activo),
+                    key=lambda item: item.ponderador,
+                )
+                for item in inactivos + activos:
+                    item.save()
+                    if item.pk in changed_item_ids or item.pk not in previous_items:
+                        RegistroAuditoria.objects.create(
+                            usuario=request.user,
+                            funcionario=request.user,
+                            evento=(
+                                'CREACION'
+                                if item.pk not in previous_items
+                                else 'MODIFICACION'
+                            ),
+                            accion='CONFIGURAR_PONDERACION_ITEM',
+                            entidad='ItemMedicion',
+                            identificador=str(item.pk),
+                            identificador_registro=str(item.pk),
+                            valor_anterior=previous_items.get(item.pk),
+                            valor_nuevo=_auditoria_valor(item),
+                            ip_origen=request.META.get('REMOTE_ADDR'),
+                        )
+
+                periodo.version_de_parametro = _siguiente_version_parametro(
+                    periodo.version_de_parametro
+                )
+                periodo.save(update_fields=['version_de_parametro'])
+                RegistroAuditoria.objects.create(
+                    usuario=request.user,
+                    funcionario=request.user,
+                    evento='MODIFICACION',
+                    accion='VERSIONAR_PARAMETROS_PERIODO',
+                    entidad='PeriodoMedicion',
+                    identificador=str(periodo.pk),
+                    identificador_registro=str(periodo.pk),
+                    valor_anterior=previous_periodo,
+                    valor_nuevo=_auditoria_periodo_snapshot(periodo),
+                    ip_origen=request.META.get('REMOTE_ADDR'),
+                )
+                _guardar_version_configuracion_periodo(periodo, request.user)
+
+        messages.success(request, self.success_message)
+        return HttpResponseRedirect(
+            f'{reverse_lazy("mantenedor_ponderaciones_config")}'
+            f'?cargo={cargo.pk}&periodo={periodo.pk}'
+        )
 
 
-class ItemUpdateView(AdministradorRequiredMixin, AuditedSaveMixin, UpdateView):
-    model = ItemMedicion
-    form_class = MantenedorItemForm
-    template_name = 'mantenedores/form.html'
-    success_url = reverse_lazy('mantenedor_items_list')
-    success_message = 'Ítem actualizado correctamente.'
-    extra_context = {
-        'title': 'Modificar ítem',
-        'submit_label': 'Guardar cambios',
-        'cancel_url': reverse_lazy('mantenedor_items_list'),
-    }
+class ItemConfigurationRedirectView(AdministradorRequiredMixin, View):
+    message = ''
 
-    def get_queryset(self):
-        return ItemMedicion.objects.filter(activo=True)
+    def get_redirect_response(self, request, **kwargs):
+        item = None
+        if kwargs.get('pk'):
+            item = get_object_or_404(ItemMedicion, pk=kwargs['pk'])
+        if item:
+            target = (
+                f'{reverse_lazy("mantenedor_ponderaciones_config")}'
+                f'?cargo={item.cargo_id}&periodo={item.periodo_id}'
+            )
+        else:
+            target = reverse_lazy('mantenedor_ponderaciones_config')
+        messages.info(request, self.message)
+        return HttpResponseRedirect(target)
+
+    def get(self, request, *args, **kwargs):
+        return self.get_redirect_response(request, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        return self.get_redirect_response(request, **kwargs)
 
 
-class ItemDeleteView(AuditedSoftDeleteView):
-    model = ItemMedicion
-    template_name = 'mantenedores/confirm_delete.html'
-    activo_field = 'activo'
-    list_url = reverse_lazy('mantenedor_items_list')
-    success_url = reverse_lazy('mantenedor_items_list')
-    success_message = 'Ítem desactivado; se conservó su historial.'
+class ItemCreateView(ItemConfigurationRedirectView):
+    message = 'Los ítems y ponderaciones se guardan juntos desde la configuración del conjunto.'
+
+
+class ItemUpdateView(ItemConfigurationRedirectView):
+    message = 'Edita el ítem dentro de la configuración completa de su cargo y período.'
+
+
+class ItemDeleteView(ItemConfigurationRedirectView):
+    message = 'Desactiva el ítem dentro de la configuración completa de su cargo y período.'
 
 
 class PeriodoListView(ActivoBooleanListView):
@@ -825,8 +1118,6 @@ class PeriodoUpdateView(AdministradorRequiredMixin, AuditedSaveMixin, UpdateView
             'trimestre',
             'fecha_inicio',
             'fecha_termino',
-            'umbral_verde',
-            'umbral_ambar',
             'umbral_semaforo_verde',
             'umbral_semaforo_ambar',
             'umbral_colectivo',
@@ -937,6 +1228,9 @@ class FuncionarioListView(ActivoBooleanListView):
     create_url = reverse_lazy('mantenedor_funcionarios_create')
     update_url_name = 'mantenedor_funcionarios_update'
     delete_url_name = 'mantenedor_funcionarios_delete'
+
+    def get_queryset(self):
+        return super().get_queryset().prefetch_related('roles')
 
 
 class FuncionarioCreateView(AdministradorRequiredMixin, AuditedSaveMixin, CreateView):
@@ -1149,3 +1443,193 @@ class AreaDeleteView(AuditedSoftDeleteView):
     list_url = reverse_lazy('mantenedor_areas_list')
     success_url = reverse_lazy('mantenedor_areas_list')
     success_message = 'Área desactivada; se conservó su historial.'
+
+
+class CatalogoAreaListView(ActivoBooleanListView):
+    allow_supervisor = True
+    template_name = 'mantenedores/catalogos_area_list.html'
+    activo_field = 'activo'
+    supports_reactivation = True
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['catalog_type'] = self.catalog_type
+        return context
+
+
+class TipoActividadListView(CatalogoAreaListView):
+    model = TipoActividad
+    reactivation_entity = 'tipos-actividad'
+    ordering_field = 'area__nombre'
+    search_fields = ('nombre', 'descripcion', 'area__nombre')
+    title = 'Tipos de actividad'
+    create_url = reverse_lazy('mantenedor_tipos_actividad_create')
+    update_url_name = 'mantenedor_tipos_actividad_update'
+    delete_url_name = 'mantenedor_tipos_actividad_delete'
+    catalog_type = 'actividad'
+
+    def get_queryset(self):
+        return super().get_queryset().select_related('area')
+
+
+class TipoActividadCreateView(AdministradorRequiredMixin, AuditedSaveMixin, CreateView):
+    model = TipoActividad
+    form_class = TipoActividadForm
+    template_name = 'mantenedores/form.html'
+    success_url = reverse_lazy('mantenedor_tipos_actividad_list')
+    success_message = 'Tipo de actividad creado correctamente.'
+    extra_context = {
+        'title': 'Crear tipo de actividad',
+        'submit_label': 'Crear tipo',
+        'cancel_url': reverse_lazy('mantenedor_tipos_actividad_list'),
+    }
+
+
+class TipoActividadUpdateView(AdministradorRequiredMixin, AuditedSaveMixin, UpdateView):
+    model = TipoActividad
+    form_class = TipoActividadForm
+    template_name = 'mantenedores/form.html'
+    success_url = reverse_lazy('mantenedor_tipos_actividad_list')
+    success_message = 'Tipo de actividad actualizado correctamente.'
+    extra_context = {
+        'title': 'Modificar tipo de actividad',
+        'submit_label': 'Guardar cambios',
+        'cancel_url': reverse_lazy('mantenedor_tipos_actividad_list'),
+    }
+
+    def get_queryset(self):
+        return TipoActividad.objects.filter(activo=True)
+
+
+class TipoActividadDeleteView(AuditedSoftDeleteView):
+    model = TipoActividad
+    template_name = 'mantenedores/confirm_delete.html'
+    activo_field = 'activo'
+    list_url = reverse_lazy('mantenedor_tipos_actividad_list')
+    success_url = reverse_lazy('mantenedor_tipos_actividad_list')
+    success_message = 'Tipo de actividad desactivado; se conservó el historial.'
+
+
+class TipoAtencionSocialListView(CatalogoAreaListView):
+    model = TipoAtencionSocial
+    reactivation_entity = 'tipos-atencion'
+    ordering_field = 'area__nombre'
+    search_fields = ('nombre', 'descripcion', 'area__nombre')
+    title = 'Tipos de atención social'
+    create_url = reverse_lazy('mantenedor_tipos_atencion_create')
+    update_url_name = 'mantenedor_tipos_atencion_update'
+    delete_url_name = 'mantenedor_tipos_atencion_delete'
+    catalog_type = 'atencion'
+
+    def get_queryset(self):
+        return super().get_queryset().select_related('area')
+
+
+class TipoAtencionSocialCreateView(
+    AdministradorRequiredMixin,
+    AuditedSaveMixin,
+    CreateView,
+):
+    model = TipoAtencionSocial
+    form_class = TipoAtencionSocialForm
+    template_name = 'mantenedores/form.html'
+    success_url = reverse_lazy('mantenedor_tipos_atencion_list')
+    success_message = 'Tipo de atención social creado correctamente.'
+    extra_context = {
+        'title': 'Crear tipo de atención social',
+        'submit_label': 'Crear tipo',
+        'cancel_url': reverse_lazy('mantenedor_tipos_atencion_list'),
+    }
+
+
+class TipoAtencionSocialUpdateView(
+    AdministradorRequiredMixin,
+    AuditedSaveMixin,
+    UpdateView,
+):
+    model = TipoAtencionSocial
+    form_class = TipoAtencionSocialForm
+    template_name = 'mantenedores/form.html'
+    success_url = reverse_lazy('mantenedor_tipos_atencion_list')
+    success_message = 'Tipo de atención social actualizado correctamente.'
+    extra_context = {
+        'title': 'Modificar tipo de atención social',
+        'submit_label': 'Guardar cambios',
+        'cancel_url': reverse_lazy('mantenedor_tipos_atencion_list'),
+    }
+
+    def get_queryset(self):
+        return TipoAtencionSocial.objects.filter(activo=True)
+
+
+class TipoAtencionSocialDeleteView(AuditedSoftDeleteView):
+    model = TipoAtencionSocial
+    template_name = 'mantenedores/confirm_delete.html'
+    activo_field = 'activo'
+    list_url = reverse_lazy('mantenedor_tipos_atencion_list')
+    success_url = reverse_lazy('mantenedor_tipos_atencion_list')
+    success_message = 'Tipo de atención desactivado; se conservó el historial.'
+
+
+class SubatencionSocialListView(CatalogoAreaListView):
+    model = SubatencionSocial
+    reactivation_entity = 'subatenciones'
+    ordering_field = 'tipo_atencion__area__nombre'
+    search_fields = ('nombre', 'descripcion', 'tipo_atencion__nombre', 'tipo_atencion__area__nombre')
+    title = 'Subatenciones sociales'
+    create_url = reverse_lazy('mantenedor_subatenciones_create')
+    update_url_name = 'mantenedor_subatenciones_update'
+    delete_url_name = 'mantenedor_subatenciones_delete'
+    catalog_type = 'subatencion'
+
+    def get_queryset(self):
+        return super().get_queryset().select_related(
+            'tipo_atencion',
+            'tipo_atencion__area',
+        )
+
+
+class SubatencionSocialCreateView(
+    AdministradorRequiredMixin,
+    AuditedSaveMixin,
+    CreateView,
+):
+    model = SubatencionSocial
+    form_class = SubatencionSocialForm
+    template_name = 'mantenedores/form.html'
+    success_url = reverse_lazy('mantenedor_subatenciones_list')
+    success_message = 'Subatención social creada correctamente.'
+    extra_context = {
+        'title': 'Crear subatención social',
+        'submit_label': 'Crear subatención',
+        'cancel_url': reverse_lazy('mantenedor_subatenciones_list'),
+    }
+
+
+class SubatencionSocialUpdateView(
+    AdministradorRequiredMixin,
+    AuditedSaveMixin,
+    UpdateView,
+):
+    model = SubatencionSocial
+    form_class = SubatencionSocialForm
+    template_name = 'mantenedores/form.html'
+    success_url = reverse_lazy('mantenedor_subatenciones_list')
+    success_message = 'Subatención social actualizada correctamente.'
+    extra_context = {
+        'title': 'Modificar subatención social',
+        'submit_label': 'Guardar cambios',
+        'cancel_url': reverse_lazy('mantenedor_subatenciones_list'),
+    }
+
+    def get_queryset(self):
+        return SubatencionSocial.objects.filter(activo=True)
+
+
+class SubatencionSocialDeleteView(AuditedSoftDeleteView):
+    model = SubatencionSocial
+    template_name = 'mantenedores/confirm_delete.html'
+    activo_field = 'activo'
+    list_url = reverse_lazy('mantenedor_subatenciones_list')
+    success_url = reverse_lazy('mantenedor_subatenciones_list')
+    success_message = 'Subatención desactivada; se conservó el historial.'

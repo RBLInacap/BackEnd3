@@ -147,7 +147,7 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         qs = Usuario.objects.all()
         if self.request.user.es_administrativo:
             qs = qs.filter(pk=self.request.user.pk)
-        elif self.request.user.es_delegado:
+        elif self.request.user.esta_limitado_a_delegacion:
             qs = qs.filter(delegacion_id=self.request.user.delegacion_id)
         delegacion_id = self.request.query_params.get('delegacion')
         rol = self.request.query_params.get('rol')
@@ -193,7 +193,7 @@ class CompromisoAgendaViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = CompromisoAgenda.objects.all()
-        if self.request.user.es_delegado:
+        if self.request.user.esta_limitado_a_delegacion:
             qs = qs.filter(delegacion_id=self.request.user.delegacion_id)
         elif self.request.user.es_administrativo:
             from django.db.models import Q
@@ -210,7 +210,7 @@ class CompromisoAgendaViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        if self.request.user.es_delegado:
+        if self.request.user.esta_limitado_a_delegacion:
             delegacion = serializer.validated_data.get('delegacion')
             responsable = serializer.validated_data.get('responsable')
             if (
@@ -228,7 +228,7 @@ class CompromisoAgendaViewSet(viewsets.ModelViewSet):
         )
 
     def perform_update(self, serializer):
-        if self.request.user.es_delegado:
+        if self.request.user.esta_limitado_a_delegacion:
             delegacion = serializer.validated_data.get('delegacion', serializer.instance.delegacion)
             responsable = serializer.validated_data.get('responsable', serializer.instance.responsable)
             if (
@@ -279,7 +279,7 @@ class ActividadViewSet(viewsets.ModelViewSet):
         qs = Actividad.objects.all().select_related('funcionario', 'delegacion', 'item_medicion', 'compromiso_agenda').prefetch_related('evidencias')
         if self.request.user.es_administrativo:
             qs = qs.filter(funcionario=self.request.user)
-        elif self.request.user.es_delegado:
+        elif self.request.user.esta_limitado_a_delegacion:
             qs = qs.filter(delegacion_id=self.request.user.delegacion_id)
         delegacion_id = self.request.query_params.get('delegacion')
         funcionario_id = self.request.query_params.get('funcionario')
@@ -304,11 +304,11 @@ class ActividadViewSet(viewsets.ModelViewSet):
                 return Response({'error': 'Solo puedes registrar actividades propias.'}, status=status.HTTP_403_FORBIDDEN)
             if data.get('delegacion') not in (None, '', str(request.user.delegacion_id), request.user.delegacion_id):
                 return Response({'error': 'Solo puedes registrar actividades en tu delegación.'}, status=status.HTTP_403_FORBIDDEN)
-        elif request.user.es_delegado and data.get('delegacion') not in (
+        elif request.user.esta_limitado_a_delegacion and data.get('delegacion') not in (
             None, '', str(request.user.delegacion_id), request.user.delegacion_id
         ):
             return Response({'error': 'Solo puedes registrar actividades en tu delegación.'}, status=status.HTTP_403_FORBIDDEN)
-        if request.user.es_delegado and data.get('funcionario'):
+        if request.user.esta_limitado_a_delegacion and data.get('funcionario'):
             try:
                 funcionario = Usuario.objects.get(pk=data['funcionario'])
             except (Usuario.DoesNotExist, TypeError, ValueError):
@@ -415,7 +415,7 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
         qs = Evidencia.objects.all()
         if self.request.user.es_administrativo:
             qs = qs.filter(actividad__funcionario=self.request.user)
-        elif self.request.user.es_delegado:
+        elif self.request.user.esta_limitado_a_delegacion:
             qs = qs.filter(actividad__delegacion_id=self.request.user.delegacion_id)
         delegacion_id = self.request.query_params.get('delegacion')
         estado = self.request.query_params.get('estado')
@@ -432,9 +432,9 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
         """
         if not (
             request.user.is_superuser
-            or request.user.rol == Usuario.Rol.ADMINISTRADOR
+            or request.user.es_admin()
             or request.user.es_supervisor
-            or request.user.es_delegado
+            or request.user.esta_limitado_a_delegacion
         ):
             raise DRFPermissionDenied(
                 'Solo supervisores, delegados y administradores pueden validar evidencias.'
@@ -531,7 +531,7 @@ class MetricasAPIView(APIView):
                 delegacion = Delegacion.objects.get(id=delegacion_id)
             except Delegacion.DoesNotExist:
                 return Response({'error': 'Delegación no encontrada'}, status=status.HTTP_404_NOT_FOUND)
-            if request.user.es_delegado and delegacion.pk != request.user.delegacion_id:
+            if request.user.esta_limitado_a_delegacion and delegacion.pk != request.user.delegacion_id:
                 return Response({'error': 'Acceso restringido a tu delegación.'}, status=status.HTTP_403_FORBIDDEN)
             if request.user.es_administrativo:
                 return Response({'error': 'No tienes permiso para consultar métricas de delegación.'}, status=status.HTTP_403_FORBIDDEN)
@@ -548,7 +548,7 @@ class MetricasAPIView(APIView):
                 return Response({'error': 'Funcionario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
             if request.user.es_administrativo and funcionario.pk != request.user.pk:
                 return Response({'error': 'Solo puedes consultar tus propias métricas.'}, status=status.HTTP_403_FORBIDDEN)
-            if request.user.es_delegado and funcionario.delegacion_id != request.user.delegacion_id:
+            if request.user.esta_limitado_a_delegacion and funcionario.delegacion_id != request.user.delegacion_id:
                 return Response({'error': 'Acceso restringido a funcionarios de tu delegación.'}, status=status.HTTP_403_FORBIDDEN)
             data = calcular_metricas_funcionario(funcionario, periodo)
             return Response(data)
@@ -564,7 +564,7 @@ class CasoSocialViewSet(viewsets.ModelViewSet):
         qs = CasoSocial.objects.all().prefetch_related('atenciones')
         if self.request.user.es_administrativo:
             return qs.none()
-        if self.request.user.es_delegado:
+        if self.request.user.esta_limitado_a_delegacion:
             return qs.filter(delegacion_id=self.request.user.delegacion_id)
         return qs
 
@@ -577,7 +577,7 @@ class AtencionSocialViewSet(viewsets.ModelViewSet):
         qs = AtencionSocial.objects.all()
         if self.request.user.es_administrativo:
             return qs.none()
-        if self.request.user.es_delegado:
+        if self.request.user.esta_limitado_a_delegacion:
             return qs.filter(caso__delegacion_id=self.request.user.delegacion_id)
         return qs
 

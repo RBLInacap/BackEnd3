@@ -14,7 +14,9 @@ from django.db.models.deletion import ProtectedError
 from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from PIL import Image
+from rest_framework.test import APIClient
 
+from sgr_app.forms import AtencionSocialForm
 from sgr_app.models import (
     Actividad,
     AjusteIncentivo,
@@ -33,7 +35,11 @@ from sgr_app.models import (
     PeriodoMedicion,
     RegistroAuditoria,
     Solicitante,
+    SubatencionSocial,
+    TipoActividad,
+    TipoAtencionSocial,
     Usuario,
+    VersionConfiguracionPeriodo,
 )
 from sgr_app.serializers import (
     ActividadSerializer,
@@ -68,6 +74,10 @@ class ActivityWorkflowTests(TestCase):
 
         self.delegacion = Delegacion.objects.create(nombre='Delegación de prueba', codigo='TST')
         self.area = Area.objects.create(nombre='Área de prueba')
+        self.tipo_atencion_catalogo = TipoAtencionSocial.objects.create(
+            area=self.area,
+            nombre='Gestión social',
+        )
         self.cargo = Cargo.objects.create(nombre='Gestor de prueba')
         self.funcionario = Usuario.objects.create_user(
             username='funcionario.workflow',
@@ -366,6 +376,7 @@ class ActivityWorkflowTests(TestCase):
             'fecha_actividad': self.today.isoformat(),
             'item_medicion_id': str(self.item.id),
             'solicitante_id': str(self.solicitante.id),
+            'contacto_telefono': '12345678',
             'direccion': 'Calle de prueba 123',
             'solicitud_problema': 'Luminaria apagada',
             'accion_ejecutada': 'Se inspeccionó el poste',
@@ -552,7 +563,38 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(response.context['metricas']['dias_totales'], dias_totales)
         self.assertContains(response, f'{dias_transcurridos} / {dias_totales}')
         self.assertContains(response, 'Trimestre actual sin configurar.')
+        self.assertContains(response, 'Matriz de Cumplimiento por Ítems Medibles')
+        self.assertContains(
+            response,
+            'La ficha no tiene datos ponderables para el período seleccionado.',
+        )
         self.assertNotContains(response, 'Cumplimiento Ponderado Personal')
+
+    def test_personal_dashboard_shows_empty_matrix_without_items(self):
+        periodo_sin_items = PeriodoMedicion.objects.create(
+            nombre='Período actual sin ítems',
+            fecha_inicio=self.period_start,
+            fecha_termino=self.period_end,
+        )
+
+        response = self.client.get(
+            '/personal/',
+            {'periodo': periodo_sin_items.pk},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['periodo_configurado'])
+        self.assertFalse(response.context['metas_configuradas'])
+        self.assertContains(response, 'Matriz de Cumplimiento por Ítems Medibles')
+        self.assertContains(
+            response,
+            'No hay ítems de medición activos para el cargo',
+        )
+        self.assertContains(
+            response,
+            'La ficha no tiene datos ponderables para el período seleccionado.',
+        )
+        self.assertNotContains(response, 'Resultado Ponderado Personal')
 
     def test_personal_dashboard_filters_historic_period_and_item_sources(self):
         periodo_anterior_fin = self.period_start - timedelta(days=1)
@@ -881,11 +923,14 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, f'/personal/?id={self.funcionario.pk}')
         confirmation = self.client.get(response.url)
-        self.assertContains(confirmation, 'Actividad #')
-        self.assertContains(confirmation, 'registrada correctamente.')
         actividad = Actividad.objects.get(funcionario=self.funcionario)
+        self.assertContains(
+            confirmation,
+            f'Actividad #{actividad.pk} registrada correctamente.',
+        )
         solicitante = self.solicitante
         self.assertEqual(actividad.solicitante_id, solicitante.id)
+        self.assertEqual(actividad.contacto_telefono, '+56912345678')
         self.assertEqual(actividad.evidencias.count(), 2)
         self.assertEqual(actividad.latitud, -29.9)
         self.assertEqual(actividad.longitud, -71.2)
@@ -967,6 +1012,7 @@ class ActivityWorkflowTests(TestCase):
             'actividad_solicitud': 'Actividad API de prueba',
             'accion_ejecutada': 'Acción de prueba',
             'direccion': 'La Serena',
+            'contacto_telefono': '12345678',
             'fotos': SimpleUploadedFile(
                 'foto-falsa.jpg',
                 b'no es una imagen',
@@ -976,6 +1022,69 @@ class ActivityWorkflowTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('fotos', response.json())
+        self.assertFalse(Actividad.objects.exists())
+
+    def test_activity_api_validates_activity_date_and_measurement_item(self):
+        payload = {
+            'funcionario': self.funcionario.pk,
+            'delegacion': self.delegacion.pk,
+            'fecha_actividad': (self.today + timedelta(days=1)).isoformat(),
+            'contacto_telefono': '12345678',
+        }
+        response = self.client.post(
+            '/api/actividades/',
+            payload,
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('fecha_actividad', response.json())
+        self.assertFalse(Actividad.objects.exists())
+
+        payload['fecha_actividad'] = self.today.isoformat()
+        payload.pop('item_medicion', None)
+        response = self.client.post(
+            '/api/actividades/',
+            payload,
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('item_medicion', response.json())
+        self.assertFalse(Actividad.objects.exists())
+
+        payload['item_medicion'] = self.item.pk
+        payload['fecha_actividad'] = (
+            self.period_start - timedelta(days=1)
+        ).isoformat()
+        response = self.client.post(
+            '/api/actividades/',
+            payload,
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('item_medicion', response.json())
+        self.assertFalse(Actividad.objects.exists())
+
+        payload['fecha_actividad'] = self.today.isoformat()
+        other_cargo = Cargo.objects.create(nombre='Cargo API incompatible')
+        other_item = ItemMedicion.objects.create(
+            cargo=other_cargo,
+            periodo=self.periodo,
+            nombre_item='Ítem API incompatible',
+            meta_cuantitativa=1,
+            ponderador=100,
+        )
+        payload['item_medicion'] = other_item.pk
+        response = self.client.post(
+            '/api/actividades/',
+            payload,
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('item_medicion', response.json())
         self.assertFalse(Actividad.objects.exists())
 
     def test_activity_api_records_uploader_and_metadata_for_uploaded_image(self):
@@ -988,6 +1097,7 @@ class ActivityWorkflowTests(TestCase):
                 'actividad_solicitud': 'Actividad API de prueba',
                 'accion_ejecutada': 'Acción de prueba',
                 'direccion': 'La Serena',
+                'contacto_telefono': '12345678',
                 'fotos': self.upload('foto-api.jpg'),
             })
 
@@ -1119,6 +1229,23 @@ class ActivityWorkflowTests(TestCase):
         self.assertIn('activity_error=fecha_futura', response.url)
         self.assertFalse(Actividad.objects.exists())
 
+    def test_activity_date_must_belong_to_selected_items_period(self):
+        outside_period = self.period_start - timedelta(days=1)
+        response = self.client.post(
+            '/actividad-diaria/registrar-actividad/',
+            self.activity_form(fecha_actividad=outside_period.isoformat()),
+        )
+
+        self.assertIn('activity_error=fecha_periodo', response.url)
+        self.assertFalse(Actividad.objects.exists())
+        error_page = self.client.get(response.url)
+        self.assertContains(error_page, 'Corrige los siguientes campos')
+        self.assertContains(error_page, 'Fecha de actividad:')
+        self.assertContains(
+            error_page,
+            'La fecha de actividad debe pertenecer al período del ítem seleccionado.',
+        )
+
     def test_activity_registration_rejects_missing_measurement_when_items_exist(self):
         response = self.client.post(
             '/actividad-diaria/registrar-actividad/',
@@ -1162,9 +1289,59 @@ class ActivityWorkflowTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self.item.nombre_item)
+        self.assertContains(response, 'data-items-url="/actividad-diaria/items/"')
         self.assertNotContains(response, inactivo.nombre_item)
         self.assertNotContains(response, item_otro_cargo.nombre_item)
         self.assertNotContains(response, item_otro_periodo.nombre_item)
+
+        items_response = self.client.get(
+            '/actividad-diaria/items/',
+            {'funcionario_id': self.funcionario.pk},
+        )
+        self.assertEqual(items_response.status_code, 200)
+        self.assertEqual(
+            [item['id'] for item in items_response.json()['items']],
+            [self.item.pk],
+        )
+        self.assertTrue(items_response.json()['required'])
+
+        another_functionary = Usuario.objects.create_user(
+            username='otro.funcionario.items',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            cargo=otro_cargo,
+            delegacion=self.delegacion,
+        )
+        forbidden_response = self.client.get(
+            '/actividad-diaria/items/',
+            {'funcionario_id': another_functionary.pk},
+        )
+        self.assertEqual(forbidden_response.status_code, 403)
+
+        self.client.force_login(self.supervisor)
+        items_response = self.client.get(
+            '/actividad-diaria/items/',
+            {'funcionario_id': self.funcionario.pk},
+        )
+        self.assertEqual(items_response.status_code, 200)
+        self.assertEqual(
+            [item['id'] for item in items_response.json()['items']],
+            [self.item.pk],
+        )
+        funcionario_sin_cargo = Usuario.objects.create_user(
+            username='funcionario.sin.cargo',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            delegacion=self.delegacion,
+        )
+        items_response = self.client.get(
+            '/actividad-diaria/items/',
+            {'funcionario_id': funcionario_sin_cargo.pk},
+        )
+        self.assertEqual(items_response.status_code, 200)
+        self.assertEqual(items_response.json()['items'], [])
+        self.assertFalse(items_response.json()['required'])
+        self.client.force_login(self.funcionario)
 
         invalid_response = self.client.post(
             '/actividad-diaria/registrar-actividad/',
@@ -1179,23 +1356,46 @@ class ActivityWorkflowTests(TestCase):
             password='TestPassword123!',
             rol=Usuario.Rol.ADMINISTRADOR,
         )
-        self.item.ponderador = 60
-        self.item.save()
         self.client.force_login(admin)
 
-        response = self.client.post('/mantenedores/items/crear/', {
+        response = self.client.post('/mantenedores/ponderaciones/', {
             'cargo': str(self.cargo.pk),
             'periodo': str(self.periodo.pk),
-            'nombre_item': 'Segundo ítem versionado',
-            'descripcion': 'Ítem añadido al período',
-            'tipo_unidad': 'UNIDAD',
-            'meta_cuantitativa': '10',
-            'ponderador': '40',
-            'unidad_medida': 'Actividades',
-            'activo': 'on',
+            'items-TOTAL_FORMS': '2',
+            'items-INITIAL_FORMS': '1',
+            'items-MIN_NUM_FORMS': '0',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': str(self.item.pk),
+            'items-0-nombre_item': self.item.nombre_item,
+            'items-0-descripcion': '',
+            'items-0-tipo_unidad': 'UNIDAD',
+            'items-0-meta_cuantitativa': '10',
+            'items-0-ponderador': '60',
+            'items-0-unidad_medida': 'Actividades',
+            'items-0-activo': 'on',
+            'items-1-nombre_item': 'Segundo ítem versionado',
+            'items-1-descripcion': 'Ítem añadido al período',
+            'items-1-tipo_unidad': 'UNIDAD',
+            'items-1-meta_cuantitativa': '10',
+            'items-1-ponderador': '40',
+            'items-1-unidad_medida': 'Actividades',
+            'items-1-activo': 'on',
         })
 
-        self.assertRedirects(response, '/mantenedores/items/')
+        self.assertRedirects(
+            response,
+            f'/mantenedores/ponderaciones/?cargo={self.cargo.pk}&periodo={self.periodo.pk}',
+        )
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.ponderador, 60)
+        self.assertEqual(
+            sum(ItemMedicion.objects.filter(
+                cargo=self.cargo,
+                periodo=self.periodo,
+                activo=True,
+            ).values_list('ponderador', flat=True)),
+            100,
+        )
         self.periodo.refresh_from_db()
         self.assertEqual(self.periodo.version_de_parametro, '1.1')
         audit = RegistroAuditoria.objects.get(
@@ -1205,6 +1405,58 @@ class ActivityWorkflowTests(TestCase):
         )
         self.assertEqual(audit.valor_anterior['version_de_parametro'], '1.0')
         self.assertEqual(audit.valor_nuevo['version_de_parametro'], '1.1')
+        version = VersionConfiguracionPeriodo.objects.get(
+            periodo=self.periodo,
+            version='1.1',
+        )
+        self.assertEqual(version.configuracion['periodo']['version_de_parametro'], '1.1')
+        self.assertEqual(len(version.configuracion['items']), 2)
+        self.assertEqual(
+            version.configuracion['items'][0]['meta_cuantitativa'],
+            10.0,
+        )
+        segundo_item = ItemMedicion.objects.get(
+            periodo=self.periodo,
+            nombre_item='Segundo ítem versionado',
+        )
+        response = self.client.post('/mantenedores/ponderaciones/', {
+            'cargo': str(self.cargo.pk),
+            'periodo': str(self.periodo.pk),
+            'items-TOTAL_FORMS': '2',
+            'items-INITIAL_FORMS': '2',
+            'items-MIN_NUM_FORMS': '0',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': str(self.item.pk),
+            'items-0-nombre_item': self.item.nombre_item,
+            'items-0-descripcion': '',
+            'items-0-tipo_unidad': 'UNIDAD',
+            'items-0-meta_cuantitativa': '10',
+            'items-0-ponderador': '100',
+            'items-0-unidad_medida': 'Actividades',
+            'items-0-activo': 'on',
+            'items-1-id': str(segundo_item.pk),
+            'items-1-nombre_item': segundo_item.nombre_item,
+            'items-1-descripcion': segundo_item.descripcion,
+            'items-1-tipo_unidad': segundo_item.tipo_unidad,
+            'items-1-meta_cuantitativa': '10',
+            'items-1-ponderador': '0',
+            'items-1-unidad_medida': segundo_item.unidad_medida,
+        })
+        self.assertRedirects(
+            response,
+            f'/mantenedores/ponderaciones/?cargo={self.cargo.pk}&periodo={self.periodo.pk}',
+        )
+        self.periodo.refresh_from_db()
+        self.assertEqual(self.periodo.version_de_parametro, '1.2')
+        version_reactivacion = VersionConfiguracionPeriodo.objects.get(
+            periodo=self.periodo,
+            version='1.2',
+        )
+        segundo_item.refresh_from_db()
+        self.assertFalse(segundo_item.activo)
+        self.assertFalse(
+            version_reactivacion.configuracion['items'][1]['activo']
+        )
         item_audit = RegistroAuditoria.objects.get(
             entidad='ItemMedicion',
             evento='CREACION',
@@ -1250,9 +1502,7 @@ class ActivityWorkflowTests(TestCase):
                 'fecha_inicio': self.period_start.isoformat(),
                 'fecha_termino': self.period_end.isoformat(),
                 'dias_computables': str((self.period_end - self.period_start).days + 1),
-                'umbral_verde': '85',
-                'umbral_ambar': '50',
-                'umbral_semaforo_verde': '100',
+                'umbral_semaforo_verde': '110',
                 'umbral_semaforo_ambar': '60',
                 'umbral_colectivo': '80',
                 'tope_cumplimiento': '150',
@@ -1262,27 +1512,36 @@ class ActivityWorkflowTests(TestCase):
 
         self.assertRedirects(response, '/mantenedores/periodos/')
         self.periodo.refresh_from_db()
-        self.assertEqual(self.periodo.umbral_verde, 85)
+        self.assertEqual(self.periodo.umbral_semaforo_verde, 110)
+        self.assertEqual(self.periodo.umbral_verde, 110)
         self.assertEqual(self.periodo.version_de_parametro, '1.1')
         audit = RegistroAuditoria.objects.get(
             entidad='PeriodoMedicion',
             identificador_registro=str(self.periodo.pk),
             evento='MODIFICACION',
         )
-        self.assertEqual(audit.valor_anterior['umbral_verde'], 80)
-        self.assertEqual(audit.valor_nuevo['umbral_verde'], 85)
+        self.assertEqual(audit.valor_anterior['umbral_semaforo_verde'], 100)
+        self.assertEqual(audit.valor_nuevo['umbral_semaforo_verde'], 110)
         self.assertEqual(audit.valor_nuevo['version_de_parametro'], '1.1')
+        version = VersionConfiguracionPeriodo.objects.get(
+            periodo=self.periodo,
+            version='1.1',
+        )
+        self.assertEqual(
+            version.configuracion['periodo']['umbral_semaforo_verde'],
+            110,
+        )
 
     def test_closed_period_rejects_parameter_changes_but_can_be_reopened(self):
         self.periodo.cerrar_periodo()
-        self.periodo.umbral_verde = 85
+        self.periodo.umbral_semaforo_verde = 110
 
         with self.assertRaises(ValidationError):
             self.periodo.save()
 
         self.periodo.refresh_from_db()
         self.assertTrue(self.periodo.cerrado)
-        self.assertEqual(self.periodo.umbral_verde, 80)
+        self.assertEqual(self.periodo.umbral_semaforo_verde, 100)
 
         self.periodo.reabrir_periodo()
         self.periodo.refresh_from_db()
@@ -1343,9 +1602,7 @@ class ActivityWorkflowTests(TestCase):
                 'fecha_inicio': self.period_start.isoformat(),
                 'fecha_termino': self.period_end.isoformat(),
                 'dias_computables': str((self.period_end - self.period_start).days + 1),
-                'umbral_verde': '85',
-                'umbral_ambar': '50',
-                'umbral_semaforo_verde': '100',
+                'umbral_semaforo_verde': '110',
                 'umbral_semaforo_ambar': '60',
                 'umbral_colectivo': '80',
                 'tope_cumplimiento': '150',
@@ -1357,8 +1614,59 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('__all__', response.context['form'].errors)
         self.periodo.refresh_from_db()
-        self.assertEqual(self.periodo.umbral_verde, 80)
+        self.assertEqual(self.periodo.umbral_semaforo_verde, 100)
         self.assertEqual(self.periodo.version_de_parametro, '1.0')
+
+    def test_period_evaluator_uses_the_dashboard_thresholds(self):
+        self.periodo.umbral_semaforo_verde = 110
+        self.periodo.umbral_semaforo_ambar = 50
+        self.periodo.umbral_verde = 80
+        self.periodo.umbral_ambar = 40
+
+        with patch.object(
+            self.periodo,
+            'calcular_meta_esperada_al_dia',
+            return_value=50,
+        ):
+            self.assertEqual(self.periodo.evaluar_cumplimiento(50), 'AMBAR')
+        with patch.object(
+            self.periodo,
+            'calcular_meta_esperada_al_dia',
+            return_value=0,
+        ):
+            self.assertEqual(self.periodo.evaluar_cumplimiento(0), 'VERDE')
+            self.assertEqual(self.periodo.evaluar_cumplimiento(-1), 'ROJO')
+
+    def test_configuration_api_rejects_period_and_item_writes(self):
+        admin = Usuario.objects.create_user(
+            username='admin.config.api.readonly',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        api_client = APIClient()
+        api_client.force_authenticate(user=admin)
+
+        response = api_client.patch(
+            f'/api/periodos/{self.periodo.pk}/',
+            {'umbral_semaforo_verde': 120},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+
+        response = api_client.patch(
+            f'/api/items-medicion/{self.item.pk}/',
+            {'meta_cuantitativa': 20},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+
+        self.periodo.refresh_from_db()
+        self.item.refresh_from_db()
+        self.assertEqual(self.periodo.version_de_parametro, '1.0')
+        self.assertEqual(self.item.meta_cuantitativa, 10)
+        self.assertFalse(
+            VersionConfiguracionPeriodo.objects.filter(periodo=self.periodo).exists()
+        )
 
     def test_audit_records_cannot_be_updated_or_deleted(self):
         auditoria = RegistroAuditoria.objects.create(
@@ -1494,8 +1802,6 @@ class ActivityWorkflowTests(TestCase):
                 'fecha_inicio': self.period_start.isoformat(),
                 'fecha_termino': fecha_termino.isoformat(),
                 'dias_computables': '1',
-                'umbral_verde': '80',
-                'umbral_ambar': '50',
                 'umbral_semaforo_verde': '100',
                 'umbral_semaforo_ambar': '60',
                 'umbral_colectivo': '80',
@@ -1525,16 +1831,26 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertContains(page, f'value="{values["fecha_actividad"]}"')
         self.assertContains(page, 'value="Pasaje de prueba 456"')
-        self.assertContains(page, f'<option value="{self.solicitante.id}" selected>')
+        self.assertContains(
+            page,
+            f'<option value="{self.solicitante.id}" data-contacto-telefono="{self.solicitante.telefono}" selected>',
+        )
         self.assertContains(page, 'La fecha de la actividad no puede ser posterior a hoy.')
         self.assertNotIn('activity_form_data', self.client.session)
 
     def test_activity_page_selects_existing_requester(self):
-        response = self.client.get('/actividad-diaria/registrar-actividad/')
+        response = self.client.get(
+            f'/actividad-diaria/registrar-actividad/?solicitante_id={self.solicitante.pk}'
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Registrar actividad')
         self.assertContains(response, f'value="{self.solicitante.id}"')
+        self.assertContains(
+            response,
+            f'name="contacto_telefono" type="tel" inputmode="tel"',
+        )
+        self.assertContains(response, f'value="{self.solicitante.telefono}"')
         self.assertContains(response, 'id="mapa-actividad"')
         self.assertContains(response, 'id="btn-ubicacion-actual"')
         self.assertContains(response, 'Cada actividad puede incluir un compromiso de seguimiento opcional')
@@ -1945,22 +2261,58 @@ class ActivityWorkflowTests(TestCase):
                     self.client.post('/terreno/', {
                         'direccion': 'Pasaje de prueba 456',
                         'accion_ejecutada': 'Inspección de luminaria',
+                        'contacto_telefono': '12345678',
+                        'item_medicion': str(self.item.pk),
                         'fotos': [self.upload('foto-terreno-rollback.jpg')],
                     })
 
         self.assertFalse(Actividad.objects.exists())
         self.assertFalse(Evidencia.objects.exists())
 
+    def test_terrain_activity_requires_contact_phone(self):
+        with override_settings(MEDIA_ROOT=self.media_dir.name):
+            response = self.client.post('/terreno/', {
+                'direccion': 'Pasaje de prueba 456',
+                'accion_ejecutada': 'Inspección de luminaria',
+                'fotos': [self.upload('foto-terreno-sin-telefono.jpg')],
+            })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Actividad.objects.exists())
+        error_page = self.client.get(response.url)
+        self.assertContains(error_page, 'Teléfono de contacto: Este campo es obligatorio.')
+
+    def test_terrain_activity_rejects_a_malformed_measurement_item_id(self):
+        with override_settings(MEDIA_ROOT=self.media_dir.name):
+            response = self.client.post('/terreno/', {
+                'direccion': 'Pasaje de prueba 456',
+                'accion_ejecutada': 'Inspección de luminaria',
+                'contacto_telefono': '12345678',
+                'item_medicion': 'no-es-un-id',
+                'fotos': [self.upload('foto-terreno-item-invalido.jpg')],
+            })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Actividad.objects.exists())
+        error_page = self.client.get(response.url)
+        self.assertContains(
+            error_page,
+            'Ítem de medición: No corresponde al período o cargo actual.',
+        )
+
     def test_terrain_activity_persists_activity_evidence_and_audit(self):
         with override_settings(MEDIA_ROOT=self.media_dir.name):
             response = self.client.post('/terreno/', {
                 'direccion': 'Pasaje de prueba 456',
                 'accion_ejecutada': 'Inspección de luminaria',
+                'contacto_telefono': '12345678',
+                'item_medicion': str(self.item.pk),
                 'fotos': [self.upload('foto-terreno-ok.jpg')],
             })
 
         self.assertEqual(response.status_code, 302)
         actividad = Actividad.objects.get(funcionario=self.funcionario)
+        self.assertEqual(actividad.contacto_telefono, '+56912345678')
         self.assertEqual(actividad.evidencias.count(), 1)
         audit = RegistroAuditoria.objects.get(
             entidad='Actividad',
@@ -2638,7 +2990,7 @@ class ActivityWorkflowTests(TestCase):
             response = self.client.post('/casos-sociales/', {
                 'action': 'registrar_atencion',
                 'caso_id': str(caso.pk),
-                'tipo_atencion': f'Gestión {etapa}',
+                'tipo_atencion_catalogo_id': str(self.tipo_atencion_catalogo.pk),
                 'detalle': f'Detalle de gestión {etapa}',
                 'resultado': f'Resultado {etapa}',
                 'fecha_gestion': self.today.isoformat(),
@@ -2658,7 +3010,7 @@ class ActivityWorkflowTests(TestCase):
         response = self.client.post('/casos-sociales/', {
             'action': 'registrar_atencion',
             'caso_id': str(caso.pk),
-            'tipo_atencion': 'Gestión extra',
+            'tipo_atencion_catalogo_id': str(self.tipo_atencion_catalogo.pk),
             'detalle': 'No debe registrarse',
             'resultado': 'No corresponde',
             'fecha_gestion': self.today.isoformat(),
@@ -2680,7 +3032,7 @@ class ActivityWorkflowTests(TestCase):
         response = self.client.post('/casos-sociales/', {
             'action': 'registrar_atencion',
             'caso_id': str(caso.pk),
-            'tipo_atencion': 'Primera gestión',
+            'tipo_atencion_catalogo_id': str(self.tipo_atencion_catalogo.pk),
             'detalle': 'Diagnóstico inicial',
             'resultado': 'Visita pendiente',
         })
@@ -2691,7 +3043,7 @@ class ActivityWorkflowTests(TestCase):
         response = self.client.post('/casos-sociales/', {
             'action': 'registrar_atencion',
             'caso_id': str(caso.pk),
-            'tipo_atencion': 'Primera gestión',
+            'tipo_atencion_catalogo_id': str(self.tipo_atencion_catalogo.pk),
             'detalle': 'Diagnóstico inicial',
             'resultado': 'Visita pendiente',
             'fecha_gestion': (self.today - timedelta(days=1)).isoformat(),
@@ -2703,7 +3055,7 @@ class ActivityWorkflowTests(TestCase):
         response = self.client.post('/casos-sociales/', {
             'action': 'registrar_atencion',
             'caso_id': str(caso.pk),
-            'tipo_atencion': 'Primera gestión',
+            'tipo_atencion_catalogo_id': str(self.tipo_atencion_catalogo.pk),
             'detalle': 'Diagnóstico inicial',
             'resultado': 'Visita pendiente',
             'fecha_gestion': self.today.isoformat(),
@@ -2713,7 +3065,7 @@ class ActivityWorkflowTests(TestCase):
         response = self.client.post('/casos-sociales/', {
             'action': 'registrar_atencion',
             'caso_id': str(caso.pk),
-            'tipo_atencion': 'Segunda gestión',
+            'tipo_atencion_catalogo_id': str(self.tipo_atencion_catalogo.pk),
             'detalle': 'Visita al domicilio',
             'resultado': 'Atendida',
             'fecha_gestion': (self.today + timedelta(days=1)).isoformat(),
@@ -2769,6 +3121,218 @@ class ActivityWorkflowTests(TestCase):
         servicio.refresh_from_db()
         self.assertFalse(servicio.activo)
         self.assertTrue(Actividad.objects.filter(pk=actividad.pk).exists())
+
+    def test_activity_type_catalog_filters_by_area_and_preserves_snapshot(self):
+        self.funcionario.area_entidad = self.area
+        self.funcionario.save(update_fields=['area_entidad'])
+        tipo_actual = TipoActividad.objects.create(
+            area=self.area,
+            nombre='Visita territorial',
+        )
+        otra_area = Area.objects.create(nombre='Otra área')
+        TipoActividad.objects.create(area=otra_area, nombre='Atención clínica')
+
+        response = self.client.get(
+            '/actividad-diaria/items/',
+            {'funcionario_id': self.funcionario.pk},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [tipo['id'] for tipo in response.json()['tipos_actividad']],
+            [tipo_actual.pk],
+        )
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            tipo_actividad=tipo_actual,
+            fecha_actividad=self.today,
+        )
+        tipo_actual.nombre = 'Visita comunitaria'
+        tipo_actual.save(update_fields=['nombre'])
+        actividad.refresh_from_db()
+
+        self.assertEqual(actividad.tipo_actividad_nombre, 'Visita territorial')
+        self.assertEqual(actividad.tipo_actividad_area, self.area.nombre)
+
+    def test_activity_registration_requires_area_catalog_type_when_configured(self):
+        self.funcionario.area_entidad = self.area
+        self.funcionario.save(update_fields=['area_entidad'])
+        tipo_actual = TipoActividad.objects.create(
+            area=self.area,
+            nombre='Atención en terreno',
+        )
+        response = self.client.post(
+            '/actividad-diaria/registrar-actividad/',
+            self.activity_form(tipo_actividad_id=str(tipo_actual.pk)),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        actividad = Actividad.objects.get(funcionario=self.funcionario)
+        self.assertEqual(actividad.tipo_actividad_id, tipo_actual.pk)
+        self.assertEqual(actividad.tipo_actividad_nombre, 'Atención en terreno')
+        self.assertEqual(actividad.tipo_actividad_area, self.area.nombre)
+
+    def test_activity_api_rejects_type_from_another_area(self):
+        self.funcionario.area_entidad = self.area
+        self.funcionario.save(update_fields=['area_entidad'])
+        otra_area = Area.objects.create(nombre='Área incompatible')
+        tipo_incompatible = TipoActividad.objects.create(
+            area=otra_area,
+            nombre='Tipo incompatible',
+        )
+        serializer = ActividadSerializer(data={
+            'funcionario': self.funcionario.pk,
+            'delegacion': self.delegacion.pk,
+            'contacto_telefono': '12345678',
+            'tipo_actividad': tipo_incompatible.pk,
+        })
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('tipo_actividad', serializer.errors)
+
+    def test_social_attention_catalog_and_subattention_keep_historical_names(self):
+        subatencion = SubatencionSocial.objects.create(
+            tipo_atencion=self.tipo_atencion_catalogo,
+            nombre='Visita domiciliaria',
+        )
+        caso = CasoSocial.objects.create(
+            codigo_caso='CASO-CATALOGO-001',
+            persona_anonimizada='PERSONA-CATALOGO',
+            delegacion=self.delegacion,
+        )
+        self.client.force_login(self.supervisor)
+
+        response = self.client.post('/casos-sociales/', {
+            'action': 'registrar_atencion',
+            'caso_id': str(caso.pk),
+            'tipo_atencion_catalogo_id': str(self.tipo_atencion_catalogo.pk),
+            'subatencion_catalogo_id': str(subatencion.pk),
+            'detalle': 'Evaluación inicial',
+            'resultado': 'Seguimiento acordado',
+            'fecha_gestion': self.today.isoformat(),
+        })
+
+        self.assertRedirects(response, '/casos-sociales/')
+        atencion = AtencionSocial.objects.get(caso=caso)
+        self.assertEqual(atencion.tipo_atencion, 'Gestión social')
+        self.assertEqual(atencion.tipo_atencion_area, self.area.nombre)
+        self.assertEqual(atencion.subatencion, 'Visita domiciliaria')
+
+        self.tipo_atencion_catalogo.nombre = 'Orientación social'
+        self.tipo_atencion_catalogo.save(update_fields=['nombre'])
+        subatencion.nombre = 'Visita de seguimiento'
+        subatencion.save(update_fields=['nombre'])
+        atencion.refresh_from_db()
+
+        self.assertEqual(atencion.tipo_atencion, 'Gestión social')
+        self.assertEqual(atencion.subatencion, 'Visita domiciliaria')
+
+    def test_social_attention_api_can_use_catalog_without_legacy_text(self):
+        caso = CasoSocial.objects.create(
+            codigo_caso='CASO-API-CATALOGO-001',
+            persona_anonimizada='PERSONA-API-CATALOGO',
+            delegacion=self.delegacion,
+        )
+        serializer = AtencionSocialSerializer(data={
+            'caso': caso.pk,
+            'etapa': 1,
+            'fecha_visita_programada': self.today.isoformat(),
+            'tipo_atencion_catalogo': self.tipo_atencion_catalogo.pk,
+            'detalle': 'Orientación registrada por API',
+            'resultado': 'Seguimiento programado',
+            'funcionario': self.supervisor.pk,
+        })
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        atencion = serializer.save()
+        self.assertEqual(atencion.tipo_atencion, 'Gestión social')
+        self.assertEqual(atencion.tipo_atencion_area, self.area.nombre)
+
+    def test_social_attention_form_rejects_subattention_from_another_type(self):
+        otro_tipo = TipoAtencionSocial.objects.create(
+            area=self.area,
+            nombre='Derivación',
+        )
+        subatencion = SubatencionSocial.objects.create(
+            tipo_atencion=otro_tipo,
+            nombre='Derivación externa',
+        )
+        form = AtencionSocialForm(
+            {
+                'tipo_atencion_catalogo_id': str(self.tipo_atencion_catalogo.pk),
+                'subatencion_catalogo_id': str(subatencion.pk),
+                'detalle': 'Detalle',
+                'resultado': 'Resultado',
+                'fecha_gestion': self.today.isoformat(),
+            },
+            etapa=1,
+            area_id=self.area.pk,
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn('subatencion_catalogo_id', form.errors)
+
+    def test_activity_catalog_can_be_managed_and_soft_deactivated(self):
+        admin = Usuario.objects.create_user(
+            username='catalog.admin',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        self.client.force_login(admin)
+
+        response = self.client.post('/mantenedores/tipos-actividad/crear/', {
+            'area': str(self.area.pk),
+            'nombre': 'Operativo territorial',
+            'descripcion': 'Actividad ejecutada en terreno.',
+        })
+
+        self.assertRedirects(response, '/mantenedores/tipos-actividad/')
+        tipo = TipoActividad.objects.get(nombre='Operativo territorial')
+        response = self.client.post(
+            '/mantenedores/tipos-atencion-social/crear/',
+            {
+                'area': str(self.area.pk),
+                'nombre': 'Orientación social',
+                'descripcion': 'Orientación inicial.',
+            },
+        )
+        self.assertRedirects(response, '/mantenedores/tipos-atencion-social/')
+        tipo_atencion = TipoAtencionSocial.objects.get(nombre='Orientación social')
+        response = self.client.post(
+            '/mantenedores/subatenciones-sociales/crear/',
+            {
+                'tipo_atencion': str(tipo_atencion.pk),
+                'nombre': 'Derivación externa',
+                'descripcion': 'Derivación a otra unidad.',
+            },
+        )
+        self.assertRedirects(response, '/mantenedores/subatenciones-sociales/')
+        self.assertTrue(
+            SubatencionSocial.objects.filter(
+                tipo_atencion=tipo_atencion,
+                nombre='Derivación externa',
+            ).exists()
+        )
+        self.assertEqual(
+            self.client.get('/mantenedores/tipos-atencion-social/').status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get('/mantenedores/subatenciones-sociales/').status_code,
+            200,
+        )
+        response = self.client.post(
+            f'/mantenedores/tipos-actividad/{tipo.pk}/desactivar/',
+        )
+        self.assertRedirects(response, '/mantenedores/tipos-actividad/')
+        tipo.refresh_from_db()
+        self.assertFalse(tipo.activo)
+        self.assertEqual(
+            self.client.get('/mantenedores/tipos-actividad/').status_code,
+            200,
+        )
 
     def test_commitment_update_reassignment_and_state_are_audited(self):
         compromiso = CompromisoAgenda.objects.create(
@@ -3112,6 +3676,18 @@ class ActivityWorkflowTests(TestCase):
         self.assertIn('activity_error=solicitante', response.url)
         self.assertFalse(Actividad.objects.exists())
 
+    def test_activity_form_requires_contact_phone_and_preserves_it_after_validation_error(self):
+        response = self.client.post(
+            '/actividad-diaria/registrar-actividad/',
+            self.activity_form(contacto_telefono=''),
+        )
+
+        self.assertIn('activity_error=telefono', response.url)
+        self.assertFalse(Actividad.objects.exists())
+        form_response = self.client.get(response.url)
+        self.assertContains(form_response, 'teléfono de contacto chileno válido')
+        self.assertContains(form_response, 'Teléfono de contacto:')
+
     def test_activity_serializer_normalizes_phone_and_rejects_invalid_phone(self):
         actividad = Actividad.objects.create(
             funcionario=self.funcionario,
@@ -3133,6 +3709,10 @@ class ActivityWorkflowTests(TestCase):
         )
         self.assertFalse(invalid.is_valid())
         self.assertIn('contacto_telefono', invalid.errors)
+
+        missing = ActividadSerializer(Actividad(funcionario=self.funcionario), data={})
+        self.assertFalse(missing.is_valid())
+        self.assertIn('contacto_telefono', missing.errors)
 
     def test_case_social_serializer_rejects_blank_required_fields(self):
         serializer = CasoSocialSerializer(data={

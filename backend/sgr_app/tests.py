@@ -451,10 +451,12 @@ class MatrizSGRTestSuite(TestCase):
         payload = {
             'funcionario': self.usuario.id,
             'delegacion': self.delegacion.id,
+            'fecha_actividad': '2026-08-15',
             'item_medicion': self.item1.id,
             'actividad_solicitud': 'Inspección operativa: Balmaceda 1234',
             'accion_ejecutada': 'Bacheo y demarcación de calzada completado.',
             'direccion': 'Balmaceda 1234, La Serena',
+            'contacto_telefono': '12345678',
             'url_foto_simulada': 'https://ejemplo.cl/foto1.jpg',
             'url_foto_simulada_2': 'https://ejemplo.cl/foto2.jpg',
             'url_foto_simulada_3': 'https://ejemplo.cl/foto3.jpg'
@@ -548,7 +550,8 @@ class MatrizSGRTestSuite(TestCase):
         self.assertEqual(evid.estado, Evidencia.Estado.RECHAZADA)
 
         # 10. Periodo: evaluarCumplimiento, vigenciaFecha, estaActivo, calcularMetaEsperadaAlDia
-        self.assertEqual(self.periodo.evaluarCumplimiento(95.0), "VERDE")
+        self.assertEqual(self.periodo.evaluarCumplimiento(95.0), "AMARILLO")
+        self.assertEqual(self.periodo.evaluarCumplimiento(105.0), "VERDE")
         self.assertEqual(self.periodo.evaluarCumplimiento(65.0), "AMARILLO")
         self.assertEqual(self.periodo.evaluarCumplimiento(30.0), "ROJO")
         self.assertTrue(self.periodo.vigenciaFecha(date(2026, 8, 1)))

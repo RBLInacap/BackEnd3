@@ -7,12 +7,12 @@
     <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
       <div>
         <span class="badge bg-white text-danger text-uppercase">
-          {% if request.user.es_delegado %}Panel Delegado Territorial{% else %}Panel Supervisor{% endif %}
+          {% if request.user.esta_limitado_a_delegacion %}Panel Delegado Territorial{% else %}Panel Supervisor{% endif %}
         </span>
         <h1 class="h3 fw-bold text-white mt-2 mb-1">Seguimiento de gestión</h1>
         <p class="text-white-50 mb-0">
           Período: {{ periodo_nombre_actual }}
-          {% if request.user.es_delegado %}
+          {% if request.user.esta_limitado_a_delegacion %}
             · Delegación: {{ request.user.delegacion.nombre|default:"Sin delegación asignada" }}
           {% endif %}
         </p>
@@ -132,7 +132,7 @@
           {% empty %}
           <tr>
             <td colspan="5" class="text-center text-secondary py-4">
-              {% if request.user.es_delegado and not request.user.delegacion_id %}
+              {% if request.user.esta_limitado_a_delegacion and not request.user.delegacion_id %}
                 Tu cuenta aún no tiene una delegación asignada.
               {% else %}
                 No hay datos disponibles para este período.

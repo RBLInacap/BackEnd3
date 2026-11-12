@@ -6,7 +6,7 @@
   <section class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
     <span class="badge bg-white text-danger text-uppercase align-self-start">Administración SGR</span>
     <h1 class="h3 fw-bold text-white mt-2 mb-0">{{ title }}</h1>
-    <p class="text-white-50 mb-0">Los ítems inactivos se conservan para mantener el historial.</p>
+    <p class="text-white-50 mb-0">La configuración se aplica al conjunto completo de un cargo y período; los ítems vigentes deben sumar exactamente 100%.</p>
   </section>
 
   <section class="card shadow-sm border-0">
@@ -22,8 +22,8 @@
         {% endif %}
       </form>
       {% if can_manage_items %}
-        <a href="{{ create_url }}" class="btn btn-danger text-nowrap">
-          <i class="bi bi-plus-circle me-1"></i> Crear ítem
+        <a href="{{ ponderaciones_url }}" class="btn btn-danger text-nowrap">
+          <i class="bi bi-sliders me-1"></i> Configurar ítems y ponderaciones
         </a>
       {% endif %}
     </div>
@@ -46,6 +46,7 @@
             <th scope="col">Unidad</th>
             <th scope="col">Cargo</th>
             <th scope="col">Período</th>
+            <th scope="col">Ponderador</th>
             {% if can_manage_items %}<th scope="col" class="text-end">Acciones</th>{% endif %}
           </tr>
         </thead>
@@ -57,24 +58,17 @@
             <td>{{ item.get_tipo_unidad_display }}</td>
             <td>{{ item.cargo }}</td>
             <td>{{ item.periodo.nombre }}</td>
+            <td>{{ item.ponderador|floatformat:2 }}%</td>
             {% if can_manage_items %}
               <td class="text-end text-nowrap">
-                {% if show_inactive %}
-                  <span class="badge text-bg-secondary me-1">Inactivo</span>
-                  <form method="post" action="{% url 'mantenedor_registro_reactivate' reactivation_entity item.pk %}" class="d-inline">
-                    {% csrf_token %}
-                    <button type="submit" class="btn btn-sm btn-outline-success">Activar</button>
-                  </form>
-                {% else %}
-                  <a href="{% url update_url_name item.pk %}" class="btn btn-sm btn-outline-secondary">Modificar</a>
-                  <a href="{% url delete_url_name item.pk %}" class="btn btn-sm btn-outline-danger">Desactivar</a>
-                {% endif %}
+                {% if not item.activo %}<span class="badge text-bg-secondary me-1">Inactivo</span>{% endif %}
+                <a href="{% url 'mantenedor_ponderaciones_config' %}?cargo={{ item.cargo_id }}&amp;periodo={{ item.periodo_id }}" class="btn btn-sm btn-outline-secondary">Configurar conjunto</a>
               </td>
             {% endif %}
           </tr>
           {% empty %}
           <tr>
-            <td colspan="{% if can_manage_items %}6{% else %}5{% endif %}" class="text-center text-secondary py-4">
+            <td colspan="{% if can_manage_items %}7{% else %}6{% endif %}" class="text-center text-secondary py-4">
               {% if search_term %}No se encontraron ítems para esa búsqueda.{% elif show_inactive %}No hay ítems inactivos.{% else %}No hay ítems activos.{% endif %}
             </td>
           </tr>

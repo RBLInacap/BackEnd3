@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 from django.core import mail
 from django.test import Client, TestCase, override_settings
@@ -16,7 +17,9 @@ from sgr_app.models import (
     Rol,
     Solicitante,
     Usuario,
+    VersionConfiguracionPeriodo,
 )
+from sgr_app.permissions import AuthenticatedRolePermission
 
 
 class MantenedoresChecklistTests(TestCase):
@@ -102,7 +105,7 @@ class MantenedoresChecklistTests(TestCase):
             entry.pk for entry in response.context['object_list']
         })
 
-    def test_all_eight_maintenance_screens_support_crud(self):
+    def test_maintenance_screens_support_crud(self):
         flows = (
             {
                 'name': 'delegaciones',
@@ -146,39 +149,6 @@ class MantenedoresChecklistTests(TestCase):
                     'area': str(self.area.pk),
                 },
                 'find_object': lambda: Cargo.objects.filter(nombre='Cargo CRUD').first(),
-                'active_field': 'activo',
-            },
-            {
-                'name': 'items',
-                'list_url': '/mantenedores/items/',
-                'create_url': '/mantenedores/items/crear/',
-                'update_url': '/mantenedores/items/{pk}/modificar/',
-                'delete_url': '/mantenedores/items/{pk}/desactivar/',
-                'create_data': {
-                    'cargo': str(self.cargo.pk),
-                    'periodo': str(self.periodo.pk),
-                    'nombre_item': 'Ítem CRUD',
-                    'descripcion': 'Descripción de prueba',
-                    'tipo_unidad': 'UNIDAD',
-                    'meta_cuantitativa': '1',
-                    'ponderador': '50',
-                    'unidad_medida': 'Actividades',
-                    'activo': 'on',
-                },
-                'update_data': {
-                    'cargo': str(self.cargo.pk),
-                    'periodo': str(self.periodo.pk),
-                    'nombre_item': 'Ítem CRUD actualizado',
-                    'descripcion': 'Descripción actualizada',
-                    'tipo_unidad': 'UNIDAD',
-                    'meta_cuantitativa': '1',
-                    'ponderador': '50',
-                    'unidad_medida': 'Actividades',
-                    'activo': 'on',
-                },
-                'find_object': lambda: ItemMedicion.objects.filter(
-                    nombre_item='Ítem CRUD',
-                ).first(),
                 'active_field': 'activo',
             },
             {
@@ -314,6 +284,97 @@ class MantenedoresChecklistTests(TestCase):
                     if key != 'name'
                 })
 
+    def test_ponderation_configuration_requires_exactly_100_percent(self):
+        config_url = '/mantenedores/ponderaciones/'
+        response = self.client.get(config_url, {
+            'cargo': self.cargo.pk,
+            'periodo': self.periodo.pk,
+        })
+        self.assertEqual(response.status_code, 200)
+
+        partial_configuration = {
+            'cargo': str(self.cargo.pk),
+            'periodo': str(self.periodo.pk),
+            'items-TOTAL_FORMS': '1',
+            'items-INITIAL_FORMS': '0',
+            'items-MIN_NUM_FORMS': '0',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-0-nombre_item': 'Configuración parcial',
+            'items-0-descripcion': '',
+            'items-0-tipo_unidad': 'UNIDAD',
+            'items-0-meta_cuantitativa': '1',
+            'items-0-ponderador': '50',
+            'items-0-unidad_medida': 'Actividades',
+            'items-0-activo': 'on',
+        }
+        response = self.client.post(config_url, partial_configuration)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'debe ser exactamente 100%')
+        self.assertFalse(ItemMedicion.objects.exists())
+
+        complete_configuration = {
+            **partial_configuration,
+            'items-TOTAL_FORMS': '2',
+            'items-0-nombre_item': 'Ítem ponderado 60',
+            'items-0-ponderador': '60',
+            'items-1-nombre_item': 'Ítem ponderado 40',
+            'items-1-descripcion': '',
+            'items-1-tipo_unidad': 'UNIDAD',
+            'items-1-meta_cuantitativa': '1',
+            'items-1-ponderador': '40',
+            'items-1-unidad_medida': 'Actividades',
+            'items-1-activo': 'on',
+        }
+        response = self.client.post(config_url, complete_configuration)
+        self.assertRedirects(
+            response,
+            f'{config_url}?cargo={self.cargo.pk}&periodo={self.periodo.pk}',
+        )
+        self.assertEqual(
+            sum(ItemMedicion.objects.filter(
+                cargo=self.cargo,
+                periodo=self.periodo,
+                activo=True,
+            ).values_list('ponderador', flat=True)),
+            100,
+        )
+        item_60, item_40 = ItemMedicion.objects.filter(
+            cargo=self.cargo,
+            periodo=self.periodo,
+        ).order_by('pk')
+        response = self.client.post(config_url, {
+            'cargo': str(self.cargo.pk),
+            'periodo': str(self.periodo.pk),
+            'items-TOTAL_FORMS': '2',
+            'items-INITIAL_FORMS': '2',
+            'items-MIN_NUM_FORMS': '0',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': str(item_60.pk),
+            'items-0-nombre_item': item_60.nombre_item,
+            'items-0-descripcion': item_60.descripcion or '',
+            'items-0-tipo_unidad': item_60.tipo_unidad,
+            'items-0-meta_cuantitativa': str(item_60.meta_cuantitativa),
+            'items-0-ponderador': '100',
+            'items-0-unidad_medida': item_60.unidad_medida,
+            'items-0-activo': 'on',
+            'items-1-id': str(item_40.pk),
+            'items-1-nombre_item': item_40.nombre_item,
+            'items-1-descripcion': item_40.descripcion or '',
+            'items-1-tipo_unidad': item_40.tipo_unidad,
+            'items-1-meta_cuantitativa': str(item_40.meta_cuantitativa),
+            'items-1-ponderador': '0',
+            'items-1-unidad_medida': item_40.unidad_medida,
+        })
+        self.assertRedirects(
+            response,
+            f'{config_url}?cargo={self.cargo.pk}&periodo={self.periodo.pk}',
+        )
+        item_60.refresh_from_db()
+        item_40.refresh_from_db()
+        self.assertEqual(item_60.ponderador, 100)
+        self.assertTrue(item_60.activo)
+        self.assertFalse(item_40.activo)
+
     def test_service_catalog_crud_is_available_from_items_template(self):
         list_url = '/mantenedores/items/'
         response = self.client.get(list_url)
@@ -433,6 +494,118 @@ class MantenedoresChecklistTests(TestCase):
         funcionario = Usuario.objects.get(email='delegada.prueba@example.com')
         self.assertEqual(funcionario.rol, Usuario.Rol.SUPERVISOR)
         self.assertTrue(funcionario.es_delegado)
+
+    def test_functionary_can_receive_multiple_roles_with_effective_permissions(self):
+        response = self.client.post('/mantenedores/roles/crear/', {
+            'nombre_rol': 'Aprobador de evidencia',
+            'descripcion': 'Puede aprobar evidencias.',
+            'permisos': ['APROBAR_EVIDENCIA'],
+            'estado': 'on',
+        })
+        self.assertEqual(response.status_code, 302)
+        rol_aprobador = Rol.objects.get(nombre_rol='Aprobador de evidencia')
+        rol_territorial = Rol.objects.create(
+            nombre_rol='Gestión territorial',
+            permisos=['GESTIONAR_DELEGACION'],
+        )
+
+        datos_funcionario = {
+            'run': '12.345.678-5',
+            'nombre': 'Persona',
+            'apellidoPaterno': 'Roles',
+            'apellidoMaterno': 'Multiples',
+            'correo': 'roles.multiples@example.com',
+            'rol': 'FUNCIONARIO',
+            'area_entidad': str(self.area.pk),
+            'roles': [str(rol_aprobador.pk), str(rol_territorial.pk)],
+            'estado': 'on',
+        }
+        response = self.client.post(
+            '/mantenedores/funcionarios/crear/',
+            datos_funcionario,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('delegacion', response.context['form'].errors)
+
+        response = self.client.post(
+            '/mantenedores/funcionarios/crear/',
+            {**datos_funcionario, 'delegacion': str(self.delegacion.pk)},
+        )
+        self.assertEqual(response.status_code, 302)
+        funcionario = Usuario.objects.get(email='roles.multiples@example.com')
+
+        self.assertSetEqual(
+            set(funcionario.roles.values_list('pk', flat=True)),
+            {rol_aprobador.pk, rol_territorial.pk},
+        )
+        self.assertTrue(funcionario.tiene_permiso('APROBAR_EVIDENCIA'))
+        self.assertTrue(funcionario.tiene_permiso('GESTIONAR_DELEGACION'))
+        self.assertTrue(funcionario.esta_limitado_a_delegacion)
+        self.assertFalse(funcionario.tiene_permiso('CREAR_META'))
+        response = self.client.get('/mantenedores/funcionarios/')
+        self.assertContains(response, 'Aprobador de evidencia')
+        self.assertContains(response, 'Gestión territorial')
+        response = self.client.get('/mantenedores/roles/')
+        self.assertContains(response, 'APROBAR_EVIDENCIA')
+        self.assertContains(response, 'GESTIONAR_DELEGACION')
+        permission = AuthenticatedRolePermission()
+        request = SimpleNamespace(user=funcionario, method='POST')
+        view = type('EvidenciaViewSet', (), {'action': 'validar'})()
+        self.assertTrue(permission.has_permission(request, view))
+        evidencia_delegacion = SimpleNamespace(
+            actividad=SimpleNamespace(delegacion_id=self.delegacion.pk),
+        )
+        evidencia_otra_delegacion = SimpleNamespace(
+            actividad=SimpleNamespace(delegacion_id=self.delegacion.pk + 1),
+        )
+        self.assertTrue(
+            permission.has_object_permission(
+                request,
+                view,
+                evidencia_delegacion,
+            ),
+        )
+        self.assertFalse(
+            permission.has_object_permission(
+                request,
+                view,
+                evidencia_otra_delegacion,
+            ),
+        )
+        aprobador = Usuario.objects.create_user(
+            username='aprobador.sin_delegacion',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+        )
+        aprobador.roles.add(rol_aprobador)
+        request.user = aprobador
+        self.assertTrue(permission.has_permission(request, view))
+        self.assertTrue(
+            permission.has_object_permission(
+                request,
+                view,
+                evidencia_otra_delegacion,
+            ),
+        )
+        aprobador_client = Client()
+        aprobador_client.force_login(aprobador)
+        self.assertEqual(
+            aprobador_client.get('/verificacion/').status_code,
+            200,
+        )
+        territorial_user = Usuario.objects.create_user(
+            username='solo.gestion.territorial',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            delegacion=self.delegacion,
+        )
+        territorial_user.roles.add(rol_territorial)
+        territorial_client = Client()
+        territorial_client.force_login(territorial_user)
+        self.assertEqual(
+            territorial_client.get('/verificacion/').status_code,
+            302,
+        )
 
     @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
     def test_new_functionary_does_not_use_run_as_password_and_can_reset_it(self):
@@ -602,18 +775,9 @@ class MantenedoresChecklistTests(TestCase):
             nombre='Servicio inactivo',
             activo=False,
         )
-        item = ItemMedicion.objects.create(
-            cargo=self.cargo,
-            periodo=self.periodo,
-            nombre_item='Ítem inactivo',
-            meta_cuantitativa=1,
-            ponderador=100,
-            activo=False,
-        )
         records = (
             ('delegaciones', self.delegacion, 'activo', '/mantenedores/delegaciones/'),
             ('cargos', self.cargo, 'activo', '/mantenedores/cargos/'),
-            ('items', item, 'activo', '/mantenedores/items/'),
             ('periodos', self.periodo, 'estado', '/mantenedores/periodos/'),
             ('solicitantes', solicitante, 'estado', '/mantenedores/solicitantes/'),
             ('funcionarios', funcionario, 'is_active', '/mantenedores/funcionarios/'),
@@ -672,6 +836,36 @@ class MantenedoresChecklistTests(TestCase):
         self.assertIn('fecha_inicio', invalid_form.errors)
         self.assertIn('fecha_termino', invalid_form.errors)
 
+    def test_new_period_stores_its_initial_configuration_version(self):
+        today = timezone.localdate()
+        response = self.client.post('/mantenedores/periodos/crear/', {
+            'nombre': 'Período con snapshot inicial',
+            'anio': str(today.year),
+            'trimestre': str((today.month - 1) // 3 + 1),
+            'fecha_inicio': today.isoformat(),
+            'fecha_termino': today.isoformat(),
+            'dias_computables': '1',
+            'umbral_semaforo_verde': '120',
+            'umbral_semaforo_ambar': '70',
+            'umbral_colectivo': '80',
+            'tope_cumplimiento': '150',
+            'estado': 'on',
+        })
+
+        self.assertRedirects(response, '/mantenedores/periodos/')
+        periodo = PeriodoMedicion.objects.get(
+            nombre='Período con snapshot inicial',
+        )
+        version = VersionConfiguracionPeriodo.objects.get(
+            periodo=periodo,
+            version='1.0',
+        )
+        self.assertEqual(
+            version.configuracion['periodo']['umbral_semaforo_verde'],
+            120,
+        )
+        self.assertEqual(version.configuracion['items'], [])
+
     def period_form_data(self, start, end):
         return {
             'nombre': 'Período de validación',
@@ -680,8 +874,6 @@ class MantenedoresChecklistTests(TestCase):
             'fecha_inicio': start.isoformat(),
             'fecha_termino': end.isoformat(),
             'dias_computables': str((end - start).days + 1),
-            'umbral_verde': '80',
-            'umbral_ambar': '50',
             'umbral_semaforo_verde': '100',
             'umbral_semaforo_ambar': '60',
             'umbral_colectivo': '80',

@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-4">
+  <section class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
+    <span class="badge bg-white text-danger text-uppercase align-self-start">Administración SGR</span>
+    <h1 class="h3 fw-bold text-white mt-2 mb-0">{{ title }}</h1>
+    <p class="text-white-50 mb-0">Los ítems vigentes de cada cargo y período deben sumar exactamente 100%.</p>
+  </section>
+
+  {% if messages %}
+    {% for message in messages %}<div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>{% endfor %}
+  {% endif %}
+  {% if error_message %}<div class="alert alert-danger" role="alert">{{ error_message }}</div>{% endif %}
+
+  <section class="card shadow-sm border-0">
+    <div class="card-body">
+      <h2 class="h5 fw-bold">Seleccionar configuración</h2>
+      <form method="get" class="row g-3 align-items-end">
+        <div class="col-12 col-md-5">
+          <label class="form-label fw-semibold" for="ponderacion-cargo">Cargo</label>
+          <select class="form-select" id="ponderacion-cargo" name="cargo" required>
+            <option value="">Selecciona un cargo...</option>
+            {% for opcion in cargos %}
+              <option value="{{ opcion.pk }}" {% if cargo.pk == opcion.pk %}selected{% endif %}>{{ opcion.nombre }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-5">
+          <label class="form-label fw-semibold" for="ponderacion-periodo">Período</label>
+          <select class="form-select" id="ponderacion-periodo" name="periodo" required>
+            <option value="">Selecciona un período...</option>
+            {% for opcion in periodos %}
+              <option value="{{ opcion.pk }}" {% if periodo.pk == opcion.pk %}selected{% endif %}>{{ opcion.nombre }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-2">
+          <button type="submit" class="btn btn-outline-danger w-100">Cargar</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  {% if cargo and periodo %}
+    <section class="card shadow-sm border-0">
+      <div class="card-body">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+          <div>
+            <h2 class="h5 fw-bold mb-1">{{ cargo.nombre }} — {{ periodo.nombre }}</h2>
+            <p class="text-secondary mb-0">La suma actual de ítems vigentes es {{ total_actual|floatformat:2 }}%.</p>
+          </div>
+          <span id="ponderacionSuma" class="badge text-bg-secondary" aria-live="polite"></span>
+        </div>
+
+        {% if periodo_cerrado %}
+          <div class="alert alert-warning mb-0">El período está cerrado; su configuración no se puede modificar.</div>
+        {% else %}
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="cargo" value="{{ cargo.pk }}">
+            <input type="hidden" name="periodo" value="{{ periodo.pk }}">
+            {{ formset.management_form }}
+            {% if formset.non_form_errors %}
+              <div class="alert alert-danger" role="alert">
+                {% for error in formset.non_form_errors %}<div>{{ error }}</div>{% endfor %}
+              </div>
+            {% endif %}
+
+            <div id="ponderacionItems" class="d-flex flex-column gap-3">
+              {% for form in formset %}
+                <article class="ponderacion-row card card-body bg-light">
+                  {% for hidden in form.hidden_fields %}{{ hidden }}{% endfor %}
+                  <div class="row g-3 align-items-end">
+                    {% for field in form.visible_fields %}
+                      <div class="{% if field.name == 'descripcion' %}col-12 col-lg-6{% elif field.name == 'activo' %}col-12 col-md-3 col-lg-2{% elif field.name == 'nombre_item' %}col-12 col-md-6 col-lg-4{% else %}col-12 col-md-3 col-lg-2{% endif %}">
+                        {% if field.name == 'activo' %}
+                          <div class="form-check">
+                            {{ field }}
+                            <label class="form-check-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                          </div>
+                        {% else %}
+                          <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                          {{ field }}
+                        {% endif %}
+                        {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                      </div>
+                    {% endfor %}
+                  </div>
+                </article>
+              {% endfor %}
+            </div>
+
+            <template id="ponderacionItemTemplate">
+              <article class="ponderacion-row card card-body bg-light">
+                {% for hidden in formset.empty_form.hidden_fields %}{{ hidden }}{% endfor %}
+                <div class="row g-3 align-items-end">
+                  {% for field in formset.empty_form.visible_fields %}
+                    <div class="{% if field.name == 'descripcion' %}col-12 col-lg-6{% elif field.name == 'activo' %}col-12 col-md-3 col-lg-2{% elif field.name == 'nombre_item' %}col-12 col-md-6 col-lg-4{% else %}col-12 col-md-3 col-lg-2{% endif %}">
+                      {% if field.name == 'activo' %}
+                        <div class="form-check">
+                          {{ field }}
+                          <label class="form-check-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                        </div>
+                      {% else %}
+                        <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                        {{ field }}
+                      {% endif %}
+                    </div>
+                  {% endfor %}
+                </div>
+              </article>
+            </template>
+
+            <div class="d-flex flex-wrap justify-content-between gap-2 mt-3">
+              <button type="button" class="btn btn-outline-secondary" id="agregarPonderacionItem">Agregar ítem</button>
+              <button type="submit" class="btn btn-danger fw-semibold">Validar y guardar conjunto (100%)</button>
+            </div>
+          </form>
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+</div>
+
+{% if formset and not periodo_cerrado %}
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const container = document.getElementById('ponderacionItems');
+    const totalForms = document.getElementById('id_items-TOTAL_FORMS');
+    const template = document.getElementById('ponderacionItemTemplate');
+    const addButton = document.getElementById('agregarPonderacionItem');
+    const sumBadge = document.getElementById('ponderacionSuma');
+
+    const actualizarSuma = () => {
+      let total = 0;
+      container.querySelectorAll('.ponderacion-row').forEach(row => {
+        const weight = row.querySelector('input[name$="-ponderador"]');
+        const active = row.querySelector('input[name$="-activo"]');
+        if (weight && active && active.checked) {
+          total += Number.parseFloat(weight.value) || 0;
+        }
+      });
+      const totalRedondeado = Math.round(total * 100) / 100;
+      sumBadge.textContent = `Suma vigente: ${totalRedondeado.toFixed(2)}%`;
+      sumBadge.className = totalRedondeado === 100
+        ? 'badge text-bg-success'
+        : 'badge text-bg-warning';
+    };
+
+    addButton.addEventListener('click', () => {
+      const index = Number.parseInt(totalForms.value, 10);
+      const html = template.innerHTML.replace(/__prefix__/g, String(index));
+      container.insertAdjacentHTML('beforeend', html);
+      totalForms.value = String(index + 1);
+      actualizarSuma();
+    });
+
+    container.addEventListener('input', actualizarSuma);
+    container.addEventListener('change', actualizarSuma);
+    actualizarSuma();
+  });
+</script>
+{% endif %}
+{% endblock %}

@@ -20,6 +20,16 @@
     {% for message in messages %}<div class="alert alert-{{ message.tags|default:'info' }} py-2">{{ message }}</div>{% endfor %}
   {% endif %}
   {% if activity_error %}<div class="alert alert-danger" role="alert">{{ activity_error }}</div>{% endif %}
+  {% if activity_field_errors %}
+    <div class="alert alert-danger" role="alert">
+      <strong>Corrige los siguientes campos:</strong>
+      <ul class="mb-0 mt-1">
+        {% for error in activity_field_errors %}
+          <li><strong>{{ error.field }}:</strong> {{ error.messages|join:", " }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
   {% if not funcionarios %}
     <div class="alert alert-warning">No hay funcionarios activos disponibles para registrar actividades.</div>
   {% elif not solicitantes %}
@@ -28,7 +38,7 @@
 
   <form method="post" action="{% url 'web_registrar_actividad_diaria' %}" enctype="multipart/form-data" class="card border-0 shadow-sm p-4">
     {% csrf_token %}
-    {% if request.user.rol == 'ADMINISTRATIVO' %}
+    {% if request.user.es_administrativo %}
       <input type="hidden" name="funcionario_id" value="{{ request.user.id }}">
     {% else %}
       <div class="mb-3">
@@ -48,11 +58,25 @@
       </div>
       <div class="col-12 col-md-8">
         <label class="form-label fw-semibold" for="itemMedicion">Ítem de medición <span class="text-danger">*</span></label>
-        <select id="itemMedicion" name="item_medicion_id" class="form-select" {% if items_funcionario %}required{% endif %}>
+        <select id="itemMedicion" name="item_medicion_id" class="form-select"
+                data-items-url="{% url 'web_funcionario_items' %}"
+                {% if items_funcionario %}required{% endif %}>
           {% for item in items_funcionario %}
             <option value="{{ item.id }}" {% if activity_form_data.item_medicion_id == item.id|stringformat:'s' %}selected{% endif %}>{{ item.nombre_item }} (Meta: {{ item.meta_cuantitativa }}, ponderador: {{ item.ponderador }}%)</option>
           {% empty %}<option value="">Atención General de Terreno</option>{% endfor %}
         </select>
+        <div id="itemsMedicionFeedback" class="form-text" aria-live="polite"></div>
+      </div>
+      <div class="col-12">
+        <label class="form-label fw-semibold" for="tipoActividad">Tipo de actividad{% if tipos_actividad %} <span class="text-danger">*</span>{% endif %}</label>
+        <select id="tipoActividad" name="tipo_actividad_id" class="form-select"
+                data-required="{% if tipos_actividad %}true{% else %}false{% endif %}">
+          <option value="">Selecciona un tipo de actividad...</option>
+          {% for tipo in tipos_actividad %}
+            <option value="{{ tipo.pk }}" {% if activity_form_data.tipo_actividad_id == tipo.pk|stringformat:'s' %}selected{% endif %}>{{ tipo.nombre }}</option>
+          {% endfor %}
+        </select>
+        {% if not tipos_actividad %}<div class="form-text">No hay tipos configurados para el área de este funcionario.</div>{% endif %}
       </div>
       <div class="col-12">
         <label class="form-label fw-semibold" for="catalogoServicio">Servicio entregado</label>
@@ -70,11 +94,18 @@
         <select id="solicitanteId" name="solicitante_id" class="form-select" required>
           <option value="">Selecciona por RUN o nombre...</option>
           {% for solicitante in solicitantes %}
-            <option value="{{ solicitante.id }}" {% if selected_requester.id == solicitante.id or activity_form_data.solicitante_id == solicitante.id|stringformat:'s' %}selected{% endif %}>
+            <option value="{{ solicitante.id }}" data-contacto-telefono="{{ solicitante.telefono|default:'' }}" {% if selected_requester.id == solicitante.id or activity_form_data.solicitante_id == solicitante.id|stringformat:'s' %}selected{% endif %}>
               {{ solicitante.run }} — {{ solicitante.nombre }} {{ solicitante.apellido_paterno }} {{ solicitante.apellido_materno }}
             </option>
           {% endfor %}
         </select>
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label fw-semibold" for="contactoTelefono">Teléfono de contacto <span class="text-danger">*</span></label>
+        <input id="contactoTelefono" name="contacto_telefono" type="tel" inputmode="tel"
+               class="form-control" maxlength="50" value="{{ contacto_telefono_inicial|default:'' }}"
+               placeholder="+56 9 1234 5678" required>
+        <div class="form-text">Se completa desde el solicitante cuando tiene un teléfono; puedes corregirlo para esta actividad.</div>
       </div>
       <div class="col-12">
         <label class="form-label fw-semibold" for="direccion">Dirección o sector <span class="text-danger">*</span></label>
@@ -152,6 +183,15 @@
 </div>
 <script>
   document.addEventListener('DOMContentLoaded', () => {
+    const solicitanteSelect = document.getElementById('solicitanteId');
+    const contactoTelefonoInput = document.getElementById('contactoTelefono');
+    solicitanteSelect.addEventListener('change', () => {
+      const selectedOption = solicitanteSelect.selectedOptions[0];
+      contactoTelefonoInput.value = selectedOption
+        ? selectedOption.dataset.contactoTelefono || ''
+        : '';
+    });
+
     const checkbox = document.getElementById('crearCompromiso');
     const fields = [
       document.getElementById('compromisoFecha'),
@@ -167,6 +207,106 @@
     };
     checkbox.addEventListener('change', updateCommitmentFields);
     updateCommitmentFields();
+
+    const funcionarioSelect = document.getElementById('funcionarioId');
+    const itemSelect = document.getElementById('itemMedicion');
+    const tipoActividadSelect = document.getElementById('tipoActividad');
+    const feedback = document.getElementById('itemsMedicionFeedback');
+    const form = itemSelect.closest('form');
+    const submitButton = form.querySelector('button[type="submit"]');
+    const submitInitiallyDisabled = submitButton.disabled;
+    let itemsRequestId = 0;
+
+    async function cargarItemsMedicion(funcionarioId) {
+      const requestId = ++itemsRequestId;
+      const selectedItemId = itemSelect.value;
+      const selectedTipoActividadId = tipoActividadSelect.value;
+      if (!funcionarioId) {
+        itemSelect.replaceChildren(new Option('Selecciona un funcionario primero...', ''));
+        itemSelect.required = false;
+        itemSelect.disabled = false;
+        tipoActividadSelect.replaceChildren(
+          new Option('Selecciona un funcionario primero...', '')
+        );
+        tipoActividadSelect.required = false;
+        tipoActividadSelect.disabled = false;
+        feedback.textContent = '';
+        submitButton.disabled = submitInitiallyDisabled;
+        return;
+      }
+
+      itemSelect.replaceChildren(new Option('Cargando ítems...', ''));
+      itemSelect.disabled = true;
+      tipoActividadSelect.replaceChildren(
+        new Option('Cargando tipos de actividad...', '')
+      );
+      tipoActividadSelect.disabled = true;
+      submitButton.disabled = true;
+      feedback.textContent = '';
+
+      try {
+        const url = new URL(itemSelect.dataset.itemsUrl, window.location.origin);
+        url.searchParams.set('funcionario_id', funcionarioId);
+        const response = await fetch(url, {
+          headers: { Accept: 'application/json' },
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'No se pudieron cargar los ítems.');
+        }
+        if (requestId !== itemsRequestId) return;
+
+        const placeholder = data.items.length
+          ? 'Selecciona un ítem de medición...'
+          : 'Atención General de Terreno';
+        itemSelect.replaceChildren(new Option(placeholder, ''));
+        data.items.forEach(item => {
+          const option = new Option(item.label, String(item.id));
+          itemSelect.add(option);
+        });
+        itemSelect.required = data.required;
+        itemSelect.value = data.items.some(
+          item => String(item.id) === selectedItemId
+        ) ? selectedItemId : '';
+        itemSelect.disabled = false;
+        tipoActividadSelect.replaceChildren(
+          new Option('Selecciona un tipo de actividad...', '')
+        );
+        data.tipos_actividad.forEach(tipo => {
+          tipoActividadSelect.add(new Option(tipo.label, String(tipo.id)));
+        });
+        tipoActividadSelect.required = data.tipo_actividad_required;
+        tipoActividadSelect.dataset.required = String(
+          data.tipo_actividad_required
+        );
+        tipoActividadSelect.value = data.tipos_actividad.some(
+          tipo => String(tipo.id) === selectedTipoActividadId
+        ) ? selectedTipoActividadId : '';
+        tipoActividadSelect.disabled = false;
+        submitButton.disabled = submitInitiallyDisabled;
+        feedback.textContent = data.items.length
+          ? 'Ítems vigentes cargados para el cargo y período del funcionario.'
+          : 'Este funcionario no tiene ítems vigentes; se registrará como atención general.';
+      } catch (error) {
+        if (requestId !== itemsRequestId) return;
+        console.error('Error al cargar los ítems de medición:', error);
+        itemSelect.replaceChildren(new Option('Error al cargar los ítems', ''));
+        itemSelect.required = true;
+        itemSelect.disabled = true;
+        tipoActividadSelect.replaceChildren(
+          new Option('Error al cargar tipos de actividad', '')
+        );
+        tipoActividadSelect.required = true;
+        tipoActividadSelect.disabled = true;
+        feedback.textContent = 'No fue posible cargar los ítems. Vuelve a seleccionar el funcionario para reintentar.';
+      }
+    }
+
+    if (funcionarioSelect) {
+      funcionarioSelect.addEventListener('change', () => {
+        cargarItemsMedicion(funcionarioSelect.value);
+      });
+    }
   });
 
   let activityMap;

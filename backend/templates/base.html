@@ -448,10 +448,10 @@
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_dashboard' %}active{% endif %}" href="{% url 'web_dashboard' %}">
               <i class="bi bi-speedometer2 me-1"></i>
-              {% if request.user.es_administrativo %}Panel Administrativo{% elif request.user.es_delegado %}Panel Delegado{% elif request.user.es_supervisor %}Panel Supervisor{% else %}Panel Administrador{% endif %}
+              {% if request.user.es_administrativo %}Panel Administrativo{% elif request.user.esta_limitado_a_delegacion %}Panel Delegado{% elif request.user.es_supervisor %}Panel Supervisor{% else %}Panel Administrador{% endif %}
             </a>
           </li>
-          {% if request.user.rol == 'ADMINISTRADOR' or request.user.is_superuser or request.user.es_supervisor %}
+          {% if request.user.es_admin or request.user.es_supervisor %}
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle {% if 'mantenedor_' in request.resolver_match.url_name %}active{% endif %}"
                href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -467,6 +467,10 @@
               <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_funcionarios_list' %}active{% endif %}" href="{% url 'mantenedor_funcionarios_list' %}"><i class="bi bi-people me-2"></i>Funcionarios</a></li>
               <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_roles_list' %}active{% endif %}" href="{% url 'mantenedor_roles_list' %}"><i class="bi bi-shield-lock me-2"></i>Roles</a></li>
               <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_areas_list' %}active{% endif %}" href="{% url 'mantenedor_areas_list' %}"><i class="bi bi-diagram-3 me-2"></i>Áreas</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if 'tipos_actividad' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'mantenedor_tipos_actividad_list' %}"><i class="bi bi-list-task me-2"></i>Tipos de actividad</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if 'tipos_atencion' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'mantenedor_tipos_atencion_list' %}"><i class="bi bi-heart-pulse me-2"></i>Tipos de atención social</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if 'subatenciones' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'mantenedor_subatenciones_list' %}"><i class="bi bi-diagram-2 me-2"></i>Subatenciones sociales</a></li>
             </ul>
           </li>
           {% endif %}
@@ -489,12 +493,14 @@
               <i class="bi bi-camera-fill me-1"></i> Evidencias de Terreno
             </a>
           </li>
-          {% if request.user.rol == 'ADMINISTRADOR' or request.user.rol == 'SUPERVISOR' %}
+          {% if request.user.es_admin or request.user.es_supervisor or request.user.puede_aprobar_evidencias %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_verificacion' %}active{% endif %}" href="{% url 'web_verificacion' %}">
               <i class="bi bi-check2-circle me-1"></i> Validar Evidencias
             </a>
           </li>
+          {% endif %}
+          {% if request.user.es_admin or request.user.es_supervisor %}
           <li class="nav-item">
             <a class="nav-link {% if 'ajuste_incentivo' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'web_ajustes_incentivo' %}">
               <i class="bi bi-award me-1"></i> Incentivos y Penalizaciones
@@ -511,7 +517,7 @@
               <i class="bi bi-bell me-1"></i> Alertas operativas
             </a>
           </li>
-          {% if request.user.rol == 'ADMINISTRADOR' or request.user.is_superuser or request.user.es_supervisor %}
+          {% if request.user.es_admin or request.user.es_supervisor %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_reportes' %}active{% endif %}" href="{% url 'web_reportes' %}">
               <i class="bi bi-file-earmark-bar-graph me-1"></i> Informes
@@ -536,7 +542,7 @@
             </a>
           </li>
           {% endif %}
-          {% if request.user.is_authenticated and request.user.rol == 'ADMINISTRADOR' or request.user.es_supervisor %}
+          {% if request.user.es_admin or request.user.es_supervisor %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_auditoria' %}active{% endif %}" href="{% url 'web_auditoria' %}">
               <i class="bi bi-shield-check me-1"></i> Auditoría

@@ -51,6 +51,27 @@ def generar_codigo_cargo():
     return f'CAR-{aleatorio}'
 
 
+PERMISOS_ROL = (
+    ('ACCESO_ADMINISTRADOR', 'Acceso de administrador'),
+    ('GESTIONAR_COORDINACION', 'Gestionar coordinación'),
+    ('GESTIONAR_DELEGACION', 'Gestionar delegación'),
+    ('CREAR_META', 'Crear metas'),
+    ('APROBAR_EVIDENCIA', 'Aprobar evidencias'),
+    ('REGISTRAR_ACTIVIDAD', 'Registrar actividades'),
+    ('VER_DASHBOARD', 'Ver paneles'),
+)
+
+PERMISOS_PREDETERMINADOS_POR_ROL = {
+    'SUPERVISOR': (
+        'CREAR_META',
+        'APROBAR_EVIDENCIA',
+        'VER_DASHBOARD',
+        'GESTIONAR_COORDINACION',
+    ),
+    'ADMINISTRATIVO': ('REGISTRAR_ACTIVIDAD', 'VER_DASHBOARD'),
+}
+
+
 # =============================================================================
 # 7. CLASE ROL
 # =============================================================================
@@ -61,6 +82,7 @@ class Rol(models.Model):
     nombre_rol = models.CharField(max_length=50, unique=True, verbose_name="Nombre del Rol")
     descripcion = models.TextField(blank=True, null=True, verbose_name="Descripción de Permisos")
     estado = models.BooleanField(default=True, verbose_name="Estado Activo")
+    permisos = models.JSONField(default=list, blank=True, verbose_name="Permisos")
 
     class Meta:
         db_table = 'Roles'
@@ -69,6 +91,15 @@ class Rol(models.Model):
 
     def __str__(self):
         return self.nombre_rol
+
+    @property
+    def permisos_efectivos(self):
+        if self.nombre_rol.upper() == 'ADMINISTRADOR':
+            return tuple(codigo for codigo, _ in PERMISOS_ROL)
+        return tuple(sorted(
+            set(PERMISOS_PREDETERMINADOS_POR_ROL.get(self.nombre_rol.upper(), ()))
+            | set(self.permisos or ())
+        ))
 
     @property
     def nombre(self):
@@ -80,8 +111,8 @@ class Rol(models.Model):
 
     def obtenerCantidadUsuarios(self) -> int:
         """Retorna la cantidad total de funcionarios activos asociados a este rol."""
-        if hasattr(self, 'usuarios_rel'):
-            return self.usuarios_rel.filter(is_active=True).count()
+        if hasattr(self, 'usuarios'):
+            return self.usuarios.filter(is_active=True).distinct().count()
         return Usuario.objects.filter(
             rol=self.nombre_rol.upper(),
             is_active=True,
@@ -94,11 +125,10 @@ class Rol(models.Model):
         nombre_rol = self.nombre_rol.upper()
         if nombre_rol == "ADMINISTRADOR":
             return True
-        permisos_por_rol = {
-            "SUPERVISOR": ["CREAR_META", "APROBAR_EVIDENCIA", "VER_DASHBOARD", "GESTIONAR_COORDINACION"],
-            "ADMINISTRATIVO": ["REGISTRAR_ACTIVIDAD", "VER_DASHBOARD"],
-        }
-        permisos_asignados = permisos_por_rol.get(nombre_rol, [])
+        permisos_asignados = set(
+            PERMISOS_PREDETERMINADOS_POR_ROL.get(nombre_rol, ())
+        )
+        permisos_asignados.update(self.permisos or ())
         return codigo_permiso.upper() in permisos_asignados
 
 
@@ -332,7 +362,12 @@ class Usuario(AbstractUser):
         verbose_name="Perfil Delegado",
         help_text="Limita el acceso del Supervisor a los datos de su delegación.",
     )
-    rol_entidad = models.ForeignKey('Rol', on_delete=models.SET_NULL, null=True, blank=True, related_name='usuarios_rel')
+    roles = models.ManyToManyField(
+        'Rol',
+        blank=True,
+        related_name='usuarios',
+        verbose_name='Roles adicionales',
+    )
     area_entidad = models.ForeignKey(Area, on_delete=models.SET_NULL, null=True, blank=True, related_name='usuarios_area')
     cargo = models.ForeignKey(Cargo, on_delete=models.SET_NULL, null=True, blank=True, related_name='usuarios')
     delegacion = models.ForeignKey(Delegacion, on_delete=models.SET_NULL, null=True, blank=True, related_name='usuarios')
@@ -410,25 +445,59 @@ class Usuario(AbstractUser):
     def apellidoPaterno(self):
         return self.last_name
 
+    def tiene_permiso(self, codigo_permiso: str) -> bool:
+        """Comprueba permisos concedidos por el rol principal o cualquier rol adicional."""
+        codigo_permiso = codigo_permiso.upper()
+        if self.is_superuser or self.rol == self.Rol.ADMINISTRADOR:
+            return True
+        if codigo_permiso in PERMISOS_PREDETERMINADOS_POR_ROL.get(self.rol, ()):
+            return True
+        if self.pk:
+            return any(
+                rol.tienePermiso(codigo_permiso)
+                for rol in self.roles.filter(estado=True)
+            )
+        return False
+
     def es_admin(self) -> bool:
         """Verifica si el funcionario cuenta con privilegios administrativos."""
-        if self.rol_entidad:
-            return self.rol_entidad.tienePermiso("ACCESO_ADMINISTRADOR")
-        return self.rol == self.Rol.ADMINISTRADOR or self.is_superuser
+        return self.tiene_permiso('ACCESO_ADMINISTRADOR')
 
     @property
     def es_supervisor(self) -> bool:
-        return self.rol == self.Rol.SUPERVISOR and not self.es_delegado
+        return (
+            self.tiene_permiso('GESTIONAR_COORDINACION')
+            and not self.es_delegado
+        )
 
     @property
     def es_administrativo(self) -> bool:
-        return self.rol == self.Rol.ADMINISTRATIVO
+        return (
+            self.rol == self.Rol.ADMINISTRATIVO
+            and not self.es_admin()
+            and not self.es_supervisor
+            and not self.esta_limitado_a_delegacion
+        )
 
     def es_coordinador_o_delegado(self) -> bool:
         """Determina si el funcionario tiene perfil de supervisión territorial."""
-        if self.rol_entidad:
-            return (self.rol_entidad.tienePermiso("GESTIONAR_COORDINACION") or self.rol_entidad.tienePermiso("GESTIONAR_DELEGACION"))
-        return self.rol == self.Rol.SUPERVISOR
+        return (
+            self.es_delegado
+            or self.tiene_permiso('GESTIONAR_COORDINACION')
+            or self.tiene_permiso('GESTIONAR_DELEGACION')
+        )
+
+    @property
+    def esta_limitado_a_delegacion(self) -> bool:
+        return self.es_delegado or (
+            self.tiene_permiso('GESTIONAR_DELEGACION')
+            and not self.tiene_permiso('GESTIONAR_COORDINACION')
+            and not self.es_admin()
+        )
+
+    @property
+    def puede_aprobar_evidencias(self) -> bool:
+        return self.tiene_permiso('APROBAR_EVIDENCIA')
 
     def puede_aprobar_ajustes(self) -> bool:
         """Consulta si el rol asociado al funcionario permite aprobar ajustes de incentivo."""
@@ -699,10 +768,6 @@ class PeriodoMedicion(models.Model):
     def clean(self):
         if self.fecha_termino and self.fecha_inicio and self.fecha_termino < self.fecha_inicio:
             raise ValidationError("La fecha de término no puede ser anterior a la fecha de inicio.")
-        if self.umbral_ambar < 0 or self.umbral_verde < 0:
-            raise ValidationError("Los umbrales de cumplimiento no pueden ser negativos.")
-        if self.umbral_ambar >= self.umbral_verde:
-            raise ValidationError("El umbral ámbar debe ser menor que el umbral verde.")
         if self.umbral_semaforo_ambar < 0 or self.umbral_semaforo_verde < 0:
             raise ValidationError("Los umbrales del semáforo no pueden ser negativos.")
         if self.umbral_semaforo_ambar >= self.umbral_semaforo_verde:
@@ -711,6 +776,8 @@ class PeriodoMedicion(models.Model):
             raise ValidationError("El tope debe ser positivo y el umbral colectivo no puede ser negativo.")
 
     def save(self, *args, **kwargs):
+        self.umbral_verde = self.umbral_semaforo_verde
+        self.umbral_ambar = self.umbral_semaforo_ambar
         if self.pk and not self._state.adding:
             original = type(self).objects.filter(pk=self.pk).first()
             if original and original.cerrado:
@@ -721,8 +788,6 @@ class PeriodoMedicion(models.Model):
                     'fecha_inicio',
                     'fecha_termino',
                     'dias_computables',
-                    'umbral_verde',
-                    'umbral_ambar',
                     'umbral_semaforo_verde',
                     'umbral_semaforo_ambar',
                     'umbral_colectivo',
@@ -741,6 +806,12 @@ class PeriodoMedicion(models.Model):
             self.anio = self.fecha_inicio.year
             self.trimestre = (self.fecha_inicio.month - 1) // 3 + 1
         self.clean()
+        update_fields = kwargs.get('update_fields')
+        if update_fields:
+            kwargs['update_fields'] = set(update_fields) | {
+                'umbral_verde',
+                'umbral_ambar',
+            }
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -777,11 +848,11 @@ class PeriodoMedicion(models.Model):
 
     @property
     def umbralVerde(self):
-        return self.umbral_verde
+        return self.umbral_semaforo_verde
 
     @property
     def umbralAmbar(self):
-        return self.umbral_ambar
+        return self.umbral_semaforo_ambar
 
     @property
     def topeCumplimiento(self):
@@ -830,14 +901,14 @@ class PeriodoMedicion(models.Model):
     def evaluar_cumplimiento(self, porcentaje_avance: float) -> str:
         """RN-008 / RF-027: Evalúa el porcentaje respecto al esperado y asigna el color."""
         meta_esperada = self.calcular_meta_esperada_al_dia()
-        if meta_esperada > 0:
-            porcentaje_evaluado = (porcentaje_avance / meta_esperada) * 100.0
-        else:
-            porcentaje_evaluado = porcentaje_avance
+        if meta_esperada <= 0:
+            return 'VERDE' if porcentaje_avance >= 0 else 'ROJO'
 
-        if porcentaje_avance >= self.umbral_verde or porcentaje_evaluado >= self.umbral_verde:
+        porcentaje_evaluado = (porcentaje_avance / meta_esperada) * 100.0
+
+        if porcentaje_evaluado >= self.umbral_semaforo_verde:
             return 'VERDE'
-        elif porcentaje_avance >= self.umbral_ambar or porcentaje_evaluado >= self.umbral_ambar:
+        elif porcentaje_evaluado >= self.umbral_semaforo_ambar:
             return 'AMBAR'
         else:
             return 'ROJO'
@@ -893,6 +964,58 @@ class CatalogoServicio(models.Model):
         return f"[{self.codigo}] {self.nombre}"
 
 
+class TipoActividad(models.Model):
+    area = models.ForeignKey(Area, on_delete=models.PROTECT, related_name='tipos_actividad')
+    nombre = models.CharField(max_length=100)
+    descripcion = models.TextField(blank=True, default='')
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['area__nombre', 'nombre']
+        unique_together = ('area', 'nombre')
+        verbose_name = 'Tipo de actividad'
+        verbose_name_plural = 'Tipos de actividad'
+
+    def __str__(self):
+        return f'{self.nombre} ({self.area.nombre})'
+
+
+class TipoAtencionSocial(models.Model):
+    area = models.ForeignKey(Area, on_delete=models.PROTECT, related_name='tipos_atencion_social')
+    nombre = models.CharField(max_length=100)
+    descripcion = models.TextField(blank=True, default='')
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['area__nombre', 'nombre']
+        unique_together = ('area', 'nombre')
+        verbose_name = 'Tipo de atención social'
+        verbose_name_plural = 'Tipos de atención social'
+
+    def __str__(self):
+        return f'{self.nombre} ({self.area.nombre})'
+
+
+class SubatencionSocial(models.Model):
+    tipo_atencion = models.ForeignKey(
+        TipoAtencionSocial,
+        on_delete=models.PROTECT,
+        related_name='subatenciones',
+    )
+    nombre = models.CharField(max_length=100)
+    descripcion = models.TextField(blank=True, default='')
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['tipo_atencion__area__nombre', 'tipo_atencion__nombre', 'nombre']
+        unique_together = ('tipo_atencion', 'nombre')
+        verbose_name = 'Subatención social'
+        verbose_name_plural = 'Subatenciones sociales'
+
+    def __str__(self):
+        return f'{self.nombre} ({self.tipo_atencion})'
+
+
 # =============================================================================
 # 11. CLASE ITEM / ITEMMEDICION
 # =============================================================================
@@ -933,7 +1056,12 @@ class ItemMedicion(models.Model):
             raise ValidationError("La meta del ítem debe ser estrictamente mayor que cero.")
         if not (0 <= self.ponderador <= 100):
             raise ValidationError("El ponderador debe estar entre 0% y 100%.")
-        if self.activo and self.cargo_id and self.periodo_id:
+        if (
+            self.activo
+            and self.cargo_id
+            and self.periodo_id
+            and getattr(self, '_validar_suma_ponderador', True)
+        ):
             ponderadores_existentes = ItemMedicion.objects.filter(
                 cargo_id=self.cargo_id,
                 periodo_id=self.periodo_id,
@@ -972,6 +1100,50 @@ class ItemMedicion(models.Model):
     @estado.setter
     def estado(self, val):
         self.activo = val
+
+
+class VersionConfiguracionPeriodoQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError('Las versiones de configuración son inmutables.')
+
+    def delete(self):
+        raise ValidationError('Las versiones de configuración no se pueden eliminar.')
+
+
+class VersionConfiguracionPeriodo(models.Model):
+    periodo = models.ForeignKey(
+        PeriodoMedicion,
+        on_delete=models.PROTECT,
+        related_name='versiones_configuracion',
+    )
+    version = models.CharField(max_length=50)
+    configuracion = models.JSONField()
+    creado_por = models.ForeignKey(
+        'Usuario',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='versiones_configuracion_periodo',
+    )
+    creado_en = models.DateTimeField(auto_now_add=True)
+    objects = VersionConfiguracionPeriodoQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['periodo_id', 'creado_en']
+        constraints = [
+            models.UniqueConstraint(
+                fields=('periodo', 'version'),
+                name='uniq_period_config_version',
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk and type(self).objects.filter(pk=self.pk).exists():
+            raise ValidationError('Las versiones de configuración son inmutables.')
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Las versiones de configuración no se pueden eliminar.')
 
     def obtenerCantidadMetas(self) -> int:
         return self.metas_rel.filter(vigencia=True).count() if hasattr(self, 'metas_rel') else 0
@@ -1029,6 +1201,15 @@ class Actividad(models.Model):
     catalogo_servicio = models.ForeignKey(CatalogoServicio, on_delete=models.SET_NULL, null=True, blank=True, related_name='actividades')
     catalogo_servicio_nombre = models.CharField(max_length=150, blank=True, default='')
     catalogo_servicio_area = models.CharField(max_length=100, blank=True, default='')
+    tipo_actividad = models.ForeignKey(
+        TipoActividad,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='actividades',
+    )
+    tipo_actividad_nombre = models.CharField(max_length=100, blank=True, default='')
+    tipo_actividad_area = models.CharField(max_length=100, blank=True, default='')
     solicitante = models.ForeignKey(Solicitante, on_delete=models.SET_NULL, null=True, blank=True, related_name='actividades', verbose_name="Solicitante / Beneficiario")
 
     solicitud_problema = models.TextField(blank=True, default='', verbose_name="Solicitud o Problema Detectado")
@@ -1066,6 +1247,19 @@ class Actividad(models.Model):
                     self.catalogo_servicio_nombre = servicio.nombre
                 if not self.catalogo_servicio_area:
                     self.catalogo_servicio_area = servicio.area or ''
+        if self._state.adding and self.tipo_actividad_id:
+            if (
+                self.funcionario.area_entidad_id
+                and self.tipo_actividad.area_id
+                != self.funcionario.area_entidad_id
+            ):
+                raise ValidationError({
+                    'tipo_actividad': (
+                        'El tipo de actividad debe pertenecer al área del funcionario.'
+                    )
+                })
+            self.tipo_actividad_nombre = self.tipo_actividad.nombre
+            self.tipo_actividad_area = self.tipo_actividad.area.nombre
         super().save(*args, **kwargs)
 
     @property
@@ -1891,6 +2085,8 @@ class CasoSocial(models.Model):
         detalle: str,
         resultado: str,
         fecha_gestion,
+        tipo_atencion_catalogo=None,
+        subatencion_catalogo=None,
     ):
         """RN-012: Registra una de las hasta 3 gestiones para este caso social."""
         with transaction.atomic():
@@ -1916,7 +2112,13 @@ class CasoSocial(models.Model):
                 caso=caso,
                 etapa=etapa_actual,
                 funcionario=funcionario,
-                tipo_atencion=tipo_atencion,
+                tipo_atencion=(
+                    tipo_atencion_catalogo.nombre
+                    if tipo_atencion_catalogo
+                    else tipo_atencion
+                ),
+                tipo_atencion_catalogo=tipo_atencion_catalogo,
+                subatencion_catalogo=subatencion_catalogo,
                 detalle=detalle,
                 resultado=resultado,
                 **fecha_por_etapa[etapa_actual],
@@ -1952,6 +2154,22 @@ class AtencionSocial(models.Model):
     fecha_visita = models.DateField(null=True, blank=True)
     fecha_entrega_beneficio = models.DateField(null=True, blank=True)
     tipo_atencion = models.CharField(max_length=100)
+    tipo_atencion_catalogo = models.ForeignKey(
+        TipoAtencionSocial,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='atenciones',
+    )
+    tipo_atencion_area = models.CharField(max_length=100, blank=True, default='')
+    subatencion = models.CharField(max_length=100, blank=True, default='')
+    subatencion_catalogo = models.ForeignKey(
+        SubatencionSocial,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='atenciones',
+    )
     detalle = models.TextField()
     resultado = models.CharField(max_length=150)
     funcionario = models.ForeignKey(Usuario, on_delete=models.CASCADE)
@@ -1971,6 +2189,34 @@ class AtencionSocial(models.Model):
             raise ValidationError({'caso': 'Selecciona un caso social válido.'})
         if not self.funcionario_id:
             raise ValidationError({'funcionario': 'Selecciona un funcionario válido.'})
+        if (
+            self._state.adding
+            and self.tipo_atencion_catalogo_id
+            and self.funcionario.area_entidad_id
+            and self.tipo_atencion_catalogo.area_id
+            != self.funcionario.area_entidad_id
+        ):
+            raise ValidationError({
+                'tipo_atencion_catalogo': (
+                    'El tipo de atención debe pertenecer al área del funcionario.'
+                )
+            })
+        if self.subatencion_catalogo_id and not self.tipo_atencion_catalogo_id:
+            raise ValidationError({
+                'tipo_atencion_catalogo': (
+                    'Selecciona el tipo de atención asociado a la subatención.'
+                )
+            })
+        if (
+            self.subatencion_catalogo_id
+            and self.subatencion_catalogo.tipo_atencion_id
+            != self.tipo_atencion_catalogo_id
+        ):
+            raise ValidationError({
+                'subatencion_catalogo': (
+                    'La subatención debe pertenecer al tipo de atención seleccionado.'
+                )
+            })
         fecha_por_etapa = {
             1: ('fecha_visita_programada', 'La fecha programada de visita'),
             2: ('fecha_visita', 'La fecha de visita realizada'),
@@ -1997,6 +2243,11 @@ class AtencionSocial(models.Model):
             })
 
     def save(self, *args, **kwargs):
+        if self._state.adding and self.tipo_atencion_catalogo_id:
+            self.tipo_atencion = self.tipo_atencion_catalogo.nombre
+            self.tipo_atencion_area = self.tipo_atencion_catalogo.area.nombre
+        if self._state.adding and self.subatencion_catalogo_id:
+            self.subatencion = self.subatencion_catalogo.nombre
         self.full_clean()
         super().save(*args, **kwargs)
 

@@ -1,8 +1,11 @@
+from decimal import Decimal
+
 from django import forms
 from django.core.exceptions import ValidationError
 from django.contrib.auth.password_validation import validate_password
 from django.db.models import Q
 from django.utils import timezone
+from django.forms import modelformset_factory
 
 from sgr_app.models import (
     Actividad,
@@ -16,8 +19,12 @@ from sgr_app.models import (
     Evidencia,
     ItemMedicion,
     PeriodoMedicion,
+    PERMISOS_ROL,
     Rol,
     Solicitante,
+    SubatencionSocial,
+    TipoActividad,
+    TipoAtencionSocial,
     Usuario,
 )
 from sgr_app.validators import (
@@ -176,7 +183,7 @@ class CompromisoAgendaForm(forms.ModelForm):
                 )
             else:
                 actividades = actividades.filter(funcionario=user)
-        elif user.es_delegado:
+        elif user.esta_limitado_a_delegacion:
             if self.instance.pk:
                 actividades = actividades.filter(
                     Q(delegacion_id=user.delegacion_id)
@@ -230,7 +237,7 @@ class CompromisoAgendaForm(forms.ModelForm):
                 activo=True,
             )
             self.fields['responsable'].queryset = Usuario.objects.filter(pk=user.pk)
-        elif user.es_delegado:
+        elif user.esta_limitado_a_delegacion:
             self.fields['delegacion'].queryset = Delegacion.objects.filter(
                 pk=user.delegacion_id,
                 activo=True,
@@ -268,7 +275,7 @@ class CompromisoAgendaForm(forms.ModelForm):
                 'responsable',
                 'El responsable debe pertenecer a la delegación seleccionada.',
             )
-        if self.user.es_delegado and delegation and delegation.pk != self.user.delegacion_id:
+        if self.user.esta_limitado_a_delegacion and delegation and delegation.pk != self.user.delegacion_id:
             self.add_error('delegacion', 'Solo puedes gestionar compromisos de tu delegación.')
         if self.user.es_administrativo and responsible and responsible.pk != self.user.pk:
             self.add_error('responsable', 'Solo puedes asignarte compromisos a ti mismo.')
@@ -461,7 +468,7 @@ class CasoSocialForm(forms.ModelForm):
         if not self.instance.pk and not self.is_bound:
             self.initial.setdefault('fecha_apertura', timezone.localdate())
         self.fields['delegacion'].queryset = Delegacion.objects.filter(activo=True)
-        if user.es_delegado:
+        if user.esta_limitado_a_delegacion:
             self.fields['delegacion'].queryset = self.fields['delegacion'].queryset.filter(
                 pk=user.delegacion_id,
             )
@@ -473,7 +480,15 @@ class CasoSocialForm(forms.ModelForm):
 
 
 class AtencionSocialForm(forms.Form):
-    tipo_atencion = forms.CharField(max_length=100, label='Tipo de atención')
+    tipo_atencion_catalogo_id = forms.ModelChoiceField(
+        queryset=TipoAtencionSocial.objects.none(),
+        label='Tipo de atención',
+    )
+    subatencion_catalogo_id = forms.ModelChoiceField(
+        queryset=SubatencionSocial.objects.none(),
+        required=False,
+        label='Subatención',
+    )
     detalle = forms.CharField(
         label='Detalle',
         widget=forms.Textarea(attrs={'rows': 2}),
@@ -485,9 +500,33 @@ class AtencionSocialForm(forms.Form):
         widget=forms.DateInput(attrs={'type': 'date'}),
     )
 
-    def __init__(self, *args, etapa, **kwargs):
+    def __init__(self, *args, etapa, area_id=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.etapa = etapa
+        tipos_atencion = TipoAtencionSocial.objects.filter(
+            activo=True,
+            area__estado=True,
+        )
+        if area_id:
+            tipos_atencion = tipos_atencion.filter(area_id=area_id)
+        tipos_atencion = tipos_atencion.order_by('nombre')
+        self.fields['tipo_atencion_catalogo_id'].queryset = tipos_atencion
+
+        selected_type_id = self.data.get(
+            'tipo_atencion_catalogo_id',
+            self.initial.get('tipo_atencion_catalogo_id'),
+        )
+        subatenciones = SubatencionSocial.objects.filter(
+            activo=True,
+            tipo_atencion__in=tipos_atencion,
+        )
+        if selected_type_id and str(selected_type_id).isdecimal():
+            subatenciones = subatenciones.filter(
+                tipo_atencion_id=int(selected_type_id)
+            )
+        else:
+            subatenciones = subatenciones.none()
+        self.fields['subatencion_catalogo_id'].queryset = subatenciones.order_by('nombre')
         etiquetas_fecha = {
             1: 'Fecha programada de visita',
             2: 'Fecha de visita realizada',
@@ -507,6 +546,23 @@ class AtencionSocialForm(forms.Form):
             )
         for field in self.fields.values():
             field.widget.attrs.setdefault('class', 'form-control')
+
+    def clean(self):
+        cleaned_data = super().clean()
+        tipo_atencion = cleaned_data.get('tipo_atencion_catalogo_id')
+        subatencion = cleaned_data.get('subatencion_catalogo_id')
+        if tipo_atencion and subatencion:
+            if subatencion.tipo_atencion_id != tipo_atencion.pk:
+                self.add_error(
+                    'subatencion_catalogo_id',
+                    'Selecciona una subatención del tipo de atención elegido.',
+                )
+        elif tipo_atencion and tipo_atencion.subatenciones.filter(activo=True).exists():
+            self.add_error(
+                'subatencion_catalogo_id',
+                'Selecciona una subatención para el tipo de atención elegido.',
+            )
+        return cleaned_data
 
     def clean_fecha_gestion(self):
         fecha_gestion = self.cleaned_data['fecha_gestion']
@@ -687,12 +743,24 @@ class CargoForm(MantenedorModelForm):
         self.fields['area'].widget.attrs['class'] = 'form-select'
 
 
-class MantenedorItemForm(MantenedorModelForm):
+class ItemPonderacionForm(forms.ModelForm):
+    ponderador = forms.DecimalField(
+        label='Ponderador (%)',
+        min_value=0,
+        max_value=100,
+        max_digits=5,
+        decimal_places=2,
+        widget=forms.NumberInput(attrs={
+            'min': '0',
+            'max': '100',
+            'step': '0.01',
+            'class': 'form-control',
+        }),
+    )
+
     class Meta:
         model = ItemMedicion
         fields = (
-            'cargo',
-            'periodo',
             'nombre_item',
             'descripcion',
             'tipo_unidad',
@@ -705,43 +773,61 @@ class MantenedorItemForm(MantenedorModelForm):
             'nombre_item': 'Nombre',
             'tipo_unidad': 'Tipo de unidad',
             'meta_cuantitativa': 'Meta cuantitativa',
-            'ponderador': 'Ponderador (%)',
             'unidad_medida': 'Unidad de medida',
-            'activo': 'Activo',
+            'activo': 'Vigente',
         }
         widgets = {
-            'descripcion': forms.Textarea(attrs={'rows': 3}),
-            'cargo': forms.Select(attrs={'class': 'form-select'}),
-            'periodo': forms.Select(attrs={'class': 'form-select'}),
+            'descripcion': forms.Textarea(attrs={'rows': 2, 'class': 'form-control'}),
             'tipo_unidad': forms.Select(attrs={'class': 'form-select'}),
+            'meta_cuantitativa': forms.NumberInput(attrs={
+                'min': '0.01',
+                'step': '0.01',
+                'class': 'form-control',
+            }),
+            'unidad_medida': forms.TextInput(attrs={'class': 'form-control'}),
             'activo': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        cargos = Cargo.objects.filter(activo=True).order_by('nombre')
-        periodos = PeriodoMedicion.objects.filter(estado=True).order_by('-fecha_inicio')
-
-        if self.instance.pk:
-            if self.instance.cargo_id:
-                cargos = (Cargo.objects.filter(pk=self.instance.cargo_id) | cargos).distinct()
-            if self.instance.periodo_id:
-                periodos = (
-                    PeriodoMedicion.objects.filter(pk=self.instance.periodo_id) | periodos
-                ).distinct()
-
-        self.fields['cargo'].queryset = cargos
-        self.fields['periodo'].queryset = periodos
-
-    def clean(self):
-        cleaned_data = super().clean()
-        periodo = cleaned_data.get('periodo')
-        if periodo and periodo.cerrado:
-            self.add_error(
-                'periodo',
-                'No se pueden crear ni modificar ítems de un período cerrado.',
+        for field in self.fields.values():
+            field.widget.attrs.setdefault(
+                'class',
+                'form-select' if isinstance(field.widget, forms.Select) else 'form-control',
             )
-        return cleaned_data
+
+    def _post_clean(self):
+        self.instance._validar_suma_ponderador = False
+        super()._post_clean()
+
+
+class BaseItemPonderacionFormSet(forms.BaseModelFormSet):
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+
+        ponderador_total = sum(
+            (
+                Decimal(str(form.cleaned_data['ponderador']))
+                for form in self.forms
+                if form.cleaned_data and form.cleaned_data.get('activo')
+            ),
+            Decimal('0'),
+        )
+        if ponderador_total != Decimal('100'):
+            raise ValidationError(
+                'La suma de los ponderadores vigentes debe ser exactamente 100%. '
+                f'La suma ingresada es {ponderador_total:.2f}%.'
+            )
+
+
+ItemPonderacionFormSet = modelformset_factory(
+    ItemMedicion,
+    form=ItemPonderacionForm,
+    formset=BaseItemPonderacionFormSet,
+    extra=1,
+)
 
 
 class MantenedorPeriodoForm(MantenedorModelForm):
@@ -754,8 +840,6 @@ class MantenedorPeriodoForm(MantenedorModelForm):
             'fecha_inicio',
             'fecha_termino',
             'dias_computables',
-            'umbral_verde',
-            'umbral_ambar',
             'umbral_semaforo_verde',
             'umbral_semaforo_ambar',
             'umbral_colectivo',
@@ -770,8 +854,6 @@ class MantenedorPeriodoForm(MantenedorModelForm):
             'fecha_inicio': 'Inicio del período',
             'fecha_termino': 'Término del período',
             'dias_computables': 'Días computables',
-            'umbral_verde': 'Umbral de cumplimiento verde (%)',
-            'umbral_ambar': 'Umbral de cumplimiento ámbar (%)',
             'umbral_semaforo_verde': 'Semáforo verde respecto al objetivo (%)',
             'umbral_semaforo_ambar': 'Semáforo ámbar respecto al objetivo (%)',
             'umbral_colectivo': 'Umbral colectivo (%)',
@@ -783,8 +865,6 @@ class MantenedorPeriodoForm(MantenedorModelForm):
         widgets = {
             'fecha_inicio': forms.DateInput(attrs={'type': 'date'}),
             'fecha_termino': forms.DateInput(attrs={'type': 'date'}),
-            'umbral_verde': forms.NumberInput(attrs={'step': '0.1', 'min': '0'}),
-            'umbral_ambar': forms.NumberInput(attrs={'step': '0.1', 'min': '0'}),
             'umbral_semaforo_verde': forms.NumberInput(attrs={'step': '0.1', 'min': '0'}),
             'umbral_semaforo_ambar': forms.NumberInput(attrs={'step': '0.1', 'min': '0'}),
             'umbral_colectivo': forms.NumberInput(attrs={'step': '0.1', 'min': '0'}),
@@ -830,8 +910,6 @@ class MantenedorPeriodoForm(MantenedorModelForm):
                 'trimestre',
                 'fecha_inicio',
                 'fecha_termino',
-                'umbral_verde',
-                'umbral_ambar',
                 'umbral_semaforo_verde',
                 'umbral_semaforo_ambar',
                 'umbral_colectivo',
@@ -998,6 +1076,12 @@ class FuncionarioForm(MantenedorModelForm):
         required=False,
         label='Delegación',
     )
+    roles = forms.ModelMultipleChoiceField(
+        queryset=Rol.objects.filter(estado=True).order_by('nombre_rol'),
+        required=False,
+        label='Roles adicionales',
+        help_text='Puedes asignar más de un rol. Sus permisos se suman al rol principal.',
+    )
     estado = forms.BooleanField(label='Activo', required=False)
 
     class Meta:
@@ -1006,11 +1090,15 @@ class FuncionarioForm(MantenedorModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        for field_name in ('area_entidad', 'cargo', 'delegacion'):
+        for field_name in ('area_entidad', 'cargo', 'delegacion', 'roles'):
             self.fields[field_name].widget.attrs['class'] = 'form-select'
         self.fields['estado'].widget.attrs['class'] = 'form-check-input'
 
         if self.instance.pk:
+            roles_actuales = self.instance.roles.all()
+            self.fields['roles'].queryset = (
+                Rol.objects.filter(estado=True) | roles_actuales
+            ).distinct().order_by('nombre_rol')
             run = self.instance.rut_anonimizado or ''
             apellidos = (self.instance.last_name or '').split(maxsplit=1)
             self.initial.update({
@@ -1020,6 +1108,7 @@ class FuncionarioForm(MantenedorModelForm):
                 'apellidoMaterno': apellidos[1] if len(apellidos) > 1 else '',
                 'correo': self.instance.email,
                 'estado': self.instance.is_active,
+                'roles': roles_actuales,
                 'rol': (
                     'DELEGADO'
                     if self.instance.es_delegado
@@ -1059,10 +1148,15 @@ class FuncionarioForm(MantenedorModelForm):
         cleaned_data = super().clean()
         rol = cleaned_data.get('rol')
         delegacion = cleaned_data.get('delegacion')
-        if rol == 'DELEGADO' and not delegacion:
+        roles = cleaned_data.get('roles', ())
+        requiere_delegacion = (
+            rol == 'DELEGADO'
+            or any(role.tienePermiso('GESTIONAR_DELEGACION') for role in roles)
+        )
+        if requiere_delegacion and not delegacion:
             self.add_error(
                 'delegacion',
-                'El rol Delegado requiere una delegación asignada.',
+                'El rol Delegado o de gestión territorial requiere una delegación asignada.',
             )
         return cleaned_data
 
@@ -1086,6 +1180,9 @@ class FuncionarioForm(MantenedorModelForm):
         funcionario.is_active = self.cleaned_data['estado']
         if commit:
             funcionario.save()
+            self._save_m2m()
+        else:
+            self.save_m2m = self._save_m2m
         return funcionario
 
 
@@ -1155,9 +1252,17 @@ class PasswordResetSetPasswordForm(InitialPasswordForm):
 
 
 class RolForm(MantenedorModelForm):
+    permisos = forms.MultipleChoiceField(
+        choices=PERMISOS_ROL,
+        required=False,
+        label='Permisos',
+        widget=forms.SelectMultiple(attrs={'class': 'form-select'}),
+        help_text='El acceso efectivo de un funcionario combina los permisos de sus roles.',
+    )
+
     class Meta:
         model = Rol
-        fields = ('nombre_rol', 'descripcion', 'estado')
+        fields = ('nombre_rol', 'descripcion', 'permisos', 'estado')
         labels = {
             'nombre_rol': 'Nombre',
             'descripcion': 'Descripción',
@@ -1176,6 +1281,18 @@ class RolForm(MantenedorModelForm):
         if duplicates.exists():
             raise ValidationError('Ya existe un rol con ese nombre.')
         return nombre
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.initial['permisos'] = self.instance.permisos
+
+    def save(self, commit=True):
+        rol = super().save(commit=False)
+        rol.permisos = self.cleaned_data['permisos']
+        if commit:
+            rol.save()
+        return rol
 
 
 class AreaForm(MantenedorModelForm):
@@ -1200,6 +1317,93 @@ class CatalogoServicioForm(MantenedorModelForm):
 
     def clean_codigo(self):
         return self.cleaned_data['codigo'].strip().upper()
+
+
+class AreaCatalogForm(MantenedorModelForm):
+    def clean_nombre(self):
+        nombre = self.cleaned_data['nombre'].strip()
+        area = self.cleaned_data.get('area')
+        if not area:
+            return nombre
+        area_id = area.pk
+        duplicates = self._meta.model.objects.filter(
+            area_id=area_id,
+            nombre__iexact=nombre,
+        )
+        if self.instance.pk:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise ValidationError('Ya existe una categoría con ese nombre en el área.')
+        return nombre
+
+
+class TipoActividadForm(AreaCatalogForm):
+    class Meta:
+        model = TipoActividad
+        fields = ('area', 'nombre', 'descripcion')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        areas = Area.objects.filter(estado=True)
+        if self.instance.pk:
+            areas = Area.objects.filter(
+                Q(estado=True) | Q(pk=self.instance.area_id)
+            )
+        self.fields['area'].queryset = areas.order_by('nombre')
+
+
+class TipoAtencionSocialForm(AreaCatalogForm):
+    class Meta:
+        model = TipoAtencionSocial
+        fields = ('area', 'nombre', 'descripcion')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        areas = Area.objects.filter(estado=True)
+        if self.instance.pk:
+            areas = Area.objects.filter(
+                Q(estado=True) | Q(pk=self.instance.area_id)
+            )
+        self.fields['area'].queryset = areas.order_by('nombre')
+
+
+class SubatencionSocialForm(MantenedorModelForm):
+    class Meta:
+        model = SubatencionSocial
+        fields = ('tipo_atencion', 'nombre', 'descripcion')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        tipos = TipoAtencionSocial.objects.filter(
+            activo=True,
+            area__estado=True,
+        )
+        if self.instance.pk:
+            tipos = TipoAtencionSocial.objects.filter(
+                Q(activo=True, area__estado=True)
+                | Q(pk=self.instance.tipo_atencion_id)
+            )
+        self.fields['tipo_atencion'].queryset = tipos.select_related(
+            'area'
+        ).order_by('area__nombre', 'nombre')
+
+    def clean_nombre(self):
+        nombre = self.cleaned_data['nombre'].strip()
+        tipo_atencion = self.cleaned_data.get('tipo_atencion')
+        if not tipo_atencion:
+            return nombre
+        tipo_atencion_id = tipo_atencion.pk
+        duplicates = SubatencionSocial.objects.filter(
+            tipo_atencion_id=tipo_atencion_id,
+            nombre__iexact=nombre,
+        )
+        if self.instance.pk:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise ValidationError(
+                'Ya existe una subatención con ese nombre para el tipo seleccionado.'
+            )
+        return nombre
 
 
 class ActividadFotosInput(forms.ClearableFileInput):
@@ -1236,6 +1440,11 @@ class ActividadTerrenoForm(forms.Form):
         required=False,
         label='Ítem de medición',
     )
+    tipo_actividad_id = forms.ModelChoiceField(
+        queryset=TipoActividad.objects.none(),
+        required=False,
+        label='Tipo de actividad',
+    )
     catalogo_servicio_id = forms.ModelChoiceField(
         queryset=CatalogoServicio.objects.none(),
         required=False,
@@ -1244,6 +1453,12 @@ class ActividadTerrenoForm(forms.Form):
     solicitante_id = forms.ModelChoiceField(
         queryset=Solicitante.objects.all(),
         label='Solicitante',
+    )
+    contacto_telefono = forms.CharField(
+        required=True,
+        max_length=50,
+        label='Teléfono de contacto',
+        error_messages={'required': 'El teléfono de contacto es obligatorio.'},
     )
     direccion = forms.CharField(max_length=255, label='Dirección o sector')
     solicitud_problema = forms.CharField(
@@ -1288,6 +1503,7 @@ class ActividadTerrenoForm(forms.Form):
         *args,
         funcionario_queryset,
         item_queryset,
+        tipo_actividad_queryset,
         catalogo_queryset,
         periodo,
         **kwargs,
@@ -1295,10 +1511,19 @@ class ActividadTerrenoForm(forms.Form):
         super().__init__(*args, **kwargs)
         self.fields['funcionario_id'].queryset = funcionario_queryset
         self.fields['item_medicion_id'].queryset = item_queryset
+        self.fields['tipo_actividad_id'].queryset = tipo_actividad_queryset
+        self.fields['tipo_actividad_id'].required = tipo_actividad_queryset.exists()
         self.fields['catalogo_servicio_id'].queryset = catalogo_queryset
         self.periodo = periodo
         for field_name in ('funcionario_id', 'item_medicion_id', 'solicitante_id'):
             self.fields[field_name].widget.attrs['class'] = 'form-select'
+
+    def clean_contacto_telefono(self):
+        value = self.cleaned_data['contacto_telefono'].strip()
+        try:
+            return normalize_chilean_phone(value)
+        except ValidationError as exc:
+            raise ValidationError(exc.messages) from exc
 
     def clean(self):
         cleaned_data = super().clean()
@@ -1308,6 +1533,16 @@ class ActividadTerrenoForm(forms.Form):
 
         if actividad_fecha and actividad_fecha > timezone.localdate():
             self.add_error('fecha_actividad', 'La fecha no puede ser posterior a hoy.')
+
+        if (
+            item
+            and actividad_fecha
+            and not item.periodo.fecha_inicio <= actividad_fecha <= item.periodo.fecha_termino
+        ):
+            self.add_error(
+                'fecha_actividad',
+                'La fecha de actividad debe pertenecer al período del ítem seleccionado.',
+            )
 
         if funcionario and funcionario.cargo_id and self.fields['item_medicion_id'].queryset.exists() and not item:
             self.add_error('item_medicion_id', 'Selecciona un ítem válido.')

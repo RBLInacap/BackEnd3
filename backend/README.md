@@ -58,6 +58,12 @@ ingresar y confirmar una contraseña nueva antes de entrar al sistema. Si el pla
 vence, el administrador puede usar «Renovar acceso» en el mantenedor de
 funcionarios para iniciar un nuevo plazo de 10 minutos.
 
+El mantenedor de funcionarios permite asignar varios roles adicionales al rol
+principal. Los permisos efectivos son la unión de los permisos de esos roles;
+se configuran desde el mantenedor de roles. Los roles de gestión territorial
+requieren una delegación y limitan el acceso a ella, salvo que también se
+otorguen permisos de coordinación o administración.
+
 ### Recuperación de contraseña por código de un solo uso
 
 En `/password-reset/`, el funcionario ingresa el correo de su cuenta y recibe un
@@ -163,9 +169,20 @@ Configura antes de publicar `DEBUG=False`, una clave secreta nueva, `ALLOWED_HOS
 
 ## Funcionalidad principal
 
-- Actividad diaria con ubicación GPS, dirección y compromiso vinculado.
+- Actividad diaria con ubicación GPS, dirección y compromiso vinculado; al cambiar
+  el funcionario, los ítems se recargan según su cargo y el período activo. Los
+  tipos de actividad se administran por área y se filtran para el funcionario.
+  El teléfono chileno de contacto es obligatorio al registrar una actividad y
+  queda guardado como parte de su historial. La API y el registro web validan
+  fechas, vigencia y cargo del ítem; los errores del formulario indican el campo
+  que debe corregirse.
+- Configuración de ítems y ponderaciones por conjunto cargo/período: el guardado
+  es atómico y solo acepta que los ítems vigentes sumen exactamente 100%.
+- Metas por ítem y umbrales por período: los cambios incrementan la versión y
+  guardan una copia inmutable del conjunto completo de parámetros e ítems.
 - Evidencias fotográficas asociadas a actividades, con validación por rol.
-- Casos sociales con acceso limitado por rol y delegación.
+- Casos sociales con acceso limitado por rol y delegación, con tipos de atención
+  y subatenciones administrables por área.
 - Semáforo trimestral con umbrales configurables en la base de datos.
 - API REST autenticada bajo `/api/`.
 
@@ -174,12 +191,24 @@ consultar delegaciones, cargos, usuarios, períodos, catálogo de servicios e í
 pero sus endpoints de mantenimiento son de solo lectura; las operaciones
 transaccionales de la API conservan sus permisos por rol. La acción Eliminar de los
 mantenedores desactiva el registro y conserva sus relaciones e historial.
+Los cálculos y la evaluación del período usan el mismo par de umbrales del semáforo:
+verde y ámbar respecto de la meta esperada. Las columnas antiguas se mantienen
+sincronizadas por compatibilidad. Cada período conserva una versión inicial de su
+configuración actual y una nueva copia inmutable cada vez que se cambia un parámetro,
+meta, ponderación o estado de ítem desde los mantenedores.
+Los catálogos de tipos de actividad y tipos de atención se asocian a un área; cada
+subatención pertenece a un tipo de atención y hereda su área. Las actividades y
+atenciones guardan copias del nombre y área seleccionados, por lo que cambiar o
+desactivar un catálogo no modifica el historial.
+Las ponderaciones de ítems se mantienen desde «Configurar ítems y ponderaciones»,
+que valida el conjunto completo antes de guardarlo; los cambios individuales de
+estado o ponderación no se permiten para evitar dejar una suma incompleta.
 La API no ofrece la interfaz navegable de Django REST Framework: las plantillas
 propias consumen únicamente las respuestas JSON necesarias para sus flujos, como
 la sincronización de actividades sin conexión.
 
-Los supervisores pueden consultar los ocho mantenedores, pero solo pueden crear,
+Los supervisores pueden consultar los mantenedores, pero solo pueden crear,
 modificar y desactivar solicitantes y servicios del catálogo. La configuración de
-usuarios/funcionarios, roles, áreas, delegaciones, cargos, períodos e ítems queda
-reservada al Administrador. El perfil Delegado no obtiene acceso al menú de
-mantenedores.
+usuarios/funcionarios, roles, áreas, delegaciones, cargos, períodos, ítems y
+catálogos de actividad/atención queda reservada al Administrador. El perfil Delegado
+no obtiene acceso al menú de mantenedores.

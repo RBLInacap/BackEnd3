@@ -133,6 +133,14 @@
               </label>
               <textarea id="inp-detalle" name="accion_ejecutada" class="form-control" rows="2" placeholder="Describa brevemente la labor efectuada en terreno..."></textarea>
             </div>
+            <div class="col-12">
+              <label for="inp-contacto-telefono" class="form-label fw-bold text-dark small mb-1">
+                Teléfono de contacto <span class="text-danger">*</span>
+              </label>
+              <input id="inp-contacto-telefono" name="contacto_telefono" type="tel"
+                     inputmode="tel" maxlength="50" class="form-control"
+                     placeholder="+56 9 1234 5678" required>
+            </div>
           </div>
         </div>
 
@@ -384,8 +392,11 @@
       : '';
 
     const address = document.getElementById('inp-direccion');
+    const contactPhone = document.getElementById('inp-contacto-telefono');
     address.readOnly = existing;
     document.getElementById('inp-detalle').readOnly = existing;
+    contactPhone.disabled = existing;
+    contactPhone.required = !existing;
     locationSection.querySelectorAll('button').forEach(button => { button.disabled = existing; });
     if (marker && marker.dragging) marker.dragging.enable();
 
