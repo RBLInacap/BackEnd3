@@ -116,6 +116,11 @@ urlpatterns = [
     path('actividad-diaria/items/', web_views.web_items_medicion_funcionario, name='web_funcionario_items'),
     path('actividad-diaria/registrar-actividad/', web_views.web_registrar_actividad_personal, name='web_registrar_actividad_diaria'),
     path('personal/actividades/<int:actividad_id>/evidencias/', web_views.web_agregar_evidencia, name='web_agregar_evidencia'),
+    path(
+        'personal/actividades/<int:actividad_id>/anular/',
+        web_views.web_anular_actividad,
+        name='web_anular_actividad',
+    ),
     path('verificacion/', web_views.web_verificacion, name='web_verificacion'),
     path('evidencias/', web_views.web_verificacion, name='web_evidencias'),
     path('verificacion/<int:evidencia_id>/validar/', web_views.web_validar_evidencia, name='web_validar_evidencia'),

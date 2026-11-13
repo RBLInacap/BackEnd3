@@ -8,6 +8,7 @@ from django.urls import reverse
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
 from django.contrib import messages
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from datetime import date, datetime, timedelta
 import re
 import base64
@@ -46,7 +47,7 @@ from sgr_app.forms import (
 )
 from sgr_app.periodos import get_nombre_trimestre_actual, get_periodo_trimestre_actual
 from sgr_app.models import (
-    AjusteIncentivo, Delegacion, Cargo, Usuario, PeriodoMedicion, ItemMedicion,
+    AjusteIncentivo, Delegacion, Cargo, Area, Usuario, PeriodoMedicion, ItemMedicion,
     Actividad, Evidencia, CompromisoAgenda, CasoSocial, AtencionSocial, Solicitante,
     RegistroAuditoria, MetaModel, ObservacionCompromiso, CatalogoServicio,
     PasswordResetCode, TipoActividad, TipoAtencionSocial, SubatencionSocial,
@@ -56,7 +57,8 @@ from sgr_app.services.calculos import (
     calcular_metricas_funcionario,
     calcular_resumen_delegacion,
     calcular_resumen_comunal,
-    determinar_color_semaforo
+    determinar_color_semaforo,
+    recalcular_indicadores_actividad,
 )
 from sgr_app.services.evidencias import metadatos_archivo_evidencia, validar_archivo_evidencia
 from sgr_app.validators import normalize_chilean_phone
@@ -954,6 +956,46 @@ def web_alertas_operativas(request):
                 'url': f"{reverse('web_tubo')}?periodo={periodo.pk if periodo else 'todos'}#compromiso-{compromiso.pk}",
             })
 
+    evidencias_pendientes = Evidencia.objects.filter(
+        estado=Evidencia.Estado.PENDIENTE,
+        actividad__anulada=False,
+    ).select_related('actividad', 'actividad__funcionario', 'actividad__delegacion')
+    if request.user.es_administrativo:
+        evidencias_pendientes = evidencias_pendientes.filter(
+            actividad__funcionario=request.user,
+        )
+    else:
+        evidencias_pendientes = _filtrar_por_delegacion(
+            evidencias_pendientes,
+            request.user,
+            campo='actividad__delegacion_id',
+        )
+    if periodo:
+        evidencias_pendientes = evidencias_pendientes.filter(
+            actividad__fecha_actividad__range=(
+                periodo.fecha_inicio,
+                periodo.fecha_termino,
+            )
+        )
+    for evidencia in evidencias_pendientes:
+        funcionario = evidencia.actividad.funcionario
+        alertas.append({
+            'tipo': 'EVIDENCIA_PENDIENTE',
+            'nivel': 'warning',
+            'titulo': f'Evidencia {evidencia.codigo_verificador} pendiente de validación',
+            'motivo': (
+                evidencia.actividad.actividad_solicitud
+                or evidencia.actividad.solicitud_problema
+                or 'Actividad sin descripción.'
+            ),
+            'responsable': funcionario.get_full_name() or funcionario.username,
+            'fecha': evidencia.fecha_subida,
+            'url': (
+                f"{reverse('web_verificacion')}?estado=PENDIENTE"
+                f"#evidencia-{evidencia.pk}"
+            ),
+        })
+
     funcionarios = Usuario.objects.filter(
         is_active=True,
         rol=Usuario.Rol.ADMINISTRATIVO,
@@ -1003,7 +1045,9 @@ def web_alertas_operativas(request):
                     'url': f"{reverse('web_personal')}?id={funcionario.pk}&periodo={periodo.pk}",
                 })
 
-    alertas.sort(key=lambda alerta: (alerta['fecha'], alerta['titulo']))
+    alertas.sort(
+        key=lambda alerta: (alerta['fecha'].isoformat(), alerta['titulo'])
+    )
     return render(request, 'alertas_operativas.html', {
         'alertas': alertas,
         'periodos': periodos,
@@ -1042,6 +1086,28 @@ def web_reportes(request):
     ).prefetch_related('evidencias').order_by('-fecha_actividad', '-pk')
     actividades = _filtrar_por_delegacion(actividades, request.user)
 
+    estado = request.GET.get('estado', '').strip()
+    if estado == 'ANULADA':
+        actividades = actividades.filter(anulada=True)
+    elif estado != 'TODAS':
+        actividades = actividades.filter(anulada=False)
+    fecha_desde_texto = request.GET.get('fecha_desde', '').strip()
+    fecha_hasta_texto = request.GET.get('fecha_hasta', '').strip()
+    fecha_desde = parse_date(fecha_desde_texto) if fecha_desde_texto else None
+    fecha_hasta = parse_date(fecha_hasta_texto) if fecha_hasta_texto else None
+    if fecha_desde_texto and not fecha_desde:
+        messages.error(request, 'La fecha inicial del filtro no es válida.')
+    if fecha_hasta_texto and not fecha_hasta:
+        messages.error(request, 'La fecha final del filtro no es válida.')
+    if fecha_desde and fecha_hasta and fecha_desde > fecha_hasta:
+        messages.error(request, 'La fecha inicial no puede ser posterior a la fecha final.')
+        fecha_desde = None
+        fecha_hasta = None
+    if fecha_desde:
+        actividades = actividades.filter(fecha_actividad__gte=fecha_desde)
+    if fecha_hasta:
+        actividades = actividades.filter(fecha_actividad__lte=fecha_hasta)
+
     if periodo:
         actividades = actividades.filter(
             fecha_actividad__range=(periodo.fecha_inicio, periodo.fecha_termino)
@@ -1053,9 +1119,20 @@ def web_reportes(request):
     funcionario_id = request.GET.get('funcionario')
     if funcionario_id:
         actividades = actividades.filter(funcionario_id=funcionario_id)
+        funcionarios = funcionarios.filter(pk=funcionario_id)
+    cargo_id = request.GET.get('cargo')
+    if cargo_id:
+        actividades = actividades.filter(funcionario__cargo_id=cargo_id)
+        funcionarios = funcionarios.filter(cargo_id=cargo_id)
+    area_id = request.GET.get('area')
+    if area_id:
+        actividades = actividades.filter(funcionario__area_entidad_id=area_id)
+        funcionarios = funcionarios.filter(area_entidad_id=area_id)
     item_id = request.GET.get('item')
     if item_id:
         actividades = actividades.filter(item_medicion_id=item_id)
+    if estado and estado not in ('ANULADA', 'TODAS'):
+        actividades = actividades.filter(evidencias__estado=estado).distinct()
     termino = request.GET.get('q', '').strip()
     if termino:
         actividades = actividades.filter(
@@ -1077,10 +1154,14 @@ def web_reportes(request):
             periodo.nombre if periodo else 'Todos',
             'Filtros',
             f'delegacion={delegacion_id or "todas"}; funcionario={funcionario_id or "todos"}; '
-            f'item={item_id or "todos"}; búsqueda={termino or "sin texto"}',
+            f'cargo={cargo_id or "todos"}; area={area_id or "todas"}; '
+            f'item={item_id or "todos"}; estado={estado or "activos"}; '
+            f'fecha_desde={fecha_desde_texto or "sin límite"}; '
+            f'fecha_hasta={fecha_hasta_texto or "sin límite"}; '
+            f'búsqueda={termino or "sin texto"}',
         ])
         writer.writerow([
-            'ID', 'Fecha', 'Funcionario', 'Delegación', 'Ítem',
+            'ID', 'Código', 'Fecha', 'Funcionario', 'Delegación', 'Ítem',
             'Actividad/Solicitud', 'Acción', 'Evidencias aprobadas',
         ])
         for actividad in actividades:
@@ -1090,6 +1171,7 @@ def web_reportes(request):
             )
             writer.writerow([
                 actividad.pk,
+                actividad.codigo_registro,
                 actividad.fecha_actividad.isoformat(),
                 actividad.funcionario.get_full_name() or actividad.funcionario.username,
                 actividad.delegacion.nombre,
@@ -1107,17 +1189,26 @@ def web_reportes(request):
         items = items.filter(periodo_id=periodo.pk)
     else:
         items = items.none()
+    cargos = Cargo.objects.filter(activo=True).order_by('nombre')
+    areas = Area.objects.filter(estado=True).order_by('nombre')
     return render(request, 'reportes.html', {
         'periodos': periodos,
         'periodo_seleccionado': periodo,
         'delegaciones': delegaciones,
         'funcionarios': funcionarios,
+        'cargos': cargos,
+        'areas': areas,
         'items': items.distinct(),
         'pagina': pagina,
         'filtros': {
             'delegacion': delegacion_id or '',
             'funcionario': funcionario_id or '',
+            'cargo': cargo_id or '',
+            'area': area_id or '',
             'item': item_id or '',
+            'estado': estado,
+            'fecha_desde': fecha_desde_texto,
+            'fecha_hasta': fecha_hasta_texto,
             'q': termino,
         },
         'total_resultados': paginador.count,
@@ -1244,6 +1335,11 @@ def web_personal(request):
 
     return render(request, 'dashboard_personal.html', {
         'funcionario': funcionario,
+        'puede_anular_actividades': (
+            request.user.is_superuser
+            or request.user.es_admin()
+            or request.user.es_supervisor
+        ),
         'todos_funcionarios': todos_funcionarios,
         'periodos_disponibles': periodos_disponibles,
         'periodo_seleccionado': periodo_seleccionado,
@@ -1351,42 +1447,7 @@ def _guardar_fotos(actividad, fotos, subido_por):
 
 
 def _recalcular_metas_evidencia(evidencia):
-    actividad = evidencia.actividad
-    item = actividad.item_medicion
-    if not item:
-        return []
-
-    metas = MetaModel.objects.filter(
-        item=item,
-        periodo=item.periodo,
-        vigencia=True,
-    ).prefetch_related('indicadores')
-    resultados = []
-
-    for meta in metas:
-        actividades = Actividad.objects.filter(
-            item_medicion=item,
-            fecha_actividad__gte=item.periodo.fecha_inicio,
-            fecha_actividad__lte=item.periodo.fecha_termino,
-        )
-        if meta.funcionario_id:
-            actividades = actividades.filter(funcionario_id=meta.funcionario_id)
-        if meta.delegacion_id:
-            actividades = actividades.filter(delegacion_id=meta.delegacion_id)
-
-        avance_aprobado = actividades.filter(
-            evidencias__estado=Evidencia.Estado.APROBADA,
-        ).distinct().count()
-        for indicador in meta.indicadores.all():
-            indicador.actualizarAvance(avance_aprobado)
-
-        resultados.append({
-            'meta_id': meta.pk,
-            'avance_nuevo': meta.calcular_meta(),
-            'avance_aprobado': avance_aprobado,
-        })
-
-    return resultados
+    return recalcular_indicadores_actividad(evidencia.actividad)
 
 def _funcionarios_disponibles_actividad(user):
     funcionarios = Usuario.objects.filter(
@@ -1741,13 +1802,83 @@ def web_registrar_actividad_personal(request):
             field_errors,
         )
 
-    msg_exito = f"Actividad #{actividad.pk} registrada correctamente."
+    msg_exito = (
+        f"Actividad #{actividad.pk} registrada correctamente. "
+        f"Código: {actividad.codigo_registro}."
+    )
     if evidencias:
         msg_exito += f" Se adjuntaron {len(evidencias)} evidencia(s) para revisión."
     if compromiso:
         msg_exito += f" Se vinculó el compromiso #{compromiso.pk} al Tubo de Trabajo."
     messages.success(request, msg_exito)
     return redirect(f"{reverse('web_personal')}?id={funcionario.pk}")
+
+
+@login_required(login_url='web_login')
+@require_POST
+def web_anular_actividad(request, actividad_id):
+    if not (
+        request.user.is_superuser
+        or request.user.es_admin()
+        or request.user.es_supervisor
+    ):
+        raise PermissionDenied
+
+    actividades = Actividad.objects.all()
+    if request.user.esta_limitado_a_delegacion:
+        actividades = _filtrar_por_delegacion(actividades, request.user)
+    actividad = get_object_or_404(actividades, pk=actividad_id)
+    motivo = (request.POST.get('motivo') or '').strip()
+    if not motivo:
+        messages.error(request, 'Indica el motivo de la anulación.')
+        return redirect(
+            f"{reverse('web_personal')}?id={actividad.funcionario_id}"
+            f"&periodo={request.POST.get('periodo', 'actual')}#historial-actividades"
+        )
+
+    with transaction.atomic():
+        actividad = get_object_or_404(
+            actividades.select_for_update(),
+            pk=actividad_id,
+        )
+        estado_anterior = {
+            'anulada': actividad.anulada,
+            'motivo_anulacion': actividad.motivo_anulacion,
+        }
+        try:
+            actividad.anular(request.user, motivo)
+        except ValidationError as exc:
+            messages.error(request, '; '.join(exc.messages))
+            return redirect(
+                f"{reverse('web_personal')}?id={actividad.funcionario_id}"
+                f"&periodo={request.POST.get('periodo', 'actual')}#historial-actividades"
+            )
+        recalcular_indicadores_actividad(actividad)
+        RegistroAuditoria.objects.create(
+            usuario=request.user,
+            funcionario=request.user,
+            accion='ANULAR_ACTIVIDAD',
+            evento='MODIFICACION',
+            entidad='Actividad',
+            identificador=str(actividad.pk),
+            identificador_registro=str(actividad.pk),
+            valor_anterior=estado_anterior,
+            valor_nuevo={
+                'anulada': actividad.anulada,
+                'motivo_anulacion': actividad.motivo_anulacion,
+                'codigo_registro': actividad.codigo_registro,
+            },
+            ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+        )
+    messages.success(
+        request,
+        f'La actividad {actividad.codigo_registro} fue anulada y excluida del avance.',
+    )
+    return redirect(
+        f"{reverse('web_personal')}?id={actividad.funcionario_id}"
+        f"&periodo={request.POST.get('periodo', 'actual')}#historial-actividades"
+    )
+
 
 def web_agregar_evidencia(request, actividad_id):
     if not request.user.is_authenticated:
@@ -1763,6 +1894,9 @@ def web_agregar_evidencia(request, actividad_id):
         messages.error(request, 'Solo puedes agregar evidencias a actividades de tu delegación.')
         return redirect('web_personal')
     if request.method != 'POST':
+        return redirect(f"{reverse('web_personal')}?id={actividad.funcionario_id}")
+    if actividad.anulada:
+        messages.error(request, 'No se puede agregar evidencia a una actividad anulada.')
         return redirect(f"{reverse('web_personal')}?id={actividad.funcionario_id}")
     try:
         with transaction.atomic():
@@ -2006,7 +2140,7 @@ def web_tubo(request):
     ).prefetch_related('actividad__evidencias').order_by('fecha_comprometida'))
     actividades_queryset = Actividad.objects.select_related(
         'funcionario', 'delegacion'
-    )
+    ).filter(anulada=False)
     if request.user.es_administrativo:
         actividades_queryset = actividades_queryset.filter(funcionario=request.user)
     else:
@@ -2022,6 +2156,7 @@ def web_tubo(request):
         'en_proceso': 0,
         'vencido': 0,
         'realizado': 0,
+        'realizado_fuera_plazo': 0,
         'total': 0
     }
 
@@ -2030,7 +2165,8 @@ def web_tubo(request):
         resumen = resumen_por_usuario.setdefault(compromiso.responsable_id, {
             'usuario': compromiso.responsable,
             'ingresado': 0, 'pendiente': 0, 'en_proceso': 0,
-            'vencido': 0, 'realizado': 0, 'total': 0,
+            'vencido': 0, 'realizado': 0, 'realizado_fuera_plazo': 0,
+            'total': 0,
         })
         estado = compromiso.estado_tablero
         if estado == CompromisoAgenda.Estado.VENCIDO:
@@ -2043,6 +2179,8 @@ def web_tubo(request):
             resumen['en_proceso'] += 1
         elif estado in [CompromisoAgenda.Estado.COMPLETADO, CompromisoAgenda.Estado.REALIZADO]:
             resumen['realizado'] += 1
+        if compromiso.realizado_fuera_de_plazo:
+            resumen['realizado_fuera_plazo'] += 1
         resumen['total'] += 1
 
     for resumen in resumen_por_usuario.values():
@@ -2057,11 +2195,20 @@ def web_tubo(request):
             'pendiente': resumen['pendiente'],
             'en_proceso': resumen['en_proceso'],
             'realizado': resumen['realizado'],
+            'realizado_fuera_plazo': resumen['realizado_fuera_plazo'],
             'total': resumen['total'],
             'pct_realizado': pct,
             'cumple': cumple
         })
-        for key in ['ingresado', 'pendiente', 'en_proceso', 'vencido', 'realizado', 'total']:
+        for key in [
+            'ingresado',
+            'pendiente',
+            'en_proceso',
+            'vencido',
+            'realizado',
+            'realizado_fuera_plazo',
+            'total',
+        ]:
             totales_colectivos[key] += resumen[key]
 
     if totales_colectivos['total'] > 0:
@@ -2134,15 +2281,15 @@ def web_cambiar_estado_compromiso(request, compromiso_id):
             observacion_anterior = compromiso.observacion or ''
             nuevo_estado = form.cleaned_data['estado']
             observacion = form.cleaned_data['observacion']
-            compromiso.estado = nuevo_estado
-            compromiso.observacion = observacion
-            compromiso.observaciones = observacion
-            compromiso.save(update_fields=[
-                'estado',
-                'observacion',
-                'observaciones',
-                'actualizado_en',
-            ])
+            try:
+                compromiso.registrar_transicion(
+                    nuevo_estado,
+                    request.user,
+                    observacion,
+                )
+            except ValidationError as exc:
+                messages.error(request, '; '.join(exc.messages))
+                return redirect('web_tubo')
             RegistroAuditoria.objects.create(
                 usuario=request.user,
                 funcionario=request.user,
@@ -2159,14 +2306,14 @@ def web_cambiar_estado_compromiso(request, compromiso_id):
                 valor_nuevo={
                     'estado': nuevo_estado,
                     'observacion': observacion,
+                    'fecha_realizacion': (
+                        compromiso.fecha_realizacion.isoformat()
+                        if compromiso.fecha_realizacion
+                        else None
+                    ),
                     'responsable_id': compromiso.responsable_id,
                 },
                 ip_origen=request.META.get('REMOTE_ADDR'),
-            )
-            ObservacionCompromiso.objects.create(
-                compromiso=compromiso,
-                autor=request.user,
-                texto=observacion,
             )
         messages.success(
             request,

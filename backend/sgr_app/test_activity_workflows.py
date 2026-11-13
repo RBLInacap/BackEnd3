@@ -9,7 +9,7 @@ from unittest.mock import patch
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, close_old_connections
+from django.db import IntegrityError, close_old_connections, transaction
 from django.db.models.deletion import ProtectedError
 from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
@@ -1106,6 +1106,51 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(evidencia.subido_por, self.funcionario)
         self.assertEqual(evidencia.metadatos['formato'], 'JPEG')
         self.assertEqual(evidencia.metadatos['nombre_archivo'], 'foto-api.jpg')
+
+    def test_activity_api_annulment_recalculates_metrics_and_keeps_audit(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Actividad aprobada para anulación',
+        )
+        Evidencia.objects.create(
+            actividad=actividad,
+            estado=Evidencia.Estado.APROBADA,
+        )
+        metricas_antes = calcular_metricas_funcionario(
+            self.funcionario,
+            self.periodo,
+        )
+        item_antes = next(
+            item for item in metricas_antes['items']
+            if item['item_id'] == self.item.pk
+        )
+        self.assertEqual(item_antes['avance_aprobado'], 1)
+
+        api_client = APIClient()
+        api_client.force_authenticate(user=self.supervisor)
+        url = f'/api/actividades/{actividad.pk}/anular/'
+        response = api_client.post(url, {'motivo': 'Registro duplicado'}, format='json')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        actividad.refresh_from_db()
+        self.assertTrue(actividad.anulada)
+        self.assertEqual(actividad.motivo_anulacion, 'Registro duplicado')
+        self.assertTrue(RegistroAuditoria.objects.filter(
+            accion='ANULAR_ACTIVIDAD',
+            identificador_registro=str(actividad.pk),
+        ).exists())
+        metricas_despues = calcular_metricas_funcionario(
+            self.funcionario,
+            self.periodo,
+        )
+        item_despues = next(
+            item for item in metricas_despues['items']
+            if item['item_id'] == self.item.pk
+        )
+        self.assertEqual(item_despues['avance_aprobado'], 0)
 
     def test_expired_evidence_retention_removes_file_but_keeps_metadata(self):
         actividad = Actividad.objects.create(
@@ -2784,6 +2829,32 @@ class ActivityWorkflowTests(TestCase):
         self.assertIn(f'compromiso-{vencido.pk}', alerta_vencimiento['url'])
         self.assertEqual(alertas_por_tipo['INACTIVIDAD']['fecha'], self.periodo.fecha_inicio)
 
+    def test_pending_evidence_alert_shows_responsible_date_and_direct_link(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Revisar luminaria reportada',
+        )
+        evidencia = Evidencia.objects.create(
+            actividad=actividad,
+            subido_por=self.funcionario,
+            estado=Evidencia.Estado.PENDIENTE,
+        )
+
+        response = self.client.get(f'/alertas/?periodo={self.periodo.pk}')
+
+        self.assertEqual(response.status_code, 200)
+        alerta = next(
+            alerta for alerta in response.context['alertas']
+            if alerta['tipo'] == 'EVIDENCIA_PENDIENTE'
+        )
+        responsable = self.funcionario.get_full_name() or self.funcionario.username
+        self.assertEqual(alerta['responsable'], responsable)
+        self.assertEqual(alerta['fecha'], evidencia.fecha_subida)
+        self.assertIn(f'evidencia-{evidencia.pk}', alerta['url'])
+
     def test_activity_metrics_recalculate_after_a_validated_activity_is_added(self):
         anterior = calcular_metricas_funcionario(
             self.funcionario,
@@ -3022,6 +3093,47 @@ class ActivityWorkflowTests(TestCase):
         self.assertContains(response, 'PERSONA-ANON-001')
         self.assertContains(response, 'Gestiones registradas: 3 de 3')
 
+    def test_social_case_api_records_sequential_attentions_and_caps_at_three(self):
+        api_client = APIClient()
+        api_client.force_authenticate(user=self.supervisor)
+        response = api_client.post('/api/casos-sociales/', {
+            'codigo_caso': 'CASO-API-001',
+            'persona_anonimizada': 'PERSONA-API-001',
+            'delegacion': self.delegacion.pk,
+            'fecha_apertura': self.today.isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        caso = CasoSocial.objects.get(pk=response.data['id'])
+
+        fecha_por_etapa = {
+            1: 'fecha_visita_programada',
+            2: 'fecha_visita',
+            3: 'fecha_entrega_beneficio',
+        }
+        for etapa in range(1, 4):
+            response = api_client.post('/api/atenciones-sociales/', {
+                'caso': caso.pk,
+                'etapa': etapa,
+                'tipo_atencion_catalogo': self.tipo_atencion_catalogo.pk,
+                'detalle': f'Detalle API {etapa}',
+                'resultado': f'Resultado API {etapa}',
+                fecha_por_etapa[etapa]: self.today.isoformat(),
+            }, format='json')
+            self.assertEqual(response.status_code, 201, response.data)
+            self.assertEqual(response.data['funcionario'], self.supervisor.pk)
+
+        response = api_client.post('/api/atenciones-sociales/', {
+            'caso': caso.pk,
+            'etapa': 3,
+            'tipo_atencion_catalogo': self.tipo_atencion_catalogo.pk,
+            'detalle': 'Gestión adicional',
+            'resultado': 'No corresponde',
+            'fecha_entrega_beneficio': self.today.isoformat(),
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(AtencionSocial.objects.filter(caso=caso).count(), 3)
+
     def test_social_case_requires_valid_date_for_each_stage(self):
         self.client.force_login(self.supervisor)
         caso = CasoSocial.objects.create(
@@ -3246,7 +3358,7 @@ class ActivityWorkflowTests(TestCase):
         })
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        atencion = serializer.save()
+        atencion = serializer.save(funcionario=self.supervisor)
         self.assertEqual(atencion.tipo_atencion, 'Gestión social')
         self.assertEqual(atencion.tipo_atencion_area, self.area.nombre)
 
@@ -3780,11 +3892,12 @@ class ConcurrentActivityPersistenceTests(TransactionTestCase):
             close_old_connections()
             try:
                 start.wait(timeout=5)
-                return Actividad.objects.create(
-                    funcionario=funcionario,
-                    delegacion=self.delegacion,
-                    solicitud_problema=description,
-                ).pk
+                with transaction.atomic():
+                    return Actividad.objects.create(
+                        funcionario=funcionario,
+                        delegacion=self.delegacion,
+                        solicitud_problema=description,
+                    ).pk
             finally:
                 close_old_connections()
 

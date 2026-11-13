@@ -260,6 +260,10 @@
               <td class="ps-4 pe-2 py-3 text-nowrap">
                 <div class="fw-bold text-dark">{{ act.fecha_actividad|date:"d/m/Y" }}</div>
                 <small class="text-secondary font-monospace">{{ act.fecha_registro|date:"H:i" }} hrs</small>
+                <small class="text-secondary d-block font-monospace">{{ act.codigo_registro }}</small>
+                {% if act.anulada %}
+                  <span class="badge bg-secondary mt-1" title="{{ act.motivo_anulacion }}">Anulada</span>
+                {% endif %}
               </td>
               <td class="px-2 py-3">
                 <div class="fw-bold text-dark text-truncate" style="max-width: 150px;" title="{{ act.contacto_nombre|default:act.solicitante }}">
@@ -338,7 +342,9 @@
                 {% endif %}
               </td>
               <td class="text-end ps-2 pe-4 py-3 text-nowrap">
-                {% if act.tiene_evidencia_aprobada %}
+                {% if act.anulada %}
+                  <span class="badge bg-secondary">No computa</span>
+                {% elif act.tiene_evidencia_aprobada %}
                   <span class="badge bg-success-subtle text-success border border-success"
                         title="La actividad se cerró al aprobarse una evidencia">
                     <i class="bi bi-lock-fill me-1"></i> Cerrada
@@ -349,6 +355,36 @@
                           data-bs-target="#modalAgregarEvidencia" title="Agregar solo evidencia a esta actividad">
                     <i class="bi bi-camera-fill"></i> Evidencia
                   </button>
+                {% endif %}
+                {% if not act.anulada and puede_anular_actividades %}
+                  <button type="button" class="btn btn-outline-danger btn-sm p-1"
+                          data-bs-toggle="modal" data-bs-target="#modalAnular{{ act.id }}"
+                          title="Anular esta actividad">
+                    <i class="bi bi-x-octagon"></i> Anular
+                  </button>
+                  <div class="modal fade" id="modalAnular{{ act.id }}" tabindex="-1">
+                    <div class="modal-dialog modal-dialog-centered">
+                      <div class="modal-content">
+                        <form method="post" action="{% url 'web_anular_actividad' act.id %}">
+                          {% csrf_token %}
+                          <input type="hidden" name="periodo" value="{{ periodo_seleccionado }}">
+                          <div class="modal-header">
+                            <h5 class="modal-title">Anular actividad {{ act.codigo_registro }}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                          </div>
+                          <div class="modal-body">
+                            <label for="motivoAnulacion{{ act.id }}" class="form-label">Motivo</label>
+                            <textarea id="motivoAnulacion{{ act.id }}" name="motivo" class="form-control" rows="3" required></textarea>
+                            <small class="text-secondary">La actividad y sus evidencias se conservarán en el historial, pero dejarán de sumar al avance.</small>
+                          </div>
+                          <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                            <button type="submit" class="btn btn-danger">Confirmar anulación</button>
+                          </div>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
                 {% endif %}
                 {% if act.evidencia %}
                   <button type="button" class="btn btn-outline-secondary btn-sm p-1" onclick="abrirModalFoto('{{ act.evidencia.get_foto_url }}', '{{ act.evidencia.codigo_verificador }}', '{{ act.evidencia.get_estado_display }}', '{{ act.item_medicion.nombre_item|default:'Actividad' }}')" title="Ver evidencia completa">

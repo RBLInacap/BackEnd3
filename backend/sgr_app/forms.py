@@ -175,7 +175,7 @@ class CompromisoAgendaForm(forms.ModelForm):
         self.fields['responsable'].queryset = Usuario.objects.filter(is_active=True)
         actividades = Actividad.objects.select_related(
             'funcionario', 'delegacion'
-        ).all()
+        ).filter(anulada=False)
         if user.es_administrativo:
             if self.instance.pk:
                 actividades = actividades.filter(
@@ -290,6 +290,11 @@ class CompromisoAgendaForm(forms.ModelForm):
         ):
             self.add_error('actividad', 'La actividad ya está vinculada a otro compromiso.')
         if committed_date:
+            if committed_date < timezone.localdate():
+                self.add_error(
+                    'fecha_comprometida',
+                    'La fecha comprometida no puede ser anterior a hoy.',
+                )
             if not self.periodo:
                 self.add_error(
                     'fecha_comprometida',
@@ -315,7 +320,7 @@ class CompromisoAgendaForm(forms.ModelForm):
         compromiso.fecha_comprometida = self.cleaned_data['fecha_comprometida']
         compromiso.observaciones = compromiso.observacion
         if commit:
-            compromisso.save()
+            compromiso.save()
             self.save_m2m()
         return compromiso
 
@@ -347,6 +352,10 @@ class CompromisoEstadoForm(forms.Form):
 
     def clean_estado(self):
         estado = self.cleaned_data['estado']
+        if not self.compromiso.puede_transicionar_a(estado):
+            raise ValidationError(
+                f'No se permite cambiar de {self.compromiso.estado} a {estado}.'
+            )
         if estado == CompromisoAgenda.Estado.REALIZADO:
             actividad = self.compromiso.actividad
             evidencias = actividad.evidencias.all() if actividad else Evidencia.objects.none()

@@ -208,22 +208,28 @@ class MatrizSGRTestSuite(TestCase):
 
     # 3. Criterio CA-03: Compromisos Vencidos en Tubo de Trabajo
     def test_ca03_compromiso_vencido(self):
-        hoy = timezone.now().date()
-        ayer = hoy - timedelta(days=1)
-        manana = hoy + timedelta(days=2)
+        fecha_corte = date(2026, 8, 15)
+        ayer = fecha_corte - timedelta(days=1)
+        manana = fecha_corte + timedelta(days=2)
 
         comp_vencido = CompromisoAgenda.objects.create(
             solicitante="Vecino A", delegacion=self.delegacion,
-            responsable=self.usuario, fecha_comprometida=ayer,
+            responsable=self.usuario, fecha_compromiso=ayer,
+            fecha_comprometida=ayer,
             descripcion="Plaza", estado=CompromisoAgenda.Estado.EN_PROCESO
         )
         comp_al_dia = CompromisoAgenda.objects.create(
             solicitante="Vecino B", delegacion=self.delegacion,
-            responsable=self.usuario, fecha_comprometida=manana,
+            responsable=self.usuario, fecha_compromiso=manana,
+            fecha_comprometida=manana,
             descripcion="Luminaria", estado=CompromisoAgenda.Estado.EN_PROCESO
         )
 
-        resumen = calcular_resumen_delegacion(self.delegacion, self.periodo)
+        resumen = calcular_resumen_delegacion(
+            self.delegacion,
+            self.periodo,
+            fecha_corte=fecha_corte,
+        )
         self.assertEqual(resumen['compromisos']['vencidos'], 1)
         self.assertEqual(resumen['compromisos']['total'], 2)
 

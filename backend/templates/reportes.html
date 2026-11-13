@@ -45,7 +45,45 @@
           {% endfor %}
         </select>
       </div>
-      <div class="col-md-9">
+      <div class="col-md-3">
+        <label class="form-label fw-semibold" for="cargo">Cargo</label>
+        <select class="form-select" id="cargo" name="cargo">
+          <option value="">Todos</option>
+          {% for opcion in cargos %}
+            <option value="{{ opcion.pk }}" {% if filtros.cargo == opcion.pk|stringformat:"s" %}selected{% endif %}>{{ opcion.nombre }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold" for="area">Área</label>
+        <select class="form-select" id="area" name="area">
+          <option value="">Todas</option>
+          {% for opcion in areas %}
+            <option value="{{ opcion.pk }}" {% if filtros.area == opcion.pk|stringformat:"s" %}selected{% endif %}>{{ opcion.nombre }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold" for="estado">Estado</label>
+        <select class="form-select" id="estado" name="estado">
+          <option value="" {% if not filtros.estado %}selected{% endif %}>Activas</option>
+          <option value="TODAS" {% if filtros.estado == 'TODAS' %}selected{% endif %}>Todas, incluidas anuladas</option>
+          <option value="ANULADA" {% if filtros.estado == 'ANULADA' %}selected{% endif %}>Anuladas</option>
+          <option value="PENDIENTE" {% if filtros.estado == 'PENDIENTE' %}selected{% endif %}>Evidencia pendiente</option>
+          <option value="APROBADA" {% if filtros.estado == 'APROBADA' %}selected{% endif %}>Evidencia aprobada</option>
+          <option value="RECHAZADA" {% if filtros.estado == 'RECHAZADA' %}selected{% endif %}>Evidencia rechazada</option>
+          <option value="CORRECCION" {% if filtros.estado == 'CORRECCION' %}selected{% endif %}>Corrección solicitada</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold" for="fecha_desde">Desde</label>
+        <input class="form-control" type="date" id="fecha_desde" name="fecha_desde" value="{{ filtros.fecha_desde }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold" for="fecha_hasta">Hasta</label>
+        <input class="form-control" type="date" id="fecha_hasta" name="fecha_hasta" value="{{ filtros.fecha_hasta }}">
+      </div>
+      <div class="col-md-6">
         <label class="form-label fw-semibold" for="q">Texto</label>
         <input class="form-control" id="q" name="q" value="{{ filtros.q }}" placeholder="Actividad, acción o dirección">
       </div>
@@ -60,20 +98,21 @@
     <div class="card-header bg-white fw-semibold">{{ total_resultados }} resultado(s)</div>
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
-        <thead><tr><th>ID</th><th>Fecha</th><th>Funcionario</th><th>Delegación</th><th>Ítem</th><th>Actividad</th><th>Acción</th></tr></thead>
+        <thead><tr><th>ID / Código</th><th>Fecha</th><th>Funcionario</th><th>Delegación</th><th>Ítem</th><th>Actividad</th><th>Acción</th><th>Estado</th></tr></thead>
         <tbody>
           {% for actividad in pagina %}
             <tr>
-              <td>{{ actividad.pk }}</td>
+              <td>{{ actividad.pk }}<small class="d-block text-secondary font-monospace">{{ actividad.codigo_registro }}</small></td>
               <td>{{ actividad.fecha_actividad|date:"d/m/Y" }}</td>
               <td>{{ actividad.funcionario.get_full_name|default:actividad.funcionario.username }}</td>
               <td>{{ actividad.delegacion.nombre }}</td>
               <td>{{ actividad.item_medicion.nombre_item|default:"—" }}</td>
               <td>{{ actividad.actividad_solicitud }}</td>
               <td>{{ actividad.accion_ejecutada }}</td>
+              <td>{% if actividad.anulada %}<span class="badge bg-secondary">Anulada</span>{% else %}<span class="badge bg-success">Activa</span>{% endif %}</td>
             </tr>
           {% empty %}
-            <tr><td colspan="7" class="text-center text-secondary py-4">Sin resultados para los filtros seleccionados.</td></tr>
+            <tr><td colspan="8" class="text-center text-secondary py-4">Sin resultados para los filtros seleccionados.</td></tr>
           {% endfor %}
         </tbody>
       </table>

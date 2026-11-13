@@ -50,7 +50,7 @@
   <div class="row g-4">
     {% for ev in evidencias %}
       <div class="col-12 col-md-6 col-lg-4">
-        <div class="card shadow-sm border h-100 overflow-hidden d-flex flex-column bg-white">
+        <div class="card shadow-sm border h-100 overflow-hidden d-flex flex-column bg-white" id="evidencia-{{ ev.pk }}">
           <!-- Imagen y Badges -->
           <div class="position-relative bg-light" style="height: 200px;">
             <img src="{{ ev.get_foto_url }}" class="w-100 h-100 object-fit-cover" alt="Foto Evidencia">

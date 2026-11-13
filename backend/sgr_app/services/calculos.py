@@ -1,6 +1,6 @@
 from datetime import date
 from django.utils import timezone
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from sgr_app.models import (
     Actividad,
     AjusteIncentivo,
@@ -8,6 +8,7 @@ from sgr_app.models import (
     Delegacion,
     Evidencia,
     ItemMedicion,
+    MetaModel,
     PeriodoMedicion,
     Usuario,
 )
@@ -78,6 +79,46 @@ def determinar_color_semaforo(
         return 'ROJO'
 
 
+def recalcular_indicadores_actividad(actividad: Actividad):
+    """Recalcula indicadores de las metas asociadas al ítem de una actividad."""
+    item = actividad.item_medicion
+    if not item:
+        return []
+
+    metas = MetaModel.objects.filter(
+        item=item,
+        periodo=item.periodo,
+        vigencia=True,
+    ).prefetch_related('indicadores')
+    resultados = []
+
+    for meta in metas:
+        actividades = Actividad.objects.filter(
+            item_medicion=item,
+            anulada=False,
+            fecha_actividad__gte=item.periodo.fecha_inicio,
+            fecha_actividad__lte=item.periodo.fecha_termino,
+        )
+        if meta.funcionario_id:
+            actividades = actividades.filter(funcionario_id=meta.funcionario_id)
+        if meta.delegacion_id:
+            actividades = actividades.filter(delegacion_id=meta.delegacion_id)
+
+        avance_aprobado = actividades.filter(
+            evidencias__estado=Evidencia.Estado.APROBADA,
+        ).distinct().count()
+        for indicador in meta.indicadores.all():
+            indicador.actualizarAvance(avance_aprobado)
+
+        resultados.append({
+            'meta_id': meta.pk,
+            'avance_nuevo': meta.calcular_meta(),
+            'avance_aprobado': avance_aprobado,
+        })
+
+    return resultados
+
+
 def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion, fecha_corte: date = None):
     """
     Calcula el cumplimiento detallado por ítem de medición, cumplimiento ponderado total
@@ -98,7 +139,8 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
     actividades_base = Actividad.objects.filter(
         funcionario=funcionario,
         fecha_actividad__gte=periodo.fecha_inicio,
-        fecha_actividad__lte=periodo.fecha_termino
+        fecha_actividad__lte=periodo.fecha_termino,
+        anulada=False,
     )
 
     for item in items:
@@ -209,9 +251,20 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
     promedio_diario = round(total_actividades_registradas / max(info_tiempo['dias_transcurridos'], 1), 2)
 
     # Compromisos asignados en el Tubo de Trabajo
-    compromisos_total = CompromisoAgenda.objects.filter(responsable=funcionario).count()
-    compromisos_realizados = CompromisoAgenda.objects.filter(
-        responsable=funcionario, estado=CompromisoAgenda.Estado.REALIZADO
+    compromisos_periodo = CompromisoAgenda.objects.filter(
+        responsable=funcionario,
+        fecha_comprometida__range=(periodo.fecha_inicio, periodo.fecha_termino),
+    )
+    compromisos_total = compromisos_periodo.count()
+    compromisos_realizados = compromisos_periodo.filter(
+        estado__in=(
+            CompromisoAgenda.Estado.COMPLETADO,
+            CompromisoAgenda.Estado.REALIZADO,
+            'CUMPLIDO',
+        )
+    ).count()
+    compromisos_realizados_fuera_plazo = compromisos_periodo.filter(
+        fecha_realizacion__date__gt=F('fecha_comprometida'),
     ).count()
     compromisos_pendientes = compromisos_total - compromisos_realizados
 
@@ -240,6 +293,7 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
             'total': compromisos_total,
             'realizados': compromisos_realizados,
             'pendientes': compromisos_pendientes,
+            'realizados_fuera_plazo': compromisos_realizados_fuera_plazo,
             'porcentaje_realizado': round((compromisos_realizados / max(compromisos_total, 1)) * 100, 1)
         }
     }
@@ -281,11 +335,24 @@ def calcular_resumen_delegacion(delegacion: Delegacion, periodo: PeriodoMedicion
     )
 
     # Compromisos de la delegación en la agenda colectiva
-    compromisos_del = CompromisoAgenda.objects.filter(delegacion=delegacion)
+    compromisos_del = CompromisoAgenda.objects.filter(
+        delegacion=delegacion,
+        fecha_comprometida__range=(periodo.fecha_inicio, periodo.fecha_termino),
+    )
     comp_total = compromisos_del.count()
-    comp_realizados = compromisos_del.filter(estado=CompromisoAgenda.Estado.REALIZADO).count()
+    comp_realizados = compromisos_del.filter(
+        estado__in=(
+            CompromisoAgenda.Estado.COMPLETADO,
+            CompromisoAgenda.Estado.REALIZADO,
+            'CUMPLIDO',
+        )
+    ).count()
+    comp_realizados_fuera_plazo = compromisos_del.filter(
+        fecha_realizacion__date__gt=F('fecha_comprometida'),
+    ).count()
+    fecha_referencia = fecha_corte or timezone.localdate()
     comp_vencidos = compromisos_del.filter(
-        fecha_comprometida__lt=timezone.now().date(),
+        fecha_comprometida__lt=fecha_referencia,
         estado__in=[CompromisoAgenda.Estado.INGRESADO, CompromisoAgenda.Estado.PENDIENTE, CompromisoAgenda.Estado.EN_PROCESO]
     ).count()
 
@@ -304,11 +371,12 @@ def calcular_resumen_delegacion(delegacion: Delegacion, periodo: PeriodoMedicion
     ).first()
     nombre_responsable = delegado.get_full_name() if (delegado and delegado.get_full_name()) else (delegado.username if delegado else f"Delegado(a) {delegacion.nombre}")
 
-    corte = fecha_corte or timezone.now().date()
+    corte = fecha_referencia
     acts_delegacion = Actividad.objects.filter(
         delegacion=delegacion,
         fecha_actividad__gte=periodo.fecha_inicio,
-        fecha_actividad__lte=min(corte, periodo.fecha_termino)
+        fecha_actividad__lte=min(corte, periodo.fecha_termino),
+        anulada=False,
     )
     total_ingresos = acts_delegacion.count()
     ultima_act = acts_delegacion.order_by('-fecha_actividad').first()
@@ -341,7 +409,8 @@ def calcular_resumen_delegacion(delegacion: Delegacion, periodo: PeriodoMedicion
             'total': comp_total,
             'realizados': comp_realizados,
             'pendientes': comp_total - comp_realizados,
-            'vencidos': comp_vencidos
+            'vencidos': comp_vencidos,
+            'realizados_fuera_plazo': comp_realizados_fuera_plazo,
         },
         'evidencias_pendientes_check': evidencias_pendientes,
         'funcionarios': metricas_funcionarios

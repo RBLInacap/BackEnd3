@@ -402,6 +402,7 @@
                 <th class="py-3 text-center text-dark" style="min-width: 90px;">En Proceso</th>
                 <th class="py-3 text-center text-danger" style="min-width: 90px;">Vencido</th>
                 <th class="py-3 text-center text-success" style="min-width: 90px;">Realizado</th>
+                <th class="py-3 text-center text-danger" style="min-width: 100px;">Realizado fuera de plazo</th>
                 <th class="py-3 text-center fw-bold text-dark" style="min-width: 100px;">Total General</th>
                 <th class="py-3 text-center fw-bold" style="min-width: 110px;">% Realizado</th>
                 <th class="py-3 text-center pe-3" style="min-width: 120px;">Estado (&ge;80%)</th>
@@ -421,6 +422,7 @@
                   <td class="text-center text-dark fw-bold">{{ r.en_proceso }}</td>
                   <td class="text-center text-danger fw-bold">{{ r.vencido }}</td>
                   <td class="text-center text-success fw-bold">{{ r.realizado }}</td>
+                  <td class="text-center text-danger fw-bold">{{ r.realizado_fuera_plazo }}</td>
                   <td class="text-center fw-bold text-dark">{{ r.total }}</td>
                   <td class="text-center fw-bold">
                     <span class="{% if r.cumple %}text-success{% else %}text-danger{% endif %}">
@@ -437,7 +439,7 @@
                 </tr>
               {% empty %}
                 <tr>
-                  <td colspan="10" class="text-center py-4 text-secondary">
+                  <td colspan="11" class="text-center py-4 text-secondary">
                     No hay compromisos asignados para calcular el resumen semanal.
                   </td>
                 </tr>
@@ -452,6 +454,7 @@
                   <td class="text-center text-dark">{{ totales_colectivos.en_proceso }}</td>
                   <td class="text-center text-danger">{{ totales_colectivos.vencido }}</td>
                   <td class="text-center text-success">{{ totales_colectivos.realizado }}</td>
+                  <td class="text-center text-danger">{{ totales_colectivos.realizado_fuera_plazo }}</td>
                   <td class="text-center text-dark">{{ totales_colectivos.total }}</td>
                   <td class="text-center {% if totales_colectivos.cumple %}text-success{% else %}text-danger{% endif %}">
                     {{ totales_colectivos.pct_realizado }}%

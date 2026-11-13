@@ -32,7 +32,8 @@ from sgr_app.serializers import (
 from sgr_app.services.calculos import (
     calcular_metricas_funcionario,
     calcular_resumen_delegacion,
-    calcular_resumen_comunal
+    calcular_resumen_comunal,
+    recalcular_indicadores_actividad,
 )
 from sgr_app.services.evidencias import metadatos_archivo_evidencia, validar_archivo_evidencia
 
@@ -242,28 +243,52 @@ class CompromisoAgendaViewSet(viewsets.ModelViewSet):
     def cambiar_estado(self, request, pk=None):
         compromiso = self.get_object()
         nuevo_estado = request.data.get('estado')
-        observacion = request.data.get('observacion', '')
-
-        if nuevo_estado not in [
+        observacion = (request.data.get('observacion') or '').strip()
+        if nuevo_estado not in {
             CompromisoAgenda.Estado.INGRESADO,
             CompromisoAgenda.Estado.PENDIENTE,
             CompromisoAgenda.Estado.EN_PROCESO,
             CompromisoAgenda.Estado.REPROGRAMADO,
-        ]:
-            return Response({'error': f'Estado inválido: {nuevo_estado}'}, status=status.HTTP_400_BAD_REQUEST)
+            CompromisoAgenda.Estado.REALIZADO,
+        }:
+            raise DRFValidationError({'estado': f'Estado inválido: {nuevo_estado}'})
+        if not observacion:
+            raise DRFValidationError({
+                'observacion': 'Explica el cambio de estado en la observación.'
+            })
 
-        antiguo_estado = compromiso.estado
-        compromiso.estado = nuevo_estado
-        if observacion:
-            compromiso.observaciones = f"{compromiso.observaciones or ''}\n[{timezone.now().strftime('%d/%m/%Y %H:%M')}] {observacion}".strip()
-        compromiso.save()
-
-        registrar_evento_auditoria(
-            request,
-            request.user if request.user.is_authenticated else compromiso.responsable,
-            'CAMBIO_ESTADO', 'CompromisoAgenda', compromiso.id,
-            {'estado': antiguo_estado}, {'estado': nuevo_estado, 'observacion': observacion}
-        )
+        with transaction.atomic():
+            compromiso = self.get_queryset().select_for_update().get(pk=compromiso.pk)
+            self.check_object_permissions(request, compromiso)
+            estado_anterior = compromiso.estado
+            try:
+                compromiso.registrar_transicion(
+                    nuevo_estado,
+                    request.user,
+                    observacion,
+                )
+            except DjangoValidationError as exc:
+                raise DRFValidationError(exc.message_dict) from exc
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                accion='CAMBIO_ESTADO',
+                evento='MODIFICACION',
+                entidad='CompromisoAgenda',
+                identificador=str(compromiso.pk),
+                identificador_registro=str(compromiso.pk),
+                valor_anterior={'estado': estado_anterior},
+                valor_nuevo={
+                    'estado': compromiso.estado,
+                    'fecha_realizacion': (
+                        compromiso.fecha_realizacion.isoformat()
+                        if compromiso.fecha_realizacion
+                        else None
+                    ),
+                    'observacion': observacion,
+                },
+                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            )
 
         return Response(CompromisoAgendaSerializer(compromiso).data)
 
@@ -390,6 +415,53 @@ class ActividadViewSet(viewsets.ModelViewSet):
         # Recargar para incluir evidencia
         return Response(ActividadSerializer(actividad).data, status=status.HTTP_201_CREATED, headers=headers)
 
+    @action(detail=True, methods=['post'], url_path='anular')
+    def anular(self, request, pk=None):
+        if not (
+            request.user.is_superuser
+            or request.user.es_admin()
+            or request.user.es_supervisor
+        ):
+            raise DRFPermissionDenied(
+                'Solo supervisores y administradores pueden anular actividades.'
+            )
+        motivo = (request.data.get('motivo') or '').strip()
+        if not motivo:
+            raise DRFValidationError({'motivo': 'Indica el motivo de la anulación.'})
+
+        with transaction.atomic():
+            try:
+                actividad = self.get_queryset().select_for_update().get(pk=pk)
+            except Actividad.DoesNotExist as exc:
+                raise NotFound() from exc
+            self.check_object_permissions(request, actividad)
+            estado_anterior = {
+                'anulada': actividad.anulada,
+                'motivo_anulacion': actividad.motivo_anulacion,
+            }
+            try:
+                actividad.anular(request.user, motivo)
+            except DjangoValidationError as exc:
+                raise DRFValidationError(exc.message_dict) from exc
+            recalcular_indicadores_actividad(actividad)
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                accion='ANULAR_ACTIVIDAD',
+                evento='MODIFICACION',
+                entidad='Actividad',
+                identificador=str(actividad.pk),
+                identificador_registro=str(actividad.pk),
+                valor_anterior=estado_anterior,
+                valor_nuevo={
+                    'anulada': actividad.anulada,
+                    'motivo_anulacion': actividad.motivo_anulacion,
+                    'codigo_registro': actividad.codigo_registro,
+                },
+                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            )
+        return Response(ActividadSerializer(actividad).data)
+
 
 class EvidenciaViewSet(viewsets.ModelViewSet):
     """
@@ -402,6 +474,10 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
         actividad = serializer.validated_data['actividad']
         with transaction.atomic():
             actividad = Actividad.objects.select_for_update().get(pk=actividad.pk)
+            if actividad.anulada:
+                raise DRFValidationError({
+                    'actividad': 'No se puede asociar evidencia a una actividad anulada.'
+                })
             if Evidencia.objects.filter(
                 actividad=actividad,
                 estado=Evidencia.Estado.APROBADA,
@@ -462,6 +538,10 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
             except Evidencia.DoesNotExist as exc:
                 raise NotFound() from exc
             self.check_object_permissions(request, evidencia)
+            if evidencia.actividad.anulada:
+                raise DRFValidationError({
+                    'actividad': 'No se puede validar evidencia de una actividad anulada.'
+                })
             estado_anterior = evidencia.estado
             evidencia.estado = decision
             evidencia.observacion = observacion
@@ -476,6 +556,7 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
             evidencia.verificador = request.user
             evidencia.fecha_validacion = timezone.now()
             evidencia.save()
+            recalcular_indicadores_actividad(evidencia.actividad)
 
             RegistroAuditoria.objects.create(
                 usuario=request.user,
@@ -501,7 +582,6 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
             )
 
         return Response(EvidenciaSerializer(evidencia).data)
-
 
 class MetricasAPIView(APIView):
     """
@@ -580,6 +660,54 @@ class AtencionSocialViewSet(viewsets.ModelViewSet):
         if self.request.user.esta_limitado_a_delegacion:
             return qs.filter(caso__delegacion_id=self.request.user.delegacion_id)
         return qs
+
+    def perform_create(self, serializer):
+        caso = serializer.validated_data['caso']
+        with transaction.atomic():
+            try:
+                caso = CasoSocial.objects.select_for_update().get(pk=caso.pk)
+            except CasoSocial.DoesNotExist as exc:
+                raise NotFound() from exc
+            if caso.cerrado:
+                raise DRFValidationError({
+                    'caso': 'No se pueden registrar gestiones en un caso cerrado.'
+                })
+            siguiente_etapa = (
+                caso.atenciones.order_by('-etapa')
+                .values_list('etapa', flat=True)
+                .first()
+                or 0
+            ) + 1
+            if siguiente_etapa > 3:
+                raise DRFValidationError({
+                    'caso': 'El caso ya tiene el máximo de tres gestiones.'
+                })
+            if serializer.validated_data['etapa'] != siguiente_etapa:
+                raise DRFValidationError({
+                    'etapa': f'La siguiente gestión disponible es la etapa {siguiente_etapa}.'
+                })
+            try:
+                atencion = serializer.save(
+                    caso=caso,
+                    funcionario=self.request.user,
+                )
+            except ValueError as exc:
+                raise DRFValidationError({'caso': str(exc)}) from exc
+            RegistroAuditoria.objects.create(
+                usuario=self.request.user,
+                funcionario=self.request.user,
+                accion='REGISTRAR_ATENCION_SOCIAL',
+                evento='CREACION',
+                entidad='AtencionSocial',
+                identificador=str(atencion.pk),
+                identificador_registro=str(atencion.pk),
+                valor_nuevo={
+                    'caso_id': caso.pk,
+                    'etapa': atencion.etapa,
+                    'tipo_atencion': atencion.tipo_atencion,
+                },
+                ip_origen=self.request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            )
 
 
 class RegistroAuditoriaViewSet(viewsets.ReadOnlyModelViewSet):

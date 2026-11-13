@@ -127,6 +127,10 @@ class EvidenciaSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         actividad = attrs.get('actividad')
+        if self.instance is None and actividad and actividad.anulada:
+            raise serializers.ValidationError({
+                'actividad': 'No se puede asociar evidencia a una actividad anulada.'
+            })
         if self.instance is None and actividad and Evidencia.objects.filter(
             actividad=actividad,
             estado=Evidencia.Estado.APROBADA,
@@ -181,6 +185,10 @@ class EvidenciaSerializer(serializers.ModelSerializer):
 
 
 class CompromisoAgendaSerializer(serializers.ModelSerializer):
+    territorio = serializers.CharField(required=True, allow_blank=False)
+    area_apoyo = serializers.CharField(required=True, allow_blank=False)
+    fecha_compromiso = serializers.DateField(required=False)
+    fecha_comprometida = serializers.DateField(required=False)
     delegacion_nombre = serializers.ReadOnlyField(source='delegacion.nombre')
     delegacion_codigo = serializers.ReadOnlyField(source='delegacion.codigo')
     responsable_nombre = serializers.ReadOnlyField(source='responsable.get_full_name')
@@ -188,6 +196,90 @@ class CompromisoAgendaSerializer(serializers.ModelSerializer):
     class Meta:
         model = CompromisoAgenda
         fields = '__all__'
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        fecha = attrs.get(
+            'fecha_comprometida',
+            attrs.get(
+                'fecha_compromiso',
+                getattr(
+                    self.instance,
+                    'fecha_comprometida',
+                    getattr(self.instance, 'fecha_compromiso', None),
+                ),
+            ),
+        )
+        if not fecha:
+            raise serializers.ValidationError({
+                'fecha_comprometida': 'La fecha comprometida es obligatoria.'
+            })
+        if fecha < timezone.localdate():
+            raise serializers.ValidationError({
+                'fecha_comprometida': 'La fecha comprometida no puede ser anterior a hoy.'
+            })
+        delegacion = attrs.get(
+            'delegacion',
+            getattr(self.instance, 'delegacion', None),
+        )
+        responsable = attrs.get(
+            'responsable',
+            getattr(self.instance, 'responsable', None),
+        )
+        if delegacion and responsable and responsable.delegacion_id != delegacion.pk:
+            raise serializers.ValidationError({
+                'responsable': 'El responsable debe pertenecer a la delegación seleccionada.'
+            })
+        actividad = attrs.get(
+            'actividad',
+            getattr(self.instance, 'actividad', None),
+        )
+        if actividad and fecha < actividad.fecha_actividad:
+            raise serializers.ValidationError({
+                'fecha_comprometida': (
+                    'La fecha comprometida no puede ser anterior a la fecha de la actividad.'
+                )
+            })
+        if actividad:
+            if actividad.anulada:
+                raise serializers.ValidationError({
+                    'actividad': 'No se puede asociar un compromiso a una actividad anulada.'
+                })
+            if delegacion and actividad.delegacion_id != delegacion.pk:
+                raise serializers.ValidationError({
+                    'actividad': 'La actividad debe pertenecer a la delegación seleccionada.'
+                })
+            actividades_vinculadas = CompromisoAgenda.objects.filter(
+                actividad=actividad,
+            )
+            if self.instance:
+                actividades_vinculadas = actividades_vinculadas.exclude(
+                    pk=self.instance.pk,
+                )
+            if actividades_vinculadas.exists():
+                raise serializers.ValidationError({
+                    'actividad': 'La actividad ya está vinculada a otro compromiso.'
+                })
+        return attrs
+
+    def create(self, validated_data):
+        fecha = validated_data.get(
+            'fecha_comprometida',
+            validated_data.get('fecha_compromiso'),
+        )
+        validated_data['fecha_compromiso'] = fecha
+        validated_data['fecha_comprometida'] = fecha
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        fecha = validated_data.get(
+            'fecha_comprometida',
+            validated_data.get('fecha_compromiso'),
+        )
+        if fecha:
+            validated_data['fecha_compromiso'] = fecha
+            validated_data['fecha_comprometida'] = fecha
+        return super().update(instance, validated_data)
 
     def validate_estado(self, value):
         estados_editables = [
@@ -205,6 +297,7 @@ class CompromisoAgendaSerializer(serializers.ModelSerializer):
 
 class ActividadSerializer(serializers.ModelSerializer):
     contacto_telefono = serializers.CharField(required=True, allow_blank=False, allow_null=False)
+    codigo_registro = serializers.ReadOnlyField()
     funcionario_nombre = serializers.ReadOnlyField(source='funcionario.get_full_name')
     delegacion_nombre = serializers.ReadOnlyField(source='delegacion.nombre')
     delegacion_codigo = serializers.ReadOnlyField(source='delegacion.codigo')
@@ -214,7 +307,9 @@ class ActividadSerializer(serializers.ModelSerializer):
     class Meta:
         model = Actividad
         fields = [
-            'id', 'fecha_registro', 'fecha_actividad', 'funcionario', 'funcionario_nombre',
+            'id', 'codigo_registro', 'fecha_registro', 'fecha_actividad',
+            'anulada', 'anulada_en', 'anulada_por', 'motivo_anulacion',
+            'funcionario', 'funcionario_nombre',
             'delegacion', 'delegacion_nombre', 'delegacion_codigo', 'item_medicion', 'item_nombre',
             'catalogo_servicio', 'catalogo_servicio_nombre', 'catalogo_servicio_area',
             'tipo_actividad', 'tipo_actividad_nombre', 'tipo_actividad_area',
@@ -224,7 +319,12 @@ class ActividadSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'id',
+            'codigo_registro',
             'fecha_registro',
+            'anulada',
+            'anulada_en',
+            'anulada_por',
+            'motivo_anulacion',
             'catalogo_servicio_nombre',
             'catalogo_servicio_area',
             'tipo_actividad_nombre',
@@ -307,6 +407,7 @@ class ActividadSerializer(serializers.ModelSerializer):
 
 
 class AtencionSocialSerializer(serializers.ModelSerializer):
+    funcionario = serializers.PrimaryKeyRelatedField(read_only=True)
     funcionario_nombre = serializers.ReadOnlyField(source='funcionario.get_full_name')
     tipo_atencion_area = serializers.ReadOnlyField()
     subatencion = serializers.ReadOnlyField()
@@ -404,7 +505,65 @@ class AtencionSocialSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'tipo_atencion': 'El tipo de atención es obligatorio.'
             })
+        caso = attrs.get('caso', self.instance.caso if self.instance else None)
+        if self.instance is None and caso:
+            if caso.cerrado:
+                raise serializers.ValidationError({
+                    'caso': 'No se pueden registrar gestiones en un caso cerrado.'
+                })
+            siguiente_etapa = (
+                caso.atenciones.order_by('-etapa')
+                .values_list('etapa', flat=True)
+                .first()
+                or 0
+            ) + 1
+            if siguiente_etapa > 3:
+                raise serializers.ValidationError({
+                    'caso': 'El caso ya tiene el máximo de tres gestiones.'
+                })
+            if etapa != siguiente_etapa:
+                raise serializers.ValidationError({
+                    'etapa': f'La siguiente gestión disponible es la etapa {siguiente_etapa}.'
+                })
         return attrs
+
+    def create(self, validated_data):
+        caso = validated_data.pop('caso')
+        funcionario = validated_data.pop('funcionario', None)
+        if funcionario is None:
+            request = self.context.get('request')
+            funcionario = getattr(request, 'user', None)
+        if funcionario is None or not funcionario.is_authenticated:
+            raise serializers.ValidationError({
+                'funcionario': 'El funcionario debe provenir de un usuario autenticado.'
+            })
+        etapa = validated_data.pop('etapa')
+        fecha_por_etapa = {
+            1: 'fecha_visita_programada',
+            2: 'fecha_visita',
+            3: 'fecha_entrega_beneficio',
+        }
+        fecha = validated_data.pop(fecha_por_etapa[etapa])
+        for field in fecha_por_etapa.values():
+            validated_data.pop(field, None)
+        tipo_atencion_catalogo = validated_data.pop(
+            'tipo_atencion_catalogo',
+            None,
+        )
+        subatencion_catalogo = validated_data.pop(
+            'subatencion_catalogo',
+            None,
+        )
+        tipo_atencion = validated_data.pop('tipo_atencion', '')
+        return caso.registrar_atencion(
+            funcionario=funcionario,
+            tipo_atencion=tipo_atencion,
+            detalle=validated_data.pop('detalle'),
+            resultado=validated_data.pop('resultado'),
+            fecha_gestion=fecha,
+            tipo_atencion_catalogo=tipo_atencion_catalogo,
+            subatencion_catalogo=subatencion_catalogo,
+        )
 
 
 class CasoSocialSerializer(serializers.ModelSerializer):

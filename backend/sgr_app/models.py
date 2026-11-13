@@ -15,8 +15,10 @@ import secrets
 import string
 import hashlib
 import re
+import time
 from datetime import date
-from django.db import IntegrityError, models, transaction
+from django.db import IntegrityError, connections, models, router, transaction
+from django.db.utils import OperationalError
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
 from django.contrib.auth.models import AbstractUser, UserManager
@@ -1161,7 +1163,11 @@ class VersionConfiguracionPeriodo(models.Model):
     def calcular_avance(self, funcionario=None) -> float:
         """RN-003: Cuenta actividades con evidencia aprobada para este ítem."""
         from sgr_app.models import Actividad, Evidencia
-        qs = Actividad.objects.filter(item_medicion=self, evidencias__estado=Evidencia.Estado.APROBADA)
+        qs = Actividad.objects.filter(
+            item_medicion=self,
+            anulada=False,
+            evidencias__estado=Evidencia.Estado.APROBADA,
+        )
         if funcionario:
             qs = qs.filter(funcionario=funcionario)
         return float(qs.distinct().count())
@@ -1194,6 +1200,23 @@ class Actividad(models.Model):
     """
     fecha_registro = models.DateTimeField(auto_now_add=True, help_text="Fecha y hora generada por el servidor")
     fecha_actividad = models.DateField(default=timezone.localdate, verbose_name="Fecha de Ejecución")
+    codigo_registro = models.CharField(
+        max_length=30,
+        unique=True,
+        editable=False,
+        blank=True,
+        verbose_name="Código de Actividad",
+    )
+    anulada = models.BooleanField(default=False, verbose_name="Actividad Anulada")
+    anulada_en = models.DateTimeField(null=True, blank=True)
+    anulada_por = models.ForeignKey(
+        'Usuario',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='actividades_anuladas',
+    )
+    motivo_anulacion = models.TextField(blank=True, default='')
     funcionario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='actividades', verbose_name="Funcionario Ejecutor")
     delegacion = models.ForeignKey(Delegacion, on_delete=models.CASCADE, related_name='actividades')
     item = models.ForeignKey(ItemMedicion, on_delete=models.SET_NULL, null=True, blank=True, related_name='actividades', verbose_name="Ítem Catálogo")
@@ -1238,6 +1261,21 @@ class Actividad(models.Model):
         return f"Actividad #{self.id} - {self.funcionario.username} ({self.fecha_actividad})"
 
     def save(self, *args, **kwargs):
+        if self._state.adding and not self.codigo_registro:
+            prefijo = (
+                self.delegacion.codigo
+                if self.delegacion_id
+                else "SGR"
+            )
+            self.codigo_registro = f'{prefijo}{secrets.token_hex(8).upper()}'
+        if self.pk and not self._state.adding:
+            codigo_guardado = type(self).objects.filter(
+                pk=self.pk,
+            ).values_list('codigo_registro', flat=True).first()
+            if codigo_guardado != self.codigo_registro:
+                raise ValidationError(
+                    {'codigo_registro': 'El código de actividad es inmutable.'}
+                )
         if self.contacto_telefono:
             self.contacto_telefono = normalize_chilean_phone(self.contacto_telefono)
         if self._state.adding and self.catalogo_servicio_id:
@@ -1260,7 +1298,47 @@ class Actividad(models.Model):
                 })
             self.tipo_actividad_nombre = self.tipo_actividad.nombre
             self.tipo_actividad_area = self.tipo_actividad.area.nombre
-        super().save(*args, **kwargs)
+        database_alias = kwargs.get('using')
+        if database_alias is None and len(args) > 2:
+            database_alias = args[2]
+        connection = connections[
+            database_alias or router.db_for_write(type(self), instance=self)
+        ]
+        for attempt in range(6):
+            try:
+                if connection.in_atomic_block:
+                    with transaction.atomic(using=connection.alias):
+                        super().save(*args, **kwargs)
+                else:
+                    super().save(*args, **kwargs)
+                break
+            except OperationalError as exc:
+                message = str(exc).lower()
+                sqlite_lock = connection.vendor == 'sqlite' and (
+                    'database table is locked' in message
+                    or 'database is locked' in message
+                )
+                if not sqlite_lock or attempt == 5:
+                    raise
+                time.sleep(0.02 * (2 ** attempt))
+
+    def anular(self, usuario, motivo):
+        motivo = (motivo or '').strip()
+        if not motivo:
+            raise ValidationError({'motivo_anulacion': 'Indica el motivo de la anulación.'})
+        if self.anulada:
+            raise ValidationError({'anulada': 'La actividad ya está anulada.'})
+        self.anulada = True
+        self.anulada_en = timezone.now()
+        self.anulada_por = usuario
+        self.motivo_anulacion = motivo
+        self.save(update_fields=[
+            'anulada',
+            'anulada_en',
+            'anulada_por',
+            'motivo_anulacion',
+            'actualizado_en',
+        ])
 
     @property
     def fechaActividad(self):
@@ -1404,6 +1482,7 @@ class CompromisoAgenda(models.Model):
     actividad = models.ForeignKey(Actividad, on_delete=models.CASCADE, null=True, blank=True, related_name='compromisos', verbose_name="Actividad Origen")
     creado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, related_name='compromisos_creados')
     actualizado_en = models.DateTimeField(auto_now=True)
+    fecha_realizacion = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'Compromisos'
@@ -1429,13 +1508,118 @@ class CompromisoAgenda(models.Model):
             return self.Estado.EN_PROCESO
         return self.estado
 
+    @property
+    def realizado_fuera_de_plazo(self):
+        fecha_limite = self.fecha_comprometida or self.fecha_compromiso
+        return bool(
+            self.fecha_realizacion
+            and fecha_limite
+            and self.fecha_realizacion.date() > fecha_limite
+        )
+
+    def puede_transicionar_a(self, nuevo_estado):
+        transiciones = {
+            self.Estado.INGRESADO: {
+                self.Estado.PENDIENTE,
+                self.Estado.EN_PROCESO,
+                self.Estado.REPROGRAMADO,
+            },
+            self.Estado.PENDIENTE: {
+                self.Estado.EN_PROCESO,
+                self.Estado.REPROGRAMADO,
+                self.Estado.REALIZADO,
+            },
+            self.Estado.EN_PROCESO: {
+                self.Estado.PENDIENTE,
+                self.Estado.REPROGRAMADO,
+                self.Estado.REALIZADO,
+            },
+            self.Estado.REPROGRAMADO: {
+                self.Estado.PENDIENTE,
+                self.Estado.EN_PROCESO,
+                self.Estado.REALIZADO,
+            },
+            self.Estado.COMPLETADO: {
+                self.Estado.EN_PROCESO,
+                self.Estado.REALIZADO,
+            },
+            self.Estado.REALIZADO: {self.Estado.EN_PROCESO},
+        }
+        return nuevo_estado == self.estado or nuevo_estado in transiciones.get(
+            self.estado,
+            set(),
+        )
+
+    def registrar_transicion(self, nuevo_estado, autor, observacion):
+        observacion = (observacion or '').strip()
+        if not observacion:
+            raise ValidationError({
+                'observacion': 'Explica el cambio de estado en la observación.'
+            })
+        if not self.puede_transicionar_a(nuevo_estado):
+            raise ValidationError({
+                'estado': f'No se permite cambiar de {self.estado} a {nuevo_estado}.'
+            })
+        if nuevo_estado == self.Estado.REALIZADO:
+            evidencias = (
+                self.actividad.evidencias.all()
+                if self.actividad_id
+                else Evidencia.objects.none()
+            )
+            if not evidencias.exists() or evidencias.exclude(
+                estado=Evidencia.Estado.APROBADA,
+            ).exists():
+                raise ValidationError({
+                    'estado': (
+                        'Para marcar el compromiso como realizado, todas sus evidencias '
+                        'deben estar aprobadas.'
+                    )
+                })
+
+        estado_anterior = self.estado
+        ahora = timezone.now()
+        self.estado = nuevo_estado
+        self.fecha_realizacion = (
+            self.fecha_realizacion or ahora
+            if nuevo_estado == self.Estado.REALIZADO
+            else None
+        )
+        self.observacion = observacion
+        self.observaciones = observacion
+        self.save(update_fields=[
+            'estado',
+            'fecha_realizacion',
+            'observacion',
+            'observaciones',
+            'actualizado_en',
+        ])
+        ObservacionCompromiso.objects.create(
+            compromiso=self,
+            autor=autor,
+            texto=observacion,
+        )
+        return estado_anterior
+
     def sincronizar_estado_evidencias(self):
         evidencias = self.actividad.evidencias.all() if self.actividad_id else Evidencia.objects.none()
         completado = evidencias.exists() and not evidencias.exclude(
             estado=Evidencia.Estado.APROBADA
         ).exists()
         self.estado = self.Estado.COMPLETADO if completado else self.Estado.EN_PROCESO
-        self.save(update_fields=['estado', 'actualizado_en'])
+        if completado and not self.fecha_realizacion:
+            self.fecha_realizacion = (
+                evidencias.order_by('-fecha_validacion')
+                .values_list('fecha_validacion', flat=True)
+                .first()
+                or timezone.now()
+            )
+        elif not completado:
+            self.fecha_realizacion = None
+        self.save(update_fields=[
+            'estado',
+            'fecha_realizacion',
+            'actualizado_en',
+        ])
 
     @property
     def fechaCompromiso(self):
@@ -1803,6 +1987,7 @@ class MetaModel(models.Model):
             total_avanzado = sum(ind.avance for ind in self.indicadores.all())
         else:
             actividades = Actividad.objects.filter(
+                anulada=False,
                 fecha_actividad__gte=self.periodo.fecha_inicio,
                 fecha_actividad__lte=self.periodo.fecha_termino,
                 evidencias__estado=Evidencia.Estado.APROBADA,
