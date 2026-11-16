@@ -1,19 +1,26 @@
 import json
 from datetime import date
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from django.contrib.auth import authenticate, login
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.db.models import Prefetch
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
+from rest_framework import serializers as drf_serializers
 from rest_framework.exceptions import (
     NotFound,
     PermissionDenied as DRFPermissionDenied,
     ValidationError as DRFValidationError,
 )
 
+from sgr_app.services.seguridad_acceso import obtener_ip_cliente
+from sgr_app.concurrencia import ConcurrenciaAPIMixin
 from sgr_app.permissions import AuditAccessPermission
 from sgr_app.models import (
     Usuario, Delegacion, Cargo, PeriodoMedicion, CatalogoServicio,
@@ -21,6 +28,7 @@ from sgr_app.models import (
     CasoSocial, AtencionSocial, RegistroAuditoria
 )
 from sgr_app.web_views import es_codigo_2fa_valido
+from sgr_app.services import seguridad_acceso
 from sgr_app.serializers import (
     UsuarioSerializer, DelegacionSerializer, CargoSerializer,
     PeriodoMedicionSerializer, CatalogoServicioSerializer,
@@ -39,19 +47,28 @@ from sgr_app.services.evidencias import metadatos_archivo_evidencia, validar_arc
 
 
 def registrar_evento_auditoria(request, usuario, accion, entidad, identificador, val_ant=None, val_nuevo=None):
-    try:
-        ip = request.META.get('REMOTE_ADDR') if request else '127.0.0.1'
-        RegistroAuditoria.objects.create(
-            usuario=usuario,
-            accion=accion,
-            entidad=entidad,
-            identificador_registro=str(identificador),
-            valor_anterior=val_ant,
-            valor_nuevo=val_nuevo,
-            ip_origen=ip
-        )
-    except Exception as e:
-        print(f"Error registrando auditoría: {e}")
+    ip = obtener_ip_cliente(request) or None
+    accion_normalizada = accion.upper()
+    if accion_normalizada in {'INICIO_SESION', 'LOGIN'}:
+        evento = 'LOGIN'
+    elif any(token in accion_normalizada for token in ('APROBAR', 'VALIDAR')):
+        evento = 'APROBACION'
+    elif accion_normalizada.startswith(('ELIMINAR', 'BORRAR')):
+        evento = 'ELIMINACION'
+    else:
+        evento = 'MODIFICACION' if val_ant is not None else 'CREACION'
+    RegistroAuditoria.objects.create(
+        usuario=usuario,
+        funcionario=usuario,
+        evento=evento,
+        accion=accion,
+        entidad=entidad,
+        identificador=str(identificador),
+        identificador_registro=str(identificador),
+        valor_anterior=val_ant,
+        valor_nuevo=val_nuevo,
+        ip_origen=ip,
+    )
 
 
 class AuthLoginView(APIView):
@@ -60,6 +77,17 @@ class AuthLoginView(APIView):
     """
     permission_classes = [permissions.AllowAny]
 
+    @extend_schema(
+        summary='Iniciar sesión',
+        description='Crea la sesión. Si la cuenta tiene 2FA, responde requires_2fa=true y se debe '
+                    'llamar a /auth/verificar-2fa/. Tras 5 intentos fallidos responde 429.',
+        request=inline_serializer('LoginRequest', {
+            'username': drf_serializers.CharField(), 'password': drf_serializers.CharField(),
+        }),
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 401: OpenApiTypes.OBJECT,
+                   403: OpenApiTypes.OBJECT, 429: OpenApiTypes.OBJECT},
+        tags=['autenticación'],
+    )
     def post(self, request):
         username = request.data.get('username')
         password = request.data.get('password')
@@ -70,11 +98,31 @@ class AuthLoginView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        user = authenticate(username=username, password=password)
+        # OWASP A07: bloqueo temporal tras varios intentos fallidos.
+        if seguridad_acceso.login_bloqueado(request, username):
+            return Response(
+                {'error': seguridad_acceso.mensaje_bloqueo()},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        user = authenticate(request._request, username=username, password=password)
         if not user:
+            seguridad_acceso.registrar_login_fallido(request, username)
             return Response(
                 {'error': 'Credenciales inválidas o usuario inactivo.'},
                 status=status.HTTP_401_UNAUTHORIZED
+            )
+        seguridad_acceso.registrar_login_exitoso(request, username)
+
+        # La activación con clave inicial solo se completa en la web, dentro de su plazo.
+        if user.must_change_password:
+            return Response(
+                {
+                    'error': 'Debes definir tu contraseña desde la página de inicio de sesión '
+                             'antes de usar la API.',
+                    'requires_password_change': True,
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         # Si el usuario tiene 2FA activado (módulo de Rodrigo)
@@ -105,6 +153,13 @@ class Verificar2FAView(APIView):
     """
     permission_classes = [permissions.AllowAny]
 
+    @extend_schema(
+        summary='Verificar código 2FA',
+        request=inline_serializer('Verificar2FARequest', {'code': drf_serializers.CharField()}),
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 401: OpenApiTypes.OBJECT,
+                   429: OpenApiTypes.OBJECT},
+        tags=['autenticación'],
+    )
     def post(self, request):
         user_id = request.session.get('pending_2fa_user_id')
         code = request.data.get('code')
@@ -116,7 +171,15 @@ class Verificar2FAView(APIView):
         except Usuario.DoesNotExist:
             return Response({'error': 'Usuario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
+        if seguridad_acceso.two_factor_bloqueado(user):
+            request.session.pop('pending_2fa_user_id', None)
+            return Response(
+                {'error': seguridad_acceso.mensaje_bloqueo()},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         if es_codigo_2fa_valido(user, code):
+            seguridad_acceso.registrar_2fa_exitoso(user)
             request.session.pop('pending_2fa_user_id', None)
             login(request._request, user)
             registrar_evento_auditoria(request, user, 'VERIFICACION_2FA', 'Usuario', user.id)
@@ -127,6 +190,7 @@ class Verificar2FAView(APIView):
                 'authenticated': True
             })
         else:
+            seguridad_acceso.registrar_2fa_fallido(request, user)
             return Response({'error': 'Código 2FA incorrecto o inválido'}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -184,7 +248,7 @@ class ItemMedicionViewSet(viewsets.ModelViewSet):
         return qs
 
 
-class CompromisoAgendaViewSet(viewsets.ModelViewSet):
+class CompromisoAgendaViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
     """
     Tubo de Trabajo / Agenda Colectiva.
     Permite transiciones controladas de estado y auditoría.
@@ -221,12 +285,21 @@ class CompromisoAgendaViewSet(viewsets.ModelViewSet):
                 or (responsable and responsable.delegacion_id != self.request.user.delegacion_id)
             ):
                 raise DRFPermissionDenied('Solo puedes crear compromisos dentro de tu delegación.')
-        compromiso = serializer.save()
-        registrar_evento_auditoria(
-            self.request,
-            self.request.user if self.request.user.is_authenticated else compromiso.responsable,
-            'CREAR', 'CompromisoAgenda', compromiso.id, None, {'solicitante': compromiso.solicitante}
-        )
+        with transaction.atomic():
+            compromiso = serializer.save(creado_por=self.request.user)
+            registrar_evento_auditoria(
+                self.request,
+                self.request.user,
+                'CREAR',
+                'CompromisoAgenda',
+                compromiso.pk,
+                None,
+                {
+                    'solicitante': compromiso.solicitante,
+                    'estado': compromiso.estado,
+                    'responsable_id': compromiso.responsable_id,
+                },
+            )
 
     def perform_update(self, serializer):
         if self.request.user.esta_limitado_a_delegacion:
@@ -237,7 +310,31 @@ class CompromisoAgendaViewSet(viewsets.ModelViewSet):
                 or (responsable and responsable.delegacion_id != self.request.user.delegacion_id)
             ):
                 raise DRFPermissionDenied('Solo puedes mantener compromisos dentro de tu delegación.')
-        serializer.save()
+        compromiso = serializer.instance
+        anterior = {
+            'estado': compromiso.estado,
+            'fecha_comprometida': str(compromiso.fecha_comprometida),
+            'responsable_id': compromiso.responsable_id,
+            'delegacion_id': compromiso.delegacion_id,
+            'descripcion': compromiso.descripcion,
+        }
+        with transaction.atomic():
+            compromiso = serializer.save()
+            registrar_evento_auditoria(
+                self.request,
+                self.request.user,
+                'ACTUALIZAR',
+                'CompromisoAgenda',
+                compromiso.pk,
+                anterior,
+                {
+                    'estado': compromiso.estado,
+                    'fecha_comprometida': str(compromiso.fecha_comprometida),
+                    'responsable_id': compromiso.responsable_id,
+                    'delegacion_id': compromiso.delegacion_id,
+                    'descripcion': compromiso.descripcion,
+                },
+            )
 
     @action(detail=True, methods=['post'], url_path='cambiar-estado')
     def cambiar_estado(self, request, pk=None):
@@ -287,13 +384,13 @@ class CompromisoAgendaViewSet(viewsets.ModelViewSet):
                     ),
                     'observacion': observacion,
                 },
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
 
         return Response(CompromisoAgendaSerializer(compromiso).data)
 
 
-class ActividadViewSet(viewsets.ModelViewSet):
+class ActividadViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
     """
     CRUD del registro de actividades diarias de los funcionarios.
     """
@@ -301,7 +398,9 @@ class ActividadViewSet(viewsets.ModelViewSet):
     serializer_class = ActividadSerializer
 
     def get_queryset(self):
-        qs = Actividad.objects.all().select_related('funcionario', 'delegacion', 'item_medicion', 'compromiso_agenda').prefetch_related('evidencias')
+        qs = Actividad.objects.all().select_related('funcionario', 'delegacion', 'item_medicion', 'compromiso_agenda').prefetch_related(
+            Prefetch('evidencias', queryset=Evidencia.objects.select_related('verificador', 'subido_por'))
+        )
         if self.request.user.es_administrativo:
             qs = qs.filter(funcionario=self.request.user)
         elif self.request.user.esta_limitado_a_delegacion:
@@ -311,16 +410,29 @@ class ActividadViewSet(viewsets.ModelViewSet):
         fecha_desde = self.request.query_params.get('fecha_desde')
         fecha_hasta = self.request.query_params.get('fecha_hasta')
 
+        fecha_desde_parseada = parse_date(fecha_desde) if fecha_desde else None
+        fecha_hasta_parseada = parse_date(fecha_hasta) if fecha_hasta else None
+        if (
+            (fecha_desde and not fecha_desde_parseada)
+            or (fecha_hasta and not fecha_hasta_parseada)
+            or (
+                fecha_desde_parseada
+                and fecha_hasta_parseada
+                and fecha_desde_parseada > fecha_hasta_parseada
+            )
+        ):
+            return qs.none()
         if delegacion_id:
             qs = qs.filter(delegacion_id=delegacion_id)
         if funcionario_id:
             qs = qs.filter(funcionario_id=funcionario_id)
-        if fecha_desde:
-            qs = qs.filter(fecha_actividad__gte=fecha_desde)
-        if fecha_hasta:
-            qs = qs.filter(fecha_actividad__lte=fecha_hasta)
+        if fecha_desde_parseada:
+            qs = qs.filter(fecha_actividad__gte=fecha_desde_parseada)
+        if fecha_hasta_parseada:
+            qs = qs.filter(fecha_actividad__lte=fecha_hasta_parseada)
         return qs
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
         # Permite registrar actividad y evidencia en una sola operación optimizada para móvil (<= 3 clics)
         data = request.data.copy()
@@ -363,6 +475,16 @@ class ActividadViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            actividad, evidencia = self._crear_actividad_con_evidencia(
+                request, serializer, data, fotos_multiples, archivos_individuales,
+            )
+
+        headers = self.get_success_headers(serializer.data)
+        # Recargar para incluir evidencia
+        return Response(ActividadSerializer(actividad).data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def _crear_actividad_con_evidencia(self, request, serializer, data, fotos_multiples, archivos_individuales):
         actividad = serializer.save()
 
         # Generar evidencia vinculada de inmediato con su código alfanumérico único
@@ -385,7 +507,7 @@ class ActividadViewSet(viewsets.ModelViewSet):
                 for foto in fotos_multiples
             ]
             evidencia = evidencias[0]
-        else:
+        elif archivos_individuales or url_simulada or url_simulada_2 or url_simulada_3:
             evidencia = Evidencia.objects.create(
                 actividad=actividad,
                 archivo_foto=foto_archivo,
@@ -398,22 +520,74 @@ class ActividadViewSet(viewsets.ModelViewSet):
                         for archivo in archivos_individuales
                     ]
                 },
-                url_foto_simulada=url_simulada or 'https://images.unsplash.com/photo-1541888946425-d0fbb1861564?auto=format&fit=crop&w=600&q=80',
+                url_foto_simulada=url_simulada,
                 url_foto_simulada_2=url_simulada_2,
                 url_foto_simulada_3=url_simulada_3,
                 estado=Evidencia.Estado.PENDIENTE
             )
+        else:
+            # Sin fotografía no se crea evidencia: la actividad queda a la espera de su carga.
+            evidencia = None
 
         registrar_evento_auditoria(
             request,
-            actividad.funcionario,
+            request.user,
             'CREAR', 'Actividad', actividad.id,
-            None, {'actividad': actividad.actividad_solicitud, 'codigo_evidencia': evidencia.codigo_verificador}
+            None,
+            {
+                'actividad': actividad.actividad_solicitud,
+                'funcionario_id': actividad.funcionario_id,
+                'codigo_evidencia': evidencia.codigo_verificador if evidencia else None,
+            },
         )
+        return actividad, evidencia
 
-        headers = self.get_success_headers(serializer.data)
-        # Recargar para incluir evidencia
-        return Response(ActividadSerializer(actividad).data, status=status.HTTP_201_CREATED, headers=headers)
+    def perform_update(self, serializer):
+        actividad = serializer.instance
+        anterior = {
+            'fecha_actividad': actividad.fecha_actividad.isoformat(),
+            'item_medicion_id': actividad.item_medicion_id,
+            'tipo_actividad_id': actividad.tipo_actividad_id,
+            'catalogo_servicio_id': actividad.catalogo_servicio_id,
+            'direccion': actividad.direccion,
+            'actividad_solicitud': actividad.actividad_solicitud,
+            'accion_ejecutada': actividad.accion_ejecutada,
+        }
+        with transaction.atomic():
+            actividad = serializer.save()
+            registrar_evento_auditoria(
+                self.request,
+                self.request.user,
+                'ACTUALIZAR',
+                'Actividad',
+                actividad.pk,
+                anterior,
+                {
+                    'fecha_actividad': actividad.fecha_actividad.isoformat(),
+                    'item_medicion_id': actividad.item_medicion_id,
+                    'tipo_actividad_id': actividad.tipo_actividad_id,
+                    'catalogo_servicio_id': actividad.catalogo_servicio_id,
+                    'direccion': actividad.direccion,
+                    'actividad_solicitud': actividad.actividad_solicitud,
+                    'accion_ejecutada': actividad.accion_ejecutada,
+                },
+            )
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            registrar_evento_auditoria(
+                self.request,
+                self.request.user,
+                'ELIMINAR',
+                'Actividad',
+                instance.pk,
+                {
+                    'codigo_registro': instance.codigo_registro,
+                    'actividad_solicitud': instance.actividad_solicitud,
+                },
+                None,
+            )
+            super().perform_destroy(instance)
 
     @action(detail=True, methods=['post'], url_path='anular')
     def anular(self, request, pk=None):
@@ -458,12 +632,12 @@ class ActividadViewSet(viewsets.ModelViewSet):
                     'motivo_anulacion': actividad.motivo_anulacion,
                     'codigo_registro': actividad.codigo_registro,
                 },
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
         return Response(ActividadSerializer(actividad).data)
 
 
-class EvidenciaViewSet(viewsets.ModelViewSet):
+class EvidenciaViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
     """
     Gestión de Evidencias y módulo de validación ("Check" del Delegado/Verificador).
     """
@@ -485,7 +659,62 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
                 raise DRFValidationError({
                     'actividad': 'La actividad está cerrada porque ya tiene una evidencia aprobada.'
                 })
-            serializer.save()
+            evidencia = serializer.save()
+            registrar_evento_auditoria(
+                self.request,
+                self.request.user,
+                'CREAR_EVIDENCIA',
+                'Evidencia',
+                evidencia.pk,
+                None,
+                {
+                    'actividad_id': actividad.pk,
+                    'codigo_verificador': evidencia.codigo_verificador,
+                    'estado': evidencia.estado,
+                },
+            )
+
+    def perform_update(self, serializer):
+        evidencia = serializer.instance
+        anterior = {
+            'actividad_id': evidencia.actividad_id,
+            'codigo_verificador': evidencia.codigo_verificador,
+            'estado': evidencia.estado,
+            'observacion': evidencia.observacion,
+        }
+        with transaction.atomic():
+            evidencia = serializer.save()
+            registrar_evento_auditoria(
+                self.request,
+                self.request.user,
+                'ACTUALIZAR_EVIDENCIA',
+                'Evidencia',
+                evidencia.pk,
+                anterior,
+                {
+                    'actividad_id': evidencia.actividad_id,
+                    'codigo_verificador': evidencia.codigo_verificador,
+                    'estado': evidencia.estado,
+                    'observacion': evidencia.observacion,
+                },
+            )
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            registrar_evento_auditoria(
+                self.request,
+                self.request.user,
+                'ELIMINAR_EVIDENCIA',
+                'Evidencia',
+                instance.pk,
+                {
+                    'actividad_id': instance.actividad_id,
+                    'codigo_verificador': instance.codigo_verificador,
+                    'estado': instance.estado,
+                },
+                None,
+            )
+            super().perform_destroy(instance)
 
     def get_queryset(self):
         qs = Evidencia.objects.all()
@@ -518,7 +747,11 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
 
         decision = request.data.get('decision')
         observacion = (request.data.get('observacion') or '').strip()
-        if decision not in Evidencia.Estado.values:
+        if decision not in (
+            Evidencia.Estado.APROBADA,
+            Evidencia.Estado.RECHAZADA,
+            Evidencia.Estado.CORRECCION,
+        ):
             return Response(
                 {'error': f'Decisión no válida: {decision}'},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -538,6 +771,15 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
             except Evidencia.DoesNotExist as exc:
                 raise NotFound() from exc
             self.check_object_permissions(request, evidencia)
+            if evidencia.es_autovalidacion(request.user):
+                raise DRFPermissionDenied(Evidencia.MENSAJE_AUTOVALIDACION)
+            if evidencia.estado not in (
+                Evidencia.Estado.PENDIENTE,
+                Evidencia.Estado.CORRECCION,
+            ):
+                raise DRFValidationError({
+                    'estado': 'Esta evidencia ya fue aprobada o rechazada y no admite otra decisión.'
+                })
             if evidencia.actividad.anulada:
                 raise DRFValidationError({
                     'actividad': 'No se puede validar evidencia de una actividad anulada.'
@@ -578,7 +820,7 @@ class EvidenciaViewSet(viewsets.ModelViewSet):
                     'verificador_id': request.user.pk,
                     'fecha_validacion': evidencia.fecha_validacion.isoformat(),
                 },
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
 
         return Response(EvidenciaSerializer(evidencia).data)
@@ -587,6 +829,16 @@ class MetricasAPIView(APIView):
     """
     Endpoints analíticos de métricas del semáforo.
     """
+    @extend_schema(
+        summary='Métricas del semáforo de cumplimiento',
+        parameters=[
+            OpenApiParameter('tipo', str, enum=['comunal', 'delegacion', 'funcionario'], default='comunal'),
+            OpenApiParameter('periodo', int, required=False, description='ID del período (por defecto, el activo)'),
+            OpenApiParameter('delegacion_id', int, required=False, description='Con tipo=delegacion'),
+        ],
+        responses={200: OpenApiTypes.OBJECT},
+        tags=['métricas'],
+    )
     def get(self, request):
         tipo = request.query_params.get('tipo', 'comunal') # comunal, delegacion, funcionario
         periodo_id = request.query_params.get('periodo')
@@ -600,6 +852,12 @@ class MetricasAPIView(APIView):
             return Response({'error': 'No hay períodos de medición registrados.'}, status=status.HTTP_404_NOT_FOUND)
 
         if tipo == 'comunal':
+            if not (request.user.is_superuser or request.user.es_admin() or request.user.es_supervisor):
+                return Response(
+                    {'error': 'El resumen comunal está reservado a administración y coordinación. '
+                              'Consulta tipo=delegacion o tipo=funcionario.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             data = calcular_resumen_comunal(periodo)
             return Response(data)
 
@@ -636,7 +894,7 @@ class MetricasAPIView(APIView):
         return Response({'error': 'Tipo no reconocido'}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class CasoSocialViewSet(viewsets.ModelViewSet):
+class CasoSocialViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
     queryset = CasoSocial.objects.all().prefetch_related('atenciones')
     serializer_class = CasoSocialSerializer
 
@@ -649,7 +907,7 @@ class CasoSocialViewSet(viewsets.ModelViewSet):
         return qs
 
 
-class AtencionSocialViewSet(viewsets.ModelViewSet):
+class AtencionSocialViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
     queryset = AtencionSocial.objects.all()
     serializer_class = AtencionSocialSerializer
 
@@ -706,7 +964,7 @@ class AtencionSocialViewSet(viewsets.ModelViewSet):
                     'etapa': atencion.etapa,
                     'tipo_atencion': atencion.tipo_atencion,
                 },
-                ip_origen=self.request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_origen=obtener_ip_cliente(self.request) or None,
             )
 
 

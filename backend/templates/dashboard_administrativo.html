@@ -34,6 +34,33 @@
     </div>
   </div>
 
+  {# Próximos vencimientos: actuar antes de que el compromiso quede vencido. #}
+  {% if vencimientos.proximos or vencimientos.vencidos %}
+  <section class="card shadow-sm border-0 border-start border-warning border-4" aria-labelledby="titulo-vencimientos">
+    <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
+      <h2 id="titulo-vencimientos" class="h5 mb-0">Compromisos por vencer</h2>
+      {% if vencimientos.vencidos %}
+        <span class="badge text-bg-danger">{{ vencimientos.vencidos }} ya vencido{{ vencimientos.vencidos|pluralize }}</span>
+      {% endif %}
+    </div>
+    <ul class="list-group list-group-flush">
+      {% for c in vencimientos.proximos %}
+      <li class="list-group-item d-flex flex-column flex-sm-row justify-content-between gap-1">
+        <span><span class="fw-semibold">#{{ c.pk }} · {{ c.area_apoyo }}</span> <span class="text-secondary">— {{ c.territorio }}</span></span>
+        <span class="small {% if c.fecha_comprometida == vencimientos.hoy %}text-danger fw-semibold{% else %}text-secondary{% endif %}">
+          Vence el {{ c.fecha_comprometida|date:"d/m/Y" }}
+        </span>
+      </li>
+      {% empty %}
+      <li class="list-group-item text-secondary">Ningún compromiso vence en los próximos 3 días.</li>
+      {% endfor %}
+    </ul>
+    <div class="card-footer bg-white">
+      <a href="{% url 'web_tubo' %}" class="btn btn-sm btn-outline-secondary">Ver todos en el tubo de trabajo</a>
+    </div>
+  </section>
+  {% endif %}
+
   <section class="card shadow-sm border-0">
     <div class="card-body d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
       <div>

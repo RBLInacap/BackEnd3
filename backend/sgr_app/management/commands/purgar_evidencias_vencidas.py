@@ -6,12 +6,25 @@ from django.db.models import Q
 from django.utils import timezone
 
 from sgr_app.models import Evidencia
+from sgr_app.services.operacion import registrar_tarea
 
 
 class Command(BaseCommand):
     help = 'Elimina archivos de evidencia vencidos y conserva su registro y metadatos.'
 
     def handle(self, *args, **options):
+        # RNF-018: se registra cada ejecución y se alerta si falla.
+        with registrar_tarea('purgar_evidencias_vencidas') as resultado:
+            eliminadas = self._purgar()
+            resultado['detalle'] = f'{eliminadas} evidencia(s) con archivos eliminados'
+        self.stdout.write(
+            self.style.SUCCESS(
+                f'Archivos de {eliminadas} evidencia(s) vencida(s) eliminados; '
+                'los registros y metadatos se conservaron.'
+            )
+        )
+
+    def _purgar(self):
         fecha_limite = timezone.now() - timedelta(
             days=settings.EVIDENCE_RETENTION_DAYS
         )
@@ -38,10 +51,4 @@ class Command(BaseCommand):
             evidencia.archivos_eliminados_en = timezone.now()
             evidencia.save(update_fields=campos_actualizados)
             eliminadas += 1
-
-        self.stdout.write(
-            self.style.SUCCESS(
-                f'Archivos de {eliminadas} evidencia(s) vencida(s) eliminados; '
-                'los registros y metadatos se conservaron.'
-            )
-        )
+        return eliminadas

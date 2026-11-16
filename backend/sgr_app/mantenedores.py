@@ -12,10 +12,13 @@ from django.urls import reverse_lazy
 from django.utils import timezone
 from django.views.generic import CreateView, DeleteView, ListView, UpdateView, View
 
+from sgr_app.services.seguridad_acceso import obtener_ip_cliente
+from sgr_app.concurrencia import ConcurrenciaContextMixin
 from sgr_app.forms import (
     AreaForm,
     CatalogoServicioForm,
     CargoForm,
+    ConceptoAjusteForm,
     DelegacionForm,
     FuncionarioForm,
     ItemPonderacionFormSet,
@@ -31,6 +34,7 @@ from sgr_app.models import (
     Area,
     Cargo,
     CatalogoServicio,
+    ConceptoAjuste,
     Delegacion,
     ItemMedicion,
     PeriodoMedicion,
@@ -69,28 +73,16 @@ def _auditoria_periodo_snapshot(periodo):
         'umbral_colectivo': periodo.umbral_colectivo,
         'tope_cumplimiento': periodo.tope_cumplimiento,
         'version_de_parametro': periodo.version_de_parametro,
+        'version_cierre': periodo.version_cierre,
+        'cerrado_en': periodo.cerrado_en.isoformat() if periodo.cerrado_en else None,
     }
 
 
 def _snapshot_configuracion_periodo(periodo):
-    return {
-        'periodo': _auditoria_periodo_snapshot(periodo),
-        'items': list(
-            ItemMedicion.objects.filter(periodo=periodo)
-            .order_by('cargo_id', 'pk')
-            .values(
-                'id',
-                'cargo_id',
-                'nombre_item',
-                'descripcion',
-                'tipo_unidad',
-                'meta_cuantitativa',
-                'ponderador',
-                'unidad_medida',
-                'activo',
-            )
-        ),
-    }
+    # RF-038: incluye ítems, parámetros, catálogos y versión de reglas de cálculo.
+    from sgr_app.services.configuracion import snapshot_configuracion_periodo
+
+    return snapshot_configuracion_periodo(periodo)
 
 
 def _guardar_version_configuracion_periodo(periodo, usuario):
@@ -115,6 +107,13 @@ def _auditoria_valor(instance):
             'meta_cuantitativa': instance.meta_cuantitativa,
             'ponderador': instance.ponderador,
             'unidad_medida': instance.unidad_medida,
+            'medir_compromisos': instance.medir_compromisos,
+            'activo': instance.activo,
+        }
+    if isinstance(instance, ConceptoAjuste):
+        return {
+            'nombre': instance.nombre,
+            'naturaleza': instance.naturaleza,
             'activo': instance.activo,
         }
     if isinstance(instance, Area):
@@ -208,10 +207,17 @@ def _siguiente_version_parametro(version_actual):
         return f'{version_actual}.1'
 
 
-class AuditedSaveMixin:
+class AuditedSaveMixin(ConcurrenciaContextMixin):
     success_message = ''
 
     def form_valid(self, form):
+        # RNF-003: se bloquea la fila y se rechaza si otra persona la modificó.
+        with transaction.atomic():
+            if self.hay_conflicto():
+                return self.rechazar_por_conflicto(form)
+            return self._form_valid_auditado(form)
+
+    def _form_valid_auditado(self, form):
         previous_value = None
         previous_object = None
         if getattr(self, 'object', None) and self.object.pk:
@@ -229,6 +235,7 @@ class AuditedSaveMixin:
                     'meta_cuantitativa',
                     'ponderador',
                     'unidad_medida',
+                    'medir_compromisos',
                     'activo',
                 )
                 item_changed = previous_object is None or any(
@@ -258,7 +265,7 @@ class AuditedSaveMixin:
                             identificador_registro=str(periodo.pk),
                             valor_anterior=anterior_periodo,
                             valor_nuevo=_auditoria_periodo_snapshot(periodo),
-                            ip_origen=self.request.META.get('REMOTE_ADDR'),
+                            ip_origen=obtener_ip_cliente(self.request) or None,
                         )
             if isinstance(self.object, PeriodoMedicion) and (
                 previous_value is None
@@ -288,7 +295,7 @@ class AuditedSaveMixin:
                     if isinstance(valor_nuevo, dict)
                     else {'registro': valor_nuevo}
                 ),
-                ip_origen=self.request.META.get('REMOTE_ADDR'),
+                ip_origen=obtener_ip_cliente(self.request) or None,
             )
         if self.success_message:
             messages.success(self.request, self.success_message)
@@ -372,7 +379,7 @@ class SoftDeleteView(AdministradorRequiredMixin, DeleteView):
                 identificador_registro=str(self.object.pk),
                 valor_anterior={'registro': previous_value, 'activo': True},
                 valor_nuevo={'registro': previous_value, 'activo': False},
-                ip_origen=request.META.get('REMOTE_ADDR'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
         messages.success(request, self.success_message)
         return HttpResponseRedirect(self.get_success_url())
@@ -467,7 +474,7 @@ class AuditedSoftDeleteView(AdministradorRequiredMixin, DeleteView):
                     'registro': previous_value,
                     self.activo_field: False,
                 },
-                ip_origen=request.META.get('REMOTE_ADDR'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
 
         messages.success(request, self.success_message)
@@ -482,6 +489,13 @@ REACTIVATABLE_RECORDS = {
     'funcionarios': (Usuario, 'is_active', 'mantenedor_funcionarios_list', False, False),
     'roles': (Rol, 'estado', 'mantenedor_roles_list', False, False),
     'areas': (Area, 'estado', 'mantenedor_areas_list', False, False),
+    'conceptos-ajuste': (
+        ConceptoAjuste,
+        'activo',
+        'mantenedor_conceptos_ajuste_list',
+        False,
+        False,
+    ),
     'catalogos': (CatalogoServicio, 'activo', 'mantenedor_items_list', True, True),
     'tipos-actividad': (
         TipoActividad,
@@ -547,7 +561,7 @@ class ReactivateRecordView(AdministradorRequiredMixin, View):
                     'registro': previous_value,
                     self.active_field: True,
                 },
-                ip_origen=request.META.get('REMOTE_ADDR'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
         messages.success(request, 'Registro reactivado correctamente.')
         return HttpResponseRedirect(
@@ -634,7 +648,7 @@ class DelegacionReactivateView(AdministradorRequiredMixin, View):
                 identificador_registro=str(delegacion.pk),
                 valor_anterior={'registro': str(delegacion), 'activo': False},
                 valor_nuevo={'registro': str(delegacion), 'activo': True},
-                ip_origen=request.META.get('REMOTE_ADDR'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
         messages.success(request, 'Delegación reactivada correctamente.')
         return HttpResponseRedirect(
@@ -772,7 +786,7 @@ class ItemListView(ActivoBooleanListView):
                     identificador_registro=str(servicio.pk),
                     valor_anterior=valor_anterior,
                     valor_nuevo={**valor_anterior, 'activo': False},
-                    ip_origen=request.META.get('REMOTE_ADDR'),
+                    ip_origen=obtener_ip_cliente(request) or None,
                 )
             messages.success(request, 'Servicio desactivado; su historial se conservó.')
             return HttpResponseRedirect(self.request.path)
@@ -818,7 +832,7 @@ class ItemListView(ActivoBooleanListView):
                     'nombre': servicio.nombre,
                     'area': servicio.area,
                 },
-                ip_origen=request.META.get('REMOTE_ADDR'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
         messages.success(request, 'Catálogo de servicios actualizado.')
         return HttpResponseRedirect(self.request.path)
@@ -1006,7 +1020,7 @@ class ConfigurarPonderacionesView(AdministradorRequiredMixin, View):
                             identificador_registro=str(item.pk),
                             valor_anterior=previous_items.get(item.pk),
                             valor_nuevo=_auditoria_valor(item),
-                            ip_origen=request.META.get('REMOTE_ADDR'),
+                            ip_origen=obtener_ip_cliente(request) or None,
                         )
 
                 periodo.version_de_parametro = _siguiente_version_parametro(
@@ -1023,7 +1037,7 @@ class ConfigurarPonderacionesView(AdministradorRequiredMixin, View):
                     identificador_registro=str(periodo.pk),
                     valor_anterior=previous_periodo,
                     valor_nuevo=_auditoria_periodo_snapshot(periodo),
-                    ip_origen=request.META.get('REMOTE_ADDR'),
+                    ip_origen=obtener_ip_cliente(request) or None,
                 )
                 _guardar_version_configuracion_periodo(periodo, request.user)
 
@@ -1068,6 +1082,65 @@ class ItemUpdateView(ItemConfigurationRedirectView):
 
 class ItemDeleteView(ItemConfigurationRedirectView):
     message = 'Desactiva el ítem dentro de la configuración completa de su cargo y período.'
+
+
+class ConceptoAjusteListView(ActivoBooleanListView):
+    model = ConceptoAjuste
+    template_name = 'mantenedores/conceptos_ajuste_list.html'
+    activo_field = 'activo'
+    reactivation_entity = 'conceptos-ajuste'
+    ordering_field = 'nombre'
+    search_fields = ('nombre', 'naturaleza')
+    title = 'Conceptos de ajuste'
+    create_url = reverse_lazy('mantenedor_conceptos_ajuste_create')
+    update_url_name = 'mantenedor_conceptos_ajuste_update'
+    delete_url_name = 'mantenedor_conceptos_ajuste_delete'
+
+
+class ConceptoAjusteCreateView(
+    AdministradorRequiredMixin,
+    AuditedSaveMixin,
+    CreateView,
+):
+    model = ConceptoAjuste
+    form_class = ConceptoAjusteForm
+    template_name = 'mantenedores/form.html'
+    success_url = reverse_lazy('mantenedor_conceptos_ajuste_list')
+    success_message = 'Concepto de ajuste creado correctamente.'
+    extra_context = {
+        'title': 'Crear concepto de ajuste',
+        'submit_label': 'Crear concepto',
+        'cancel_url': reverse_lazy('mantenedor_conceptos_ajuste_list'),
+    }
+
+
+class ConceptoAjusteUpdateView(
+    AdministradorRequiredMixin,
+    AuditedSaveMixin,
+    UpdateView,
+):
+    model = ConceptoAjuste
+    form_class = ConceptoAjusteForm
+    template_name = 'mantenedores/form.html'
+    success_url = reverse_lazy('mantenedor_conceptos_ajuste_list')
+    success_message = 'Concepto de ajuste actualizado correctamente.'
+    extra_context = {
+        'title': 'Modificar concepto de ajuste',
+        'submit_label': 'Guardar cambios',
+        'cancel_url': reverse_lazy('mantenedor_conceptos_ajuste_list'),
+    }
+
+    def get_queryset(self):
+        return ConceptoAjuste.objects.filter(activo=True)
+
+
+class ConceptoAjusteDeleteView(AuditedSoftDeleteView):
+    model = ConceptoAjuste
+    template_name = 'mantenedores/confirm_delete.html'
+    activo_field = 'activo'
+    list_url = reverse_lazy('mantenedor_conceptos_ajuste_list')
+    success_url = reverse_lazy('mantenedor_conceptos_ajuste_list')
+    success_message = 'Concepto desactivado; los ajustes históricos se conservaron.'
 
 
 class PeriodoListView(ActivoBooleanListView):
@@ -1305,7 +1378,7 @@ class FuncionarioRenewAccessView(AdministradorRequiredMixin, View):
                         funcionario.initial_login_expires_at.isoformat()
                     ),
                 },
-                ip_origen=request.META.get('REMOTE_ADDR'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
 
         messages.success(

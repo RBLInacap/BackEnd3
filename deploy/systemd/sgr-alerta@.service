@@ -1,0 +1,10 @@
+[Unit]
+Description=SGR - alerta por fallo de %i
+
+[Service]
+Type=oneshot
+User=sgr
+Group=sgr
+WorkingDirectory=/srv/sgr/app/backend
+EnvironmentFile=/etc/sgr.env
+ExecStart=/srv/sgr/venv/bin/python manage.py enviar_alerta --asunto "Falló el servicio %i"

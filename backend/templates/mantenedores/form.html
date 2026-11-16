@@ -11,6 +11,7 @@
       <div class="card-body p-4">
         <form method="post" novalidate>
           {% csrf_token %}
+          {% if huella_concurrencia %}<input type="hidden" name="_huella" value="{{ huella_concurrencia }}">{% endif %}
           {% if form.non_field_errors %}
             <div class="alert alert-danger">{{ form.non_field_errors }}</div>
           {% endif %}

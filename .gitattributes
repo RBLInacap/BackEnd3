@@ -1,0 +1,3 @@
+# Los scripts y unidades de systemd deben conservar finales de línea LF
+*.sh text eol=lf
+deploy/** text eol=lf

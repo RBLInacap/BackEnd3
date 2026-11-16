@@ -16,6 +16,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
+    /* RNF-012: contraste WCAG AA (>= 4.5:1) del texto atenuado sobre carmesí #B30000. */
+    .text-white-50 { color: rgba(255, 255, 255, 0.85) !important; }
+    .sgr-skip-link:focus { position: fixed; top: 0.5rem; left: 0.5rem; z-index: 2000; }
     :root {
       --carmesi-la-serena: #B30000;
       --carmesi-oscuro: #800000;
@@ -390,6 +393,7 @@
   {% block extra_css %}{% endblock %}
 </head>
 <body class="d-flex flex-column min-vh-100">
+  <a href="#contenido-principal" class="visually-hidden-focusable sgr-skip-link btn btn-light fw-semibold">Saltar al contenido principal</a>
 
   <!-- Topbar Institucional Rojo Carmesí -->
   <header class="institutional-header px-3 text-white small d-flex flex-wrap justify-content-between align-items-center position-relative shadow-sm" style="background-color: #B30000; z-index: 1030;">
@@ -467,6 +471,9 @@
               <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_funcionarios_list' %}active{% endif %}" href="{% url 'mantenedor_funcionarios_list' %}"><i class="bi bi-people me-2"></i>Funcionarios</a></li>
               <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_roles_list' %}active{% endif %}" href="{% url 'mantenedor_roles_list' %}"><i class="bi bi-shield-lock me-2"></i>Roles</a></li>
               <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_areas_list' %}active{% endif %}" href="{% url 'mantenedor_areas_list' %}"><i class="bi bi-diagram-3 me-2"></i>Áreas</a></li>
+              {% if request.user.es_admin %}
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_conceptos_ajuste_list' %}active{% endif %}" href="{% url 'mantenedor_conceptos_ajuste_list' %}"><i class="bi bi-sliders me-2"></i>Conceptos de ajuste</a></li>
+              {% endif %}
               <li><hr class="dropdown-divider"></li>
               <li><a class="dropdown-item nav-dropdown-item {% if 'tipos_actividad' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'mantenedor_tipos_actividad_list' %}"><i class="bi bi-list-task me-2"></i>Tipos de actividad</a></li>
               <li><a class="dropdown-item nav-dropdown-item {% if 'tipos_atencion' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'mantenedor_tipos_atencion_list' %}"><i class="bi bi-heart-pulse me-2"></i>Tipos de atención social</a></li>
@@ -517,7 +524,7 @@
               <i class="bi bi-bell me-1"></i> Alertas operativas
             </a>
           </li>
-          {% if request.user.es_admin or request.user.es_supervisor %}
+          {% if request.user.es_admin or request.user.es_supervisor or request.user.esta_limitado_a_delegacion %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_reportes' %}active{% endif %}" href="{% url 'web_reportes' %}">
               <i class="bi bi-file-earmark-bar-graph me-1"></i> Informes
@@ -556,7 +563,7 @@
   {% endif %}
 
   <!-- Contenido Principal -->
-  <main class="flex-grow-1 py-4">
+  <main id="contenido-principal" class="flex-grow-1 py-4" tabindex="-1">
     <div class="container-fluid px-3 px-lg-4">
       {% if messages %}
         {% for message in messages %}

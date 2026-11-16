@@ -15,12 +15,14 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.urls import path, include
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib.auth.decorators import login_not_required, login_required
-from sgr_app import mantenedores, web_views
+from sgr_app import dos_factores, mantenedores, salud_views, web_views
 
 urlpatterns = [
+    path('health/', salud_views.health, name='health'),
     # Web Views (HTML + Bootstrap 5)
     path('', web_views.web_login, name='home'),
     path('login/', web_views.web_login, name='web_login'),
@@ -46,6 +48,10 @@ urlpatterns = [
     path('mantenedores/items/crear/', mantenedores.ItemCreateView.as_view(), name='mantenedor_items_create'),
     path('mantenedores/items/<int:pk>/modificar/', mantenedores.ItemUpdateView.as_view(), name='mantenedor_items_update'),
     path('mantenedores/items/<int:pk>/desactivar/', mantenedores.ItemDeleteView.as_view(), name='mantenedor_items_delete'),
+    path('mantenedores/conceptos-ajuste/', mantenedores.ConceptoAjusteListView.as_view(), name='mantenedor_conceptos_ajuste_list'),
+    path('mantenedores/conceptos-ajuste/crear/', mantenedores.ConceptoAjusteCreateView.as_view(), name='mantenedor_conceptos_ajuste_create'),
+    path('mantenedores/conceptos-ajuste/<int:pk>/modificar/', mantenedores.ConceptoAjusteUpdateView.as_view(), name='mantenedor_conceptos_ajuste_update'),
+    path('mantenedores/conceptos-ajuste/<int:pk>/desactivar/', mantenedores.ConceptoAjusteDeleteView.as_view(), name='mantenedor_conceptos_ajuste_delete'),
     path('mantenedores/periodos/', mantenedores.PeriodoListView.as_view(), name='mantenedor_periodos_list'),
     path('mantenedores/periodos/crear/', mantenedores.PeriodoCreateView.as_view(), name='mantenedor_periodos_create'),
     path('mantenedores/periodos/<int:pk>/modificar/', mantenedores.PeriodoUpdateView.as_view(), name='mantenedor_periodos_update'),
@@ -111,11 +117,13 @@ urlpatterns = [
     ),
     path('personal/', web_views.web_personal, name='web_personal'),
     path('mi-ficha/', web_views.web_mi_ficha, name='web_mi_ficha'),
+    path('mi-cuenta/2fa/', dos_factores.configurar_2fa, name='web_configurar_2fa'),
     path('personal/registrar-actividad/', web_views.web_registrar_actividad_personal, name='web_registrar_actividad_personal'),
     path('actividad-diaria/registrar-solicitante/', web_views.web_registrar_solicitante, name='web_registrar_solicitante'),
     path('actividad-diaria/items/', web_views.web_items_medicion_funcionario, name='web_funcionario_items'),
     path('actividad-diaria/registrar-actividad/', web_views.web_registrar_actividad_personal, name='web_registrar_actividad_diaria'),
     path('personal/actividades/<int:actividad_id>/evidencias/', web_views.web_agregar_evidencia, name='web_agregar_evidencia'),
+    path('personal/actividades/<int:actividad_id>/comentarios/', web_views.web_comentar_actividad, name='web_comentar_actividad'),
     path(
         'personal/actividades/<int:actividad_id>/anular/',
         web_views.web_anular_actividad,
@@ -126,6 +134,7 @@ urlpatterns = [
     path('verificacion/<int:evidencia_id>/validar/', web_views.web_validar_evidencia, name='web_validar_evidencia'),
     path('tubo/', web_views.web_tubo, name='web_tubo'),
     path('tubo/<int:compromiso_id>/cambiar-estado/', web_views.web_cambiar_estado_compromiso, name='web_cambiar_estado_compromiso'),
+    path('tubo/<int:compromiso_id>/comentarios/', web_views.web_comentar_compromiso, name='web_comentar_compromiso'),
     path('tubo/<int:compromiso_id>/editar/', web_views.CompromisoUpdateView.as_view(), name='web_editar_compromiso'),
     path('tubo/<int:compromiso_id>/eliminar/', web_views.web_eliminar_compromiso, name='web_eliminar_compromiso'),
     path('tubo/crear/', web_views.CompromisoCreateView.as_view(), name='web_crear_compromiso'),
@@ -135,6 +144,10 @@ urlpatterns = [
     path('api/geocodificar/', web_views.api_geocodificar_direccion, name='api_geocodificar'),
 
     # API REST
+    # RNF-016: API versionada y documentada. /api/ se mantiene por compatibilidad.
+    path('api/v1/schema/', SpectacularAPIView.as_view(), name='api_schema'),
+    path('api/v1/docs/', SpectacularSwaggerView.as_view(url_name='api_schema'), name='api_docs'),
+    path('api/v1/', include(('sgr_app.urls', 'sgr_app'), namespace='v1')),
     path('api/', include('sgr_app.urls')),
 ]
 

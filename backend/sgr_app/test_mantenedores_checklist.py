@@ -1,3 +1,4 @@
+import re
 from datetime import date, timedelta
 from types import SimpleNamespace
 
@@ -384,7 +385,7 @@ class MantenedoresChecklistTests(TestCase):
             'action': 'guardar_catalogo',
             'codigo': 'SVC-CRUD',
             'nombre': 'Servicio CRUD',
-            'area': 'Territorio',
+            'area_ref': str(self.area.pk),
         })
         self.assertEqual(response.status_code, 302, response.content.decode())
         servicio = CatalogoServicio.objects.get(codigo='SVC-CRUD')
@@ -398,7 +399,7 @@ class MantenedoresChecklistTests(TestCase):
             'catalogo_id': str(servicio.pk),
             'codigo': 'SVC-CRUD',
             'nombre': 'Servicio CRUD actualizado',
-            'area': 'Operaciones',
+            'area_ref': str(self.area.pk),
         })
         self.assertEqual(response.status_code, 302, response.content.decode())
         servicio.refresh_from_db()
@@ -636,6 +637,20 @@ class MantenedoresChecklistTests(TestCase):
         self.assertRedirects(response, '/password-reset/done/')
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, [funcionario.email])
+
+        # El funcionario nuevo debe poder terminar la recuperación e iniciar sesión.
+        code = re.search(r'(\d{3} \d{3})', mail.outbox[0].body).group(1)
+        response = client.post('/password-reset/done/', {'code': code})
+        self.assertRedirects(response, '/password-reset/change/')
+        response = client.post('/password-reset/change/', {
+            'new_password1': 'ClaveNuevaSegura456!',
+            'new_password2': 'ClaveNuevaSegura456!',
+        })
+        self.assertRedirects(response, '/password-reset/complete/')
+        funcionario.refresh_from_db()
+        self.assertFalse(funcionario.must_change_password)
+        self.assertIsNone(funcionario.initial_login_expires_at)
+        self.assertTrue(funcionario.check_password('ClaveNuevaSegura456!'))
 
     def test_functionary_first_login_requires_matching_new_password(self):
         response = self.client.post('/mantenedores/funcionarios/crear/', {
@@ -1027,7 +1042,7 @@ class MantenedoresChecklistTests(TestCase):
             'action': 'guardar_catalogo',
             'codigo': 'SVC-SUPERVISOR',
             'nombre': 'Servicio Supervisor',
-            'area': 'Territorio',
+            'area_ref': str(self.area.pk),
         })
         self.assertRedirects(response, catalog_url)
         service = CatalogoServicio.objects.get(codigo='SVC-SUPERVISOR')
@@ -1036,7 +1051,7 @@ class MantenedoresChecklistTests(TestCase):
             'catalogo_id': str(service.pk),
             'codigo': 'SVC-SUPERVISOR',
             'nombre': 'Servicio Supervisor actualizado',
-            'area': 'Operaciones',
+            'area_ref': str(self.area.pk),
         })
         self.assertRedirects(response, catalog_url)
         service.refresh_from_db()

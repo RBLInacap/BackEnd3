@@ -36,6 +36,7 @@ from sgr_app.forms import (
     AtencionSocialForm,
     CasoSocialForm,
     CompromisoAgendaForm,
+    ComentarioTextoForm,
     CompromisoEstadoForm,
     InitialPasswordForm,
     PasswordResetCodeForm,
@@ -46,9 +47,18 @@ from sgr_app.forms import (
     ValidarEvidenciaForm,
 )
 from sgr_app.periodos import get_nombre_trimestre_actual, get_periodo_trimestre_actual
+from sgr_app.services import seguridad_acceso
+from sgr_app.services.seguridad_acceso import obtener_ip_cliente
+from sgr_app.concurrencia import ConcurrenciaContextMixin
+from sgr_app.services.configuracion import parametros_calculo
+from sgr_app.services.panel_territorial import (
+    comparacion_territorial,
+    panel_territorial,
+    proximos_vencimientos,
+)
 from sgr_app.models import (
-    AjusteIncentivo, Delegacion, Cargo, Area, Usuario, PeriodoMedicion, ItemMedicion,
-    Actividad, Evidencia, CompromisoAgenda, CasoSocial, AtencionSocial, Solicitante,
+    AjusteIncentivo, ConceptoAjuste, Delegacion, Cargo, Area, Usuario, PeriodoMedicion, ItemMedicion,
+    Actividad, ComentarioActividad, Evidencia, CompromisoAgenda, CasoSocial, AtencionSocial, Solicitante,
     RegistroAuditoria, MetaModel, ObservacionCompromiso, CatalogoServicio,
     PasswordResetCode, TipoActividad, TipoAtencionSocial, SubatencionSocial,
 )
@@ -87,7 +97,6 @@ def web_password_reset_request(request):
             user = Usuario.objects.filter(
                 email__iexact=email,
                 is_active=True,
-                must_change_password=False,
             ).first()
             request.session.pop('password_reset_otp_id', None)
 
@@ -148,7 +157,6 @@ def web_password_reset_done(request):
             reset_request = PasswordResetCode.objects.select_related('user').filter(
                 pk=reset_id,
                 user__is_active=True,
-                user__must_change_password=False,
                 verified_at__isnull=True,
             ).first() if reset_id else None
 
@@ -196,7 +204,6 @@ def web_password_reset_change(request):
     reset_request = PasswordResetCode.objects.select_related('user').filter(
         pk=reset_id,
         user__is_active=True,
-        user__must_change_password=False,
     ).first() if reset_id else None
     now = timezone.now()
 
@@ -229,7 +236,15 @@ def web_password_reset_change(request):
                     return redirect('password_reset')
 
                 reset_request.user.set_password(form.cleaned_data['new_password1'])
-                reset_request.user.save(update_fields=['password'])
+                # La persona eligió una clave propia al verificar su correo:
+                # ya no necesita pasar por el cambio de clave inicial.
+                reset_request.user.must_change_password = False
+                reset_request.user.initial_login_expires_at = None
+                reset_request.user.save(update_fields=[
+                    'password',
+                    'must_change_password',
+                    'initial_login_expires_at',
+                ])
                 reset_request.delete()
 
             request.session.pop('password_reset_otp_id', None)
@@ -246,7 +261,11 @@ def web_password_reset_complete(request):
 
 
 def es_codigo_2fa_valido(user, code):
-    secret = getattr(user, 'totp_secret', None)
+    return codigo_totp_valido(getattr(user, 'totp_secret', None), code)
+
+
+def codigo_totp_valido(secret, code):
+    """Valida un código TOTP (RFC 6238, 30 s, 6 dígitos, ±1 intervalo)."""
     if not secret or not re.fullmatch(r'\d{6}', code or ''):
         return False
     try:
@@ -308,6 +327,14 @@ def _resumen_comunal_visible(user, periodo):
     return calcular_resumen_comunal(periodo)
 
 
+def _celda_csv_segura(valor):
+    """Evita que un texto ingresado por usuarios se ejecute como fórmula en Excel."""
+    texto = '' if valor is None else str(valor)
+    if texto and texto[0] in ('=', '+', '-', '@', chr(9), chr(13)):
+        return f"'{texto}"
+    return texto
+
+
 def _filtrar_por_delegacion(queryset, user, campo='delegacion_id'):
     if not user.esta_limitado_a_delegacion:
         return queryset
@@ -333,7 +360,7 @@ def _agrupar_funcionarios_por_cargo(funcionarios):
         personal = grupo['funcionarios']
         grupo['total_funcionarios'] = len(personal)
         grupo['promedio_ponderado_pct'] = round(
-            sum(funcionario['total_ajustado_pct'] for funcionario in personal)
+            sum(funcionario['total_ponderado_pct'] for funcionario in personal)
             / len(personal),
             2,
         )
@@ -410,9 +437,11 @@ def web_ajustes_incentivo(request):
         es_delegado=False,
         is_active=True,
     ).select_related('delegacion', 'cargo').order_by('last_name', 'first_name', 'username')
+    conceptos = ConceptoAjuste.objects.filter(activo=True).order_by('nombre')
     ajuste_form = AjusteIncentivoForm(
         request.POST if request.method == 'POST' else None,
         funcionarios=funcionarios,
+        conceptos=conceptos,
     )
     if request.method == 'POST':
         if not periodo.pk:
@@ -425,7 +454,8 @@ def web_ajustes_incentivo(request):
                 funcionario=funcionario,
                 registrado_por=request.user,
                 periodo=periodo,
-                tipo=ajuste_form.cleaned_data['tipo'],
+                concepto=ajuste_form.cleaned_data['concepto'],
+                tipo=ajuste_form.cleaned_data['concepto'].nombre,
                 motivo=ajuste_form.cleaned_data['motivo'],
                 valor_porcentaje=ajuste_form.cleaned_data['valor_porcentaje'],
                 estado='PENDIENTE',
@@ -443,7 +473,7 @@ def web_ajustes_incentivo(request):
                         identificador=str(ajuste.pk),
                         identificador_registro=str(ajuste.pk),
                         valor_nuevo=_snapshot_ajuste(ajuste),
-                        ip_origen=request.META.get('REMOTE_ADDR'),
+                        ip_origen=obtener_ip_cliente(request) or None,
                     )
             except ValidationError as error:
                 if hasattr(error, 'message_dict'):
@@ -538,7 +568,7 @@ def web_decidir_ajuste_incentivo(request, ajuste_id):
             identificador_registro=str(ajuste.pk),
             valor_anterior=valor_anterior,
             valor_nuevo=_snapshot_ajuste(ajuste),
-            ip_origen=request.META.get('REMOTE_ADDR'),
+            ip_origen=obtener_ip_cliente(request) or None,
         )
 
     messages.success(request, 'El ajuste fue revisado correctamente.')
@@ -562,25 +592,16 @@ def web_login(request):
         if not password:
             return render(request, 'login.html', {'error': 'La contraseña es obligatoria.'})
 
+        # OWASP A07: bloqueo temporal tras varios intentos fallidos.
+        if seguridad_acceso.login_bloqueado(request, username):
+            return render(request, 'login.html', {
+                'error': seguridad_acceso.mensaje_bloqueo(),
+                'username_val': username,
+            }, status=429)
+
         user_obj = Usuario.objects.filter(
             Q(username__iexact=username) | Q(email__iexact=username)
         ).first()
-        if user_obj and not user_obj.is_active:
-            return render(request, 'login.html', {'error': 'Usuario bloqueado o inactivo.'})
-
-        if user_obj and user_obj.must_change_password and (
-            not user_obj.initial_login_expires_at
-            or user_obj.initial_login_expires_at <= timezone.now()
-        ):
-            user_obj.is_active = False
-            user_obj.save(update_fields=['is_active'])
-            return render(request, 'login.html', {
-                'error': (
-                    'El plazo de 10 minutos para activar esta cuenta venció. '
-                    'Contacte al administrador para renovar el acceso.'
-                ),
-                'username_val': username,
-            })
 
         user = authenticate(
             request,
@@ -588,7 +609,31 @@ def web_login(request):
             password=password,
         )
 
+        # El estado de la cuenta solo se informa si la contraseña es correcta,
+        # para no revelar qué cuentas existen (enumeración de usuarios).
+        if user is None and user_obj and not user_obj.is_active and user_obj.check_password(password):
+            seguridad_acceso.registrar_login_exitoso(request, username)
+            return render(request, 'login.html', {'error': 'Usuario bloqueado o inactivo.'})
+
+        if user is None:
+            seguridad_acceso.registrar_login_fallido(request, username)
+
         if user is not None:
+            seguridad_acceso.registrar_login_exitoso(request, username)
+            if user.must_change_password and (
+                not user.initial_login_expires_at
+                or user.initial_login_expires_at <= timezone.now()
+            ):
+                user.is_active = False
+                user.save(update_fields=['is_active'])
+                return render(request, 'login.html', {
+                    'error': (
+                        'El plazo de 10 minutos para activar esta cuenta venció. '
+                        'Contacte al administrador para renovar el acceso.'
+                    ),
+                    'username_val': username,
+                })
+
             if user.must_change_password:
                 request.session['pending_initial_password_user_id'] = user.pk
                 request.session.set_expiry(600)
@@ -599,17 +644,24 @@ def web_login(request):
                 request.session['pending_2fa_user_id'] = user.pk
                 request.session.set_expiry(300)
                 if code_2fa:
+                    if seguridad_acceso.two_factor_bloqueado(user):
+                        request.session.pop('pending_2fa_user_id', None)
+                        return render(request, 'login.html', {
+                            'error': seguridad_acceso.mensaje_bloqueo(),
+                        }, status=429)
                     if es_codigo_2fa_valido(user, code_2fa):
+                        seguridad_acceso.registrar_2fa_exitoso(user)
                         request.session.pop('pending_2fa_user_id', None)
                         login(request, user)
                         RegistroAuditoria.objects.create(
                             usuario=user, accion='INICIO_SESION_2FA', entidad='Usuario',
                             identificador_registro=str(user.id),
-                            ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1')
+                            ip_origen=obtener_ip_cliente(request) or None
                         )
                         messages.success(request, f"¡Sesión iniciada con éxito! Autenticación 2FA verificada para {user.get_full_name() or user.username}.")
                         return redirect('web_dashboard')
                     else:
+                        seguridad_acceso.registrar_2fa_fallido(request, user)
                         return render(request, 'login.html', {
                             'error': 'Código 2FA incorrecto. Ingrese el código temporal de 6 dígitos generado por su dispositivo.',
                             'show_2fa_checked': True,
@@ -626,7 +678,7 @@ def web_login(request):
                 usuario=user, accion='INICIO_SESION', entidad='Usuario',
                 identificador_registro=str(user.id),
                 valor_nuevo={'username': user.username},
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1')
+                ip_origen=obtener_ip_cliente(request) or None
             )
             return redirect('web_dashboard')
         else:
@@ -683,7 +735,7 @@ def web_initial_password(request):
                 entidad='Usuario',
                 identificador_registro=str(user.pk),
                 valor_nuevo={'username': user.username},
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
             messages.success(request, 'Contraseña guardada. Sesión iniciada correctamente.')
             return redirect('web_dashboard')
@@ -705,17 +757,24 @@ def web_verificar_2fa(request):
             return redirect('web_login')
         try:
             user = Usuario.objects.get(id=user_id, is_active=True, requires_2fa=True)
+            if seguridad_acceso.two_factor_bloqueado(user):
+                request.session.pop('pending_2fa_user_id', None)
+                return render(request, 'login.html', {
+                    'error': seguridad_acceso.mensaje_bloqueo(),
+                }, status=429)
             if es_codigo_2fa_valido(user, code):
+                seguridad_acceso.registrar_2fa_exitoso(user)
                 request.session.pop('pending_2fa_user_id', None)
                 login(request, user)
                 RegistroAuditoria.objects.create(
                     usuario=user, accion='VERIFICACION_2FA', entidad='Usuario',
                     identificador_registro=str(user.id),
-                    ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1')
+                    ip_origen=obtener_ip_cliente(request) or None
                 )
                 messages.success(request, f"¡Autenticación 2FA confirmada para {user.get_full_name() or user.username}!")
                 return redirect('web_dashboard')
             else:
+                seguridad_acceso.registrar_2fa_fallido(request, user)
                 return render(request, 'login.html', {
                     'show_2fa': True,
                     'user_id': user.pk,
@@ -746,6 +805,7 @@ def web_dashboard(request):
             'compromisos_count': CompromisoAgenda.objects.filter(
                 responsable=request.user,
             ).count(),
+            'vencimientos': proximos_vencimientos(request.user),
         })
 
     periodo, periodo_configurado = get_periodo_trimestre_actual()
@@ -815,10 +875,17 @@ def web_dashboard(request):
         'delegacion_actual': request.user.delegacion if request.user.esta_limitado_a_delegacion else None,
     }
 
-    if request.user.es_admin():
-        template = 'dashboard_admin.html'
+    if request.user.esta_limitado_a_delegacion:
+        # Panel Territorial: la delegación sale siempre del usuario, nunca de la URL.
+        template = 'dashboard_delegado.html'
+        if periodo and request.user.delegacion_id:
+            context['territorial'] = panel_territorial(periodo, request.user.delegacion)
     else:
-        template = 'dashboard_supervisor.html'
+        template = 'dashboard_admin.html' if request.user.es_admin() else 'dashboard_supervisor.html'
+        if periodo:
+            context['comparacion_territorial'] = comparacion_territorial(
+                periodo, list(Delegacion.objects.filter(activo=True).order_by('nombre')),
+            )
     return render(request, template, context)
 
 def web_semaforo(request):
@@ -860,7 +927,7 @@ def web_semaforo(request):
     funcionarios_semaforo = []
     for d in delegaciones_filtradas:
         for f in d['funcionarios']:
-            avance = f['total_ajustado_pct']
+            avance = f['total_ponderado_pct']
             color = determinar_color_semaforo(avance, meta_esperada_pct, umbral_verde, umbral_ambar)
             funcionarios_semaforo.append({
                 'id': f['funcionario_id'],
@@ -1016,7 +1083,7 @@ def web_alertas_operativas(request):
                     'nivel': 'danger',
                     'titulo': 'Avance bajo el umbral esperado',
                     'motivo': (
-                        f"Avance {metricas['total_ajustado_pct']:.1f}% frente a "
+                        f"Avance {metricas['total_ponderado_pct']:.1f}% frente a "
                         f"{metricas['meta_esperada_pct']:.1f}% esperado."
                     ),
                     'responsable': metricas['nombre_completo'],
@@ -1057,10 +1124,13 @@ def web_alertas_operativas(request):
 
 @login_required(login_url='web_login')
 def web_reportes(request):
+    # El delegado accede solo a su delegación: todas las consultas pasan por
+    # _filtrar_por_delegacion, y el filtro ?delegacion= se suma a ese límite.
     if not (
         request.user.is_superuser
         or request.user.es_admin()
         or request.user.es_supervisor
+        or (request.user.esta_limitado_a_delegacion and request.user.delegacion_id)
     ):
         raise PermissionDenied
 
@@ -1095,18 +1165,22 @@ def web_reportes(request):
     fecha_hasta_texto = request.GET.get('fecha_hasta', '').strip()
     fecha_desde = parse_date(fecha_desde_texto) if fecha_desde_texto else None
     fecha_hasta = parse_date(fecha_hasta_texto) if fecha_hasta_texto else None
+    fecha_filtro_invalido = False
     if fecha_desde_texto and not fecha_desde:
         messages.error(request, 'La fecha inicial del filtro no es válida.')
+        fecha_filtro_invalido = True
     if fecha_hasta_texto and not fecha_hasta:
         messages.error(request, 'La fecha final del filtro no es válida.')
+        fecha_filtro_invalido = True
     if fecha_desde and fecha_hasta and fecha_desde > fecha_hasta:
         messages.error(request, 'La fecha inicial no puede ser posterior a la fecha final.')
-        fecha_desde = None
-        fecha_hasta = None
+        fecha_filtro_invalido = True
     if fecha_desde:
         actividades = actividades.filter(fecha_actividad__gte=fecha_desde)
     if fecha_hasta:
         actividades = actividades.filter(fecha_actividad__lte=fecha_hasta)
+    if fecha_filtro_invalido:
+        actividades = actividades.none()
 
     if periodo:
         actividades = actividades.filter(
@@ -1142,7 +1216,8 @@ def web_reportes(request):
         )
 
     if request.GET.get('formato') == 'csv':
-        response = HttpResponse(content_type='text/csv; charset=utf-8-sig')
+        # La marca BOM se escribe una sola vez; con utf-8-sig se repetiría en cada fila.
+        response = HttpResponse(content_type='text/csv; charset=utf-8')
         response['Content-Disposition'] = (
             f'attachment; filename="informe_sgr_{timezone.localdate():%Y%m%d}.csv"'
         )
@@ -1158,6 +1233,7 @@ def web_reportes(request):
             f'item={item_id or "todos"}; estado={estado or "activos"}; '
             f'fecha_desde={fecha_desde_texto or "sin límite"}; '
             f'fecha_hasta={fecha_hasta_texto or "sin límite"}; '
+            # La celda siempre empieza con "delegacion=", por lo que no puede ser una fórmula.
             f'búsqueda={termino or "sin texto"}',
         ])
         writer.writerow([
@@ -1173,11 +1249,15 @@ def web_reportes(request):
                 actividad.pk,
                 actividad.codigo_registro,
                 actividad.fecha_actividad.isoformat(),
-                actividad.funcionario.get_full_name() or actividad.funcionario.username,
-                actividad.delegacion.nombre,
-                actividad.item_medicion.nombre_item if actividad.item_medicion_id else '',
-                actividad.actividad_solicitud,
-                actividad.accion_ejecutada,
+                _celda_csv_segura(
+                    actividad.funcionario.get_full_name() or actividad.funcionario.username
+                ),
+                _celda_csv_segura(actividad.delegacion.nombre),
+                _celda_csv_segura(
+                    actividad.item_medicion.nombre_item if actividad.item_medicion_id else ''
+                ),
+                _celda_csv_segura(actividad.actividad_solicitud),
+                _celda_csv_segura(actividad.accion_ejecutada),
                 evidencias_aprobadas,
             ])
         return response
@@ -1251,10 +1331,13 @@ def web_personal(request):
     if request.user.is_authenticated and request.user.es_administrativo:
         funcionario = request.user
     else:
-        id_param = request.GET.get('id')
+        id_param = (request.GET.get('id') or '').strip()
         funcionario = None
         if id_param:
-            funcionario = todos_funcionarios.filter(id=id_param).first()
+            if id_param.isdecimal():
+                funcionario = todos_funcionarios.filter(id=int(id_param)).first()
+            if not funcionario:
+                messages.error(request, 'El funcionario solicitado no existe o no está disponible.')
         elif todos_funcionarios.exists():
             funcionario = todos_funcionarios.first()
 
@@ -1277,32 +1360,15 @@ def web_personal(request):
                     estado=Evidencia.Estado.APROBADA,
                 )
             )
-        ).prefetch_related('evidencias', 'compromisos').order_by('-fecha_actividad', '-fecha_registro')
+        ).prefetch_related(
+            'evidencias',
+            'compromisos',
+            'comentarios__autor',
+        ).order_by('-fecha_actividad', '-fecha_registro')
         if periodo:
             metricas = calcular_metricas_funcionario(funcionario, periodo)
             if periodo.pk and funcionario.cargo:
                 items_funcionario = list(ItemMedicion.objects.filter(periodo=periodo, cargo=funcionario.cargo, activo=True))
-            compromisos_periodo = CompromisoAgenda.objects.filter(
-                responsable=funcionario,
-                fecha_compromiso__gte=periodo.fecha_inicio,
-                fecha_compromiso__lte=periodo.fecha_termino,
-            )
-            total_compromisos = compromisos_periodo.count()
-            realizados = compromisos_periodo.filter(
-                estado__in=(
-                    CompromisoAgenda.Estado.COMPLETADO,
-                    CompromisoAgenda.Estado.REALIZADO,
-                )
-            ).count()
-            metricas['compromisos'] = {
-                'total': total_compromisos,
-                'realizados': realizados,
-                'pendientes': total_compromisos - realizados,
-                'porcentaje_realizado': round(
-                    (realizados / max(total_compromisos, 1)) * 100,
-                    1,
-                ),
-            }
 
         item_param = request.GET.get('item', '')
         if item_param:
@@ -1321,6 +1387,18 @@ def web_personal(request):
             request.GET.get('pagina')
         )
         actividades = list(pagina_actividades.object_list)
+        # RF-028: un compromiso puede vincularse por Actividad.compromiso_agenda
+        # o por CompromisoAgenda.actividad; se muestran ambos sin duplicar.
+        for actividad in actividades:
+            vinculados = {}
+            if actividad.compromiso_agenda_id:
+                vinculados[actividad.compromiso_agenda_id] = actividad.compromiso_agenda
+            for compromiso in actividad.compromisos.all():
+                vinculados.setdefault(compromiso.pk, compromiso)
+            actividad.compromisos_vinculados = sorted(
+                vinculados.values(),
+                key=lambda compromiso: compromiso.pk,
+            )
 
     areas_apoyo = [
         'Operaciones y Territorio',
@@ -1355,6 +1433,11 @@ def web_personal(request):
         ],
         'periodo': periodo,
         'periodo_configurado': periodo_configurado,
+        'puede_comentar_actividades': (
+            request.user.es_admin()
+            or request.user.es_supervisor
+            or bool(funcionario and funcionario.pk == request.user.pk)
+        ),
         'nombre_periodo_panel': (
             get_nombre_trimestre_actual()
             if periodo.pk == periodo_actual.pk
@@ -1478,6 +1561,15 @@ def _tipos_actividad_funcionario(funcionario):
     return tipos.select_related('area').order_by('nombre')
 
 
+def _servicios_funcionario(funcionario):
+    if not funcionario or not funcionario.area_entidad_id:
+        return CatalogoServicio.objects.none()
+    return CatalogoServicio.objects.filter(
+        activo=True,
+        area_ref_id=funcionario.area_entidad_id,
+    ).order_by('nombre')
+
+
 @require_GET
 def web_items_medicion_funcionario(request):
     if not request.user.is_authenticated:
@@ -1514,6 +1606,7 @@ def web_items_medicion_funcionario(request):
     periodo = get_periodo_activo()
     items = list(_items_medicion_funcionario(funcionario, periodo))
     tipos_actividad = list(_tipos_actividad_funcionario(funcionario))
+    servicios = list(_servicios_funcionario(funcionario))
 
     return JsonResponse({
         'items': [
@@ -1535,6 +1628,13 @@ def web_items_medicion_funcionario(request):
             for tipo in tipos_actividad
         ],
         'tipo_actividad_required': bool(tipos_actividad),
+        'servicios': [
+            {
+                'id': servicio.pk,
+                'label': f'{servicio.codigo} — {servicio.nombre} ({servicio.area_ref.nombre})',
+            }
+            for servicio in servicios
+        ],
     })
 
 
@@ -1550,8 +1650,6 @@ def web_registrar_actividad_personal(request):
     requester_queryset = Solicitante.objects.all()
     if hasattr(Solicitante, 'estado'):
         requester_queryset = requester_queryset.filter(estado=True)
-    catalogo_queryset = CatalogoServicio.objects.filter(activo=True).order_by('area', 'nombre')
-
     def render_activity_form(
         form,
         funcionario=None,
@@ -1578,6 +1676,9 @@ def web_registrar_actividad_personal(request):
         form.fields['item_medicion_id'].queryset = item_queryset
         form.fields['tipo_actividad_id'].queryset = tipo_actividad_queryset
         form.fields['tipo_actividad_id'].required = tipo_actividad_queryset.exists()
+        form.fields['catalogo_servicio_id'].queryset = _servicios_funcionario(
+            funcionario,
+        )
         return render(request, 'registrar_actividad.html', {
             'form': form,
             'funcionario': funcionario,
@@ -1587,7 +1688,7 @@ def web_registrar_actividad_personal(request):
             'solicitantes': requester_queryset.order_by(
                 'nombre', 'apellido_paterno', 'apellido_materno'
             ),
-            'catalogos_servicios': catalogo_queryset,
+            'catalogos_servicios': _servicios_funcionario(funcionario),
             'selected_requester': selected_requester,
             'contacto_telefono_inicial': contacto_telefono_inicial,
             'activity_form_data': form_data or {},
@@ -1633,7 +1734,7 @@ def web_registrar_actividad_personal(request):
             funcionario_queryset=funcionarios_disponibles,
             item_queryset=item_queryset,
             tipo_actividad_queryset=_tipos_actividad_funcionario(funcionario),
-            catalogo_queryset=catalogo_queryset,
+            catalogo_queryset=_servicios_funcionario(funcionario),
             periodo=periodo,
         )
         return render_activity_form(
@@ -1650,7 +1751,7 @@ def web_registrar_actividad_personal(request):
         funcionario_queryset=funcionarios_disponibles,
         item_queryset=item_queryset,
         tipo_actividad_queryset=_tipos_actividad_funcionario(funcionario),
-        catalogo_queryset=catalogo_queryset,
+        catalogo_queryset=_servicios_funcionario(funcionario),
         periodo=periodo,
     )
     form.fields['funcionario_id'].required = not request.user.es_administrativo
@@ -1771,7 +1872,7 @@ def web_registrar_actividad_personal(request):
                     'evidencias': [e.codigo_verificador for e in evidencias],
                     'compromiso_id': compromiso.pk if compromiso else None,
                 },
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
     except ValidationError as exc:
         messages.error(request, '; '.join(exc.messages))
@@ -1868,7 +1969,7 @@ def web_anular_actividad(request, actividad_id):
                 'motivo_anulacion': actividad.motivo_anulacion,
                 'codigo_registro': actividad.codigo_registro,
             },
-            ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            ip_origen=obtener_ip_cliente(request) or None,
         )
     messages.success(
         request,
@@ -1921,13 +2022,119 @@ def web_agregar_evidencia(request, actividad_id):
                 entidad='Actividad',
                 identificador_registro=str(actividad.id),
                 valor_nuevo={'evidencias': [e.codigo_verificador for e in evidencias]},
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
     except ValidationError as exc:
         messages.error(request, '; '.join(exc.messages))
         return redirect(f"{reverse('web_personal')}?id={actividad.funcionario_id}")
     messages.success(request, f'Se agregaron {len(evidencias)} evidencia(s) a la actividad #{actividad.id}.')
     return redirect(f"{reverse('web_personal')}?id={actividad.funcionario_id}")
+
+
+@login_required(login_url='web_login')
+@require_POST
+def web_comentar_actividad(request, actividad_id):
+    actividad = get_object_or_404(
+        Actividad.objects.select_related('funcionario', 'delegacion'),
+        pk=actividad_id,
+    )
+    puede_comentar = (
+        request.user.es_admin()
+        or request.user.es_supervisor
+        or (
+            request.user.esta_limitado_a_delegacion
+            and actividad.delegacion_id == request.user.delegacion_id
+        )
+        or (
+            request.user.es_administrativo
+            and actividad.funcionario_id == request.user.pk
+        )
+    )
+    if not puede_comentar:
+        raise PermissionDenied
+
+    form = ComentarioTextoForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            '; '.join(
+                error
+                for errors in form.errors.values()
+                for error in errors
+            ),
+        )
+    else:
+        with transaction.atomic():
+            comentario = ComentarioActividad.objects.create(
+                actividad=actividad,
+                autor=request.user,
+                texto=form.cleaned_data['comentario'],
+            )
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                evento='CREACION',
+                accion='COMENTAR_ACTIVIDAD',
+                entidad='ComentarioActividad',
+                identificador=str(comentario.pk),
+                identificador_registro=str(actividad.pk),
+                valor_nuevo={
+                    'actividad_id': actividad.pk,
+                    'texto': comentario.texto,
+                },
+                ip_origen=obtener_ip_cliente(request) or None,
+            )
+        messages.success(request, 'Comentario agregado a la actividad.')
+    periodo = request.POST.get('periodo', 'actual')
+    return redirect(
+        f"{reverse('web_personal')}?id={actividad.funcionario_id}"
+        f"&periodo={periodo}#actividad-{actividad.pk}"
+    )
+
+
+@login_required(login_url='web_login')
+@require_POST
+def web_comentar_compromiso(request, compromiso_id):
+    compromiso = get_object_or_404(
+        CompromisoAgenda.objects.select_related('delegacion', 'responsable'),
+        pk=compromiso_id,
+    )
+    if not _puede_gestionar_compromiso(request.user, compromiso):
+        raise PermissionDenied
+    form = ComentarioTextoForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            '; '.join(
+                error
+                for errors in form.errors.values()
+                for error in errors
+            ),
+        )
+    else:
+        with transaction.atomic():
+            observacion = ObservacionCompromiso.objects.create(
+                compromiso=compromiso,
+                autor=request.user,
+                texto=form.cleaned_data['comentario'],
+            )
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                evento='CREACION',
+                accion='COMENTAR_COMPROMISO',
+                entidad='ObservacionCompromiso',
+                identificador=str(observacion.pk),
+                identificador_registro=str(compromiso.pk),
+                valor_nuevo={
+                    'compromiso_id': compromiso.pk,
+                    'texto': observacion.texto,
+                },
+                ip_origen=obtener_ip_cliente(request) or None,
+            )
+        messages.success(request, 'Comentario agregado al compromiso.')
+    return redirect('web_editar_compromiso', compromiso_id=compromiso.pk)
+
 
 def web_verificacion(request):
     if not request.user.is_authenticated:
@@ -1994,6 +2201,18 @@ def web_validar_evidencia(request, evidencia_id):
             ),
             id=evidencia_id,
         )
+        if evidencia.es_autovalidacion(request.user):
+            messages.error(request, Evidencia.MENSAJE_AUTOVALIDACION)
+            return redirect('web_verificacion')
+        if evidencia.estado not in (
+            Evidencia.Estado.PENDIENTE,
+            Evidencia.Estado.CORRECCION,
+        ):
+            messages.error(
+                request,
+                'Esta evidencia ya fue aprobada o rechazada y no admite otra decisión.',
+            )
+            return redirect('web_verificacion')
         form = ValidarEvidenciaForm(request.POST)
         if not form.is_valid():
             messages.error(
@@ -2082,7 +2301,7 @@ def web_validar_evidencia(request, evidencia_id):
                     'metas': meta_avances_nuevos,
                     'metricas_item': metrics_snapshot,
                 },
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
 
         messages.success(
@@ -2130,14 +2349,17 @@ def web_tubo(request):
         )
     if periodo_seleccionado:
         compromisos_queryset = compromisos_queryset.filter(
-            fecha_compromiso__range=(
+            fecha_comprometida__range=(
                 periodo_seleccionado.fecha_inicio,
                 periodo_seleccionado.fecha_termino,
             )
         )
     compromisos = list(compromisos_queryset.select_related(
         'delegacion', 'responsable', 'creado_por', 'actividad'
-    ).prefetch_related('actividad__evidencias').order_by('fecha_comprometida'))
+    ).prefetch_related(
+        'actividad__evidencias',
+        'historial_observaciones__autor',
+    ).order_by('fecha_comprometida'))
     actividades_queryset = Actividad.objects.select_related(
         'funcionario', 'delegacion'
     ).filter(anulada=False)
@@ -2154,6 +2376,7 @@ def web_tubo(request):
         'ingresado': 0,
         'pendiente': 0,
         'en_proceso': 0,
+        'reprogramado': 0,
         'vencido': 0,
         'realizado': 0,
         'realizado_fuera_plazo': 0,
@@ -2165,7 +2388,8 @@ def web_tubo(request):
         resumen = resumen_por_usuario.setdefault(compromiso.responsable_id, {
             'usuario': compromiso.responsable,
             'ingresado': 0, 'pendiente': 0, 'en_proceso': 0,
-            'vencido': 0, 'realizado': 0, 'realizado_fuera_plazo': 0,
+            'reprogramado': 0, 'vencido': 0, 'realizado': 0,
+            'realizado_fuera_plazo': 0,
             'total': 0,
         })
         estado = compromiso.estado_tablero
@@ -2177,16 +2401,33 @@ def web_tubo(request):
             resumen['pendiente'] += 1
         elif estado == CompromisoAgenda.Estado.EN_PROCESO:
             resumen['en_proceso'] += 1
-        elif estado in [CompromisoAgenda.Estado.COMPLETADO, CompromisoAgenda.Estado.REALIZADO]:
+        elif estado == CompromisoAgenda.Estado.REPROGRAMADO:
+            resumen['reprogramado'] += 1
+        elif estado in [
+            CompromisoAgenda.Estado.COMPLETADO,
+            CompromisoAgenda.Estado.REALIZADO,
+            CompromisoAgenda.Estado.CUMPLIDO,
+        ]:
             resumen['realizado'] += 1
         if compromiso.realizado_fuera_de_plazo:
             resumen['realizado_fuera_plazo'] += 1
         resumen['total'] += 1
 
+    # RNF-015: el umbral de cumplimiento se toma del período (umbral colectivo).
+    periodo_umbral = periodo_seleccionado or periodo_activo
+    umbral_cumplimiento = (
+        parametros_calculo(periodo_umbral).umbral_colectivo
+        if periodo_umbral and getattr(periodo_umbral, 'pk', None)
+        else 80.0
+    )
     for resumen in resumen_por_usuario.values():
         u = resumen['usuario']
         pct = round((resumen['realizado'] / resumen['total']) * 100.0, 1) if resumen['total'] > 0 else 0.0
-        cumple = (pct >= 80.0)
+        pct_pendiente = round(
+            ((resumen['total'] - resumen['realizado']) / resumen['total']) * 100.0,
+            1,
+        ) if resumen['total'] > 0 else 0.0
+        cumple = (pct >= umbral_cumplimiento)
         resumen_colaboradores.append({
             'usuario': u,
             'nombre': u.get_full_name() or u.username,
@@ -2194,16 +2435,19 @@ def web_tubo(request):
             'ingresado': resumen['ingresado'],
             'pendiente': resumen['pendiente'],
             'en_proceso': resumen['en_proceso'],
+            'reprogramado': resumen['reprogramado'],
             'realizado': resumen['realizado'],
             'realizado_fuera_plazo': resumen['realizado_fuera_plazo'],
             'total': resumen['total'],
             'pct_realizado': pct,
+            'pct_pendiente': pct_pendiente,
             'cumple': cumple
         })
         for key in [
             'ingresado',
             'pendiente',
             'en_proceso',
+            'reprogramado',
             'vencido',
             'realizado',
             'realizado_fuera_plazo',
@@ -2213,9 +2457,17 @@ def web_tubo(request):
 
     if totales_colectivos['total'] > 0:
         totales_colectivos['pct_realizado'] = round((totales_colectivos['realizado'] / totales_colectivos['total']) * 100.0, 1)
-        totales_colectivos['cumple'] = (totales_colectivos['pct_realizado'] >= 80.0)
+        totales_colectivos['pct_pendiente'] = round(
+            (
+                (totales_colectivos['total'] - totales_colectivos['realizado'])
+                / totales_colectivos['total']
+            ) * 100.0,
+            1,
+        )
+        totales_colectivos['cumple'] = (totales_colectivos['pct_realizado'] >= umbral_cumplimiento)
     else:
         totales_colectivos['pct_realizado'] = 0.0
+        totales_colectivos['pct_pendiente'] = 0.0
         totales_colectivos['cumple'] = False
 
     return render(request, 'tubo_trabajo.html', {
@@ -2226,7 +2478,7 @@ def web_tubo(request):
         'ingresados': [c for c in compromisos if c.estado_tablero == CompromisoAgenda.Estado.INGRESADO],
         'pendientes': [c for c in compromisos if c.estado_tablero == CompromisoAgenda.Estado.PENDIENTE],
         'en_proceso': [c for c in compromisos if c.estado_tablero == CompromisoAgenda.Estado.EN_PROCESO],
-        'realizados': [c for c in compromisos if c.estado_tablero in [CompromisoAgenda.Estado.COMPLETADO, CompromisoAgenda.Estado.REALIZADO]],
+        'realizados': [c for c in compromisos if c.estado_tablero in [CompromisoAgenda.Estado.COMPLETADO, CompromisoAgenda.Estado.REALIZADO, CompromisoAgenda.Estado.CUMPLIDO]],
         'vencidos': [c for c in compromisos if c.estado_tablero == CompromisoAgenda.Estado.VENCIDO],
         'reprogramados': [c for c in compromisos if c.estado_tablero == CompromisoAgenda.Estado.REPROGRAMADO],
         'periodo': periodo_activo,
@@ -2313,7 +2565,7 @@ def web_cambiar_estado_compromiso(request, compromiso_id):
                     ),
                     'responsable_id': compromiso.responsable_id,
                 },
-                ip_origen=request.META.get('REMOTE_ADDR'),
+                ip_origen=obtener_ip_cliente(request) or None,
             )
         messages.success(
             request,
@@ -2389,7 +2641,7 @@ def web_crear_compromiso(request):
                     'responsable': c.responsable.username,
                     'fecha': str(c.fecha_comprometida),
                 },
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1')
+                ip_origen=obtener_ip_cliente(request) or None
             )
         messages.success(request, f"Nuevo compromiso #{c.id} guardado exitosamente en el Tubo de Trabajo.")
     return redirect('web_tubo')
@@ -2440,7 +2692,7 @@ class CompromisoCreateView(LoginRequiredMixin, CreateView):
         initial.update({
             'delegacion': user.delegacion_id,
             'responsable': user.pk,
-            'fecha_comprometida': timezone.localdate(),
+            'fecha_comprometida': timezone.localdate() + timedelta(days=1),
             'estado': CompromisoAgenda.Estado.PENDIENTE,
             'origen': 'INT',
         })
@@ -2487,7 +2739,7 @@ class CompromisoCreateView(LoginRequiredMixin, CreateView):
                 identificador_registro=str(compromiso.pk),
                 valor_anterior=None,
                 valor_nuevo=_compromiso_audit_snapshot(compromiso),
-                ip_origen=self.request.META.get('REMOTE_ADDR'),
+                ip_origen=obtener_ip_cliente(self.request) or None,
             )
             if compromiso.observacion:
                 ObservacionCompromiso.objects.create(
@@ -2502,7 +2754,7 @@ class CompromisoCreateView(LoginRequiredMixin, CreateView):
         return redirect(self.get_success_url())
 
 
-class CompromisoUpdateView(LoginRequiredMixin, UpdateView):
+class CompromisoUpdateView(LoginRequiredMixin, ConcurrenciaContextMixin, UpdateView):
     model = CompromisoAgenda
     form_class = CompromisoAgendaForm
     template_name = 'compromiso_form.html'
@@ -2534,6 +2786,9 @@ class CompromisoUpdateView(LoginRequiredMixin, UpdateView):
 
     def form_valid(self, form):
         with transaction.atomic():
+            # RNF-003: rechaza el cambio si otra persona editó el compromiso.
+            if self.hay_conflicto():
+                return self.rechazar_por_conflicto(form)
             snapshot_anterior = self.valor_anterior
             actividad_anterior = self.object.actividad
             compromiso = form.save(commit=False)
@@ -2568,7 +2823,7 @@ class CompromisoUpdateView(LoginRequiredMixin, UpdateView):
                 identificador_registro=str(compromiso.pk),
                 valor_anterior=snapshot_anterior,
                 valor_nuevo=snapshot_nuevo,
-                ip_origen=self.request.META.get('REMOTE_ADDR'),
+                ip_origen=obtener_ip_cliente(self.request) or None,
             )
             if (
                 snapshot_anterior['observacion'] != snapshot_nuevo['observacion']
@@ -2584,180 +2839,6 @@ class CompromisoUpdateView(LoginRequiredMixin, UpdateView):
             f'Compromiso #{compromiso.pk} actualizado y auditado.',
         )
         return redirect(self.get_success_url())
-
-def web_editar_compromiso(request, compromiso_id):
-    if not request.user.is_authenticated:
-        messages.error(request, "Debe iniciar sesión para modificar compromisos.")
-        return redirect('web_login')
-
-    compromiso = get_object_or_404(CompromisoAgenda, id=compromiso_id)
-    if not _puede_gestionar_compromiso(request.user, compromiso):
-        raise PermissionDenied
-
-    if request.method == 'POST':
-        solicitante = (request.POST.get('solicitante') or '').strip()
-        territorio = (request.POST.get('territorio') or '').strip()
-        delegacion_id = request.POST.get('delegacion_id')
-        responsable_id = request.POST.get('responsable_id')
-        fecha_comp_str = request.POST.get('fecha_comprometida')
-        area_apoyo = (request.POST.get('area_apoyo') or '').strip()
-        descripcion = (request.POST.get('descripcion') or '').strip()
-        observaciones = (request.POST.get('observaciones') or '').strip()
-        estado = request.POST.get('estado')
-        delegacion = compromiso.delegacion
-        responsable = compromiso.responsable
-        if delegacion_id:
-            delegacion = get_object_or_404(Delegacion, id=delegacion_id)
-        if responsable_id:
-            responsable = get_object_or_404(Usuario, id=responsable_id)
-        if not request.user.es_admin() and not request.user.es_supervisor:
-            if delegacion.pk != request.user.delegacion_id:
-                raise PermissionDenied
-            if request.user.es_administrativo and responsable.pk != request.user.pk:
-                raise PermissionDenied
-            if request.user.esta_limitado_a_delegacion and responsable.delegacion_id != request.user.delegacion_id:
-                raise PermissionDenied
-
-        fecha_comp = None
-        if fecha_comp_str:
-            try:
-                fecha_comp = datetime.strptime(fecha_comp_str, '%Y-%m-%d').date()
-            except ValueError:
-                messages.error(request, 'Ingresa una fecha de compromiso válida.')
-                return redirect('web_tubo')
-            if not _fecha_en_periodo(fecha_comp, get_periodo_activo()):
-                messages.error(request, 'La fecha del compromiso debe estar dentro del período trimestral activo.')
-                return redirect('web_tubo')
-
-        foto_files = request.FILES.getlist('fotos')
-        actividad_id = request.POST.get('actividad_id')
-        actividad_nueva = compromiso.actividad if not actividad_id else get_object_or_404(Actividad, id=actividad_id)
-        if actividad_nueva:
-            if actividad_nueva.delegacion_id != delegacion.id:
-                messages.error(request, 'La actividad seleccionada debe pertenecer a la misma delegación del compromiso.')
-                return redirect('web_tubo')
-            if (
-                actividad_nueva.compromiso_agenda_id not in (None, compromiso.id)
-                or actividad_nueva.compromisos.exclude(pk=compromiso.id).exists()
-            ):
-                messages.error(request, 'La actividad ya está vinculada a otro compromiso.')
-                return redirect('web_tubo')
-        if foto_files and not actividad_nueva:
-            messages.error(request, 'Selecciona una actividad asociada antes de cargar evidencias.')
-            return redirect('web_tubo')
-        if fecha_comp and actividad_nueva and fecha_comp < actividad_nueva.fecha_actividad:
-            messages.error(request, 'La fecha comprometida no puede ser anterior a la fecha de la actividad.')
-            return redirect('web_tubo')
-        try:
-            if foto_files:
-                _validar_fotos(foto_files)
-        except ValidationError as exc:
-            messages.error(request, '; '.join(exc.messages))
-            return redirect('web_tubo')
-
-        ant_data = {
-            'solicitante': compromiso.solicitante,
-            'estado': compromiso.estado,
-            'fecha_comprometida': str(compromiso.fecha_comprometida),
-            'responsable': compromiso.responsable.username if compromiso.responsable else ''
-        }
-
-        actividad_anterior = compromiso.actividad
-        with transaction.atomic():
-            if solicitante:
-                compromiso.solicitante = solicitante
-            if territorio:
-                compromiso.territorio = territorio
-            compromiso.delegacion = delegacion
-            compromiso.responsable = responsable
-            if fecha_comp:
-                compromiso.fecha_comprometida = fecha_comp
-                compromiso.fecha_compromiso = fecha_comp
-            if area_apoyo:
-                compromiso.area_apoyo = area_apoyo
-            if descripcion:
-                compromiso.descripcion = descripcion
-            if observaciones:
-                compromiso.observacion = observaciones
-                compromiso.observaciones = observaciones
-            if estado in [
-                CompromisoAgenda.Estado.INGRESADO, CompromisoAgenda.Estado.PENDIENTE,
-                CompromisoAgenda.Estado.EN_PROCESO, CompromisoAgenda.Estado.REPROGRAMADO,
-            ]:
-                compromiso.estado = estado
-            compromiso.actividad = actividad_nueva
-            compromiso.save()
-
-            if actividad_anterior and actividad_anterior != actividad_nueva:
-                if actividad_anterior.compromiso_agenda_id == compromiso.id:
-                    actividad_anterior.compromiso_agenda = None
-                    actividad_anterior.save(update_fields=['compromiso_agenda', 'actualizado_en'])
-            if actividad_nueva and actividad_nueva.compromiso_agenda_id != compromiso.id:
-                actividad_nueva.compromiso_agenda = compromiso
-                actividad_nueva.save(update_fields=['compromiso_agenda', 'actualizado_en'])
-
-            if foto_files:
-                if request.POST.get('reemplazar_fotos') == 'on':
-                    primera_evidencia = actividad_nueva.evidencias.first()
-                    if primera_evidencia:
-                        foto = foto_files[0]
-                        metadatos_foto = metadatos_archivo_evidencia(foto, request.user)
-                        archivos_anteriores = []
-                        for campo in (
-                            'archivo',
-                            'archivo_foto',
-                            'archivo_foto_2',
-                            'archivo_foto_3',
-                        ):
-                            archivo_anterior = getattr(primera_evidencia, campo)
-                            if archivo_anterior and archivo_anterior.name:
-                                archivos_anteriores.append(
-                                    (archivo_anterior.storage, archivo_anterior.name)
-                                )
-                        primera_evidencia.archivo_foto = foto
-                        primera_evidencia.subido_por = request.user
-                        primera_evidencia.metadatos = metadatos_foto
-                        primera_evidencia.archivo = None
-                        primera_evidencia.archivo_foto_2 = None
-                        primera_evidencia.archivo_foto_3 = None
-                        primera_evidencia.url_foto_simulada = ''
-                        primera_evidencia.url_foto_simulada_2 = ''
-                        primera_evidencia.url_foto_simulada_3 = ''
-                        primera_evidencia.estado = Evidencia.Estado.PENDIENTE
-                        primera_evidencia.fecha_validacion = None
-                        primera_evidencia.verificador = None
-                        primera_evidencia.fecha_evidencia = timezone.localdate()
-                        primera_evidencia.fecha_subida = timezone.now()
-                        primera_evidencia.save()
-                        for storage, name in archivos_anteriores:
-                            transaction.on_commit(
-                                lambda storage=storage, name=name: storage.delete(name)
-                            )
-                        _guardar_fotos(actividad_nueva, foto_files[1:], request.user)
-                    else:
-                        _guardar_fotos(actividad_nueva, foto_files, request.user)
-                else:
-                    _guardar_fotos(actividad_nueva, foto_files, request.user)
-
-            if compromiso.actividad_id:
-                compromiso.sincronizar_estado_evidencias()
-
-            RegistroAuditoria.objects.create(
-                usuario=request.user,
-                accion='EDITAR_COMPROMISO',
-                entidad='CompromisoAgenda',
-                identificador_registro=str(compromiso.id),
-                valor_anterior=ant_data,
-                valor_nuevo={
-                    'solicitante': compromiso.solicitante,
-                    'estado': compromiso.estado,
-                    'fecha': str(compromiso.fecha_comprometida),
-                    'actividad_id': compromiso.actividad_id,
-                },
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1')
-            )
-        messages.success(request, f"Compromiso #{compromiso.id} actualizado exitosamente.")
-    return redirect('web_tubo')
 
 def web_eliminar_compromiso(request, compromiso_id):
     if not request.user.is_authenticated:
@@ -2784,7 +2865,7 @@ def web_eliminar_compromiso(request, compromiso_id):
                 identificador_registro=str(c_id),
                 valor_anterior={'solicitante': solic},
                 valor_nuevo=None,
-                ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1')
+                ip_origen=obtener_ip_cliente(request) or None
             )
         messages.success(request, f"Compromiso #{c_id} de '{solic}' eliminado del Tubo de Trabajo.")
     return redirect('web_tubo')
@@ -2933,7 +3014,7 @@ def web_terreno(request):
                         'delegacion_id': delegacion.id,
                         'evidencias': [e.codigo_verificador for e in evidencias],
                     },
-                    ip_origen=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                    ip_origen=obtener_ip_cliente(request) or None,
                 )
         except ValidationError as exc:
             messages.error(request, '; '.join(exc.messages))
@@ -2980,7 +3061,7 @@ def web_casos_sociales(request):
                             'codigo_caso': caso.codigo_caso,
                             'delegacion_id': caso.delegacion_id,
                         },
-                        ip_origen=request.META.get('REMOTE_ADDR'),
+                        ip_origen=obtener_ip_cliente(request) or None,
                     )
                 messages.success(request, f'Caso social {caso.codigo_caso} creado.')
                 return redirect('web_casos_sociales')
@@ -3033,7 +3114,7 @@ def web_casos_sociales(request):
                                 'etapa': atencion.etapa,
                                 'tipo_atencion': atencion.tipo_atencion,
                             },
-                            ip_origen=request.META.get('REMOTE_ADDR'),
+                            ip_origen=obtener_ip_cliente(request) or None,
                         )
                 except ValueError as exc:
                     messages.error(request, str(exc))
@@ -3084,9 +3165,81 @@ def web_auditoria(request):
         messages.warning(request, "Acceso restringido: El registro inmutable de auditoría está reservado para la Coordinación Comunal y Administradores (Seguridad RNF-008).")
         return redirect('web_dashboard')
 
-    registros = RegistroAuditoria.objects.all().select_related('usuario')[:50]
+    registros = RegistroAuditoria.objects.all().select_related(
+        'usuario',
+        'funcionario',
+    )
+    entidad = request.GET.get('entidad', '').strip()
+    accion = request.GET.get('accion', '').strip()
+    funcionario_id = request.GET.get('funcionario', '').strip()
+    termino = request.GET.get('q', '').strip()
+    fecha_desde_texto = request.GET.get('fecha_desde', '').strip()
+    fecha_hasta_texto = request.GET.get('fecha_hasta', '').strip()
+    fecha_desde = parse_date(fecha_desde_texto) if fecha_desde_texto else None
+    fecha_hasta = parse_date(fecha_hasta_texto) if fecha_hasta_texto else None
+    filtro_invalido = False
+    if fecha_desde_texto and not fecha_desde:
+        messages.error(request, 'La fecha inicial del filtro no es válida.')
+        filtro_invalido = True
+    if fecha_hasta_texto and not fecha_hasta:
+        messages.error(request, 'La fecha final del filtro no es válida.')
+        filtro_invalido = True
+    if fecha_desde and fecha_hasta and fecha_desde > fecha_hasta:
+        messages.error(request, 'La fecha inicial no puede ser posterior a la fecha final.')
+        filtro_invalido = True
+    if entidad:
+        registros = registros.filter(entidad__iexact=entidad)
+    if accion:
+        registros = registros.filter(accion=accion)
+    if funcionario_id.isdecimal():
+        registros = registros.filter(
+            Q(funcionario_id=int(funcionario_id))
+            | Q(funcionario__isnull=True, usuario_id=int(funcionario_id))
+        )
+    if termino:
+        registros = registros.filter(
+            Q(entidad__icontains=termino)
+            | Q(accion__icontains=termino)
+            | Q(identificador_registro__icontains=termino)
+            | Q(funcionario__username__icontains=termino)
+            | Q(funcionario__first_name__icontains=termino)
+            | Q(funcionario__last_name__icontains=termino)
+            | Q(usuario__username__icontains=termino)
+            | Q(usuario__first_name__icontains=termino)
+            | Q(usuario__last_name__icontains=termino)
+        )
+    if fecha_desde:
+        registros = registros.filter(fecha_auditoria__date__gte=fecha_desde)
+    if fecha_hasta:
+        registros = registros.filter(fecha_auditoria__date__lte=fecha_hasta)
+    if filtro_invalido:
+        registros = registros.none()
+    pagina = Paginator(registros.order_by('-fecha_auditoria', '-pk'), 50).get_page(
+        request.GET.get('pagina')
+    )
     return render(request, 'auditoria.html', {
-        'registros': registros,
+        'registros': pagina.object_list,
+        'pagina': pagina,
+        'filtros_auditoria': request.GET.copy(),
+        'filtro_entidad': entidad,
+        'filtro_accion': accion,
+        'filtro_funcionario': funcionario_id,
+        'filtro_q': termino,
+        'filtro_fecha_desde': fecha_desde_texto,
+        'filtro_fecha_hasta': fecha_hasta_texto,
+        'entidades_auditoria': (
+            RegistroAuditoria.objects.order_by()
+            .values_list('entidad', flat=True)
+            .distinct()
+        ),
+        'acciones_auditoria': (
+            RegistroAuditoria.objects.order_by()
+            .values_list('accion', flat=True)
+            .distinct()
+        ),
+        'usuarios_auditoria': Usuario.objects.filter(
+            Q(auditorias__isnull=False) | Q(auditorias_legacy__isnull=False)
+        ).distinct().order_by('last_name', 'first_name', 'username'),
     })
 
 def api_geocodificar_direccion(request):
@@ -3112,7 +3265,8 @@ def api_geocodificar_direccion(request):
         headers = {'User-Agent': 'MatrizSGR-MunicipalidadLaSerena/1.0 (contacto@laserena.cl)'}
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            # URL https fija hacia Nominatim; lat/lng ya validados como float.
+            with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310
                 data = json.loads(resp.read().decode('utf-8'))
         except (URLError, TimeoutError, json.JSONDecodeError):
             return JsonResponse(
@@ -3182,7 +3336,8 @@ def api_geocodificar_direccion(request):
         url = f'https://nominatim.openstreetmap.org/search?format=json&limit=1&q={urllib.parse.quote(q_att)}'
         try:
             req = urllib.request.Request(url, headers=headers)
-            resp = urllib.request.urlopen(req, timeout=3)
+            # URL https fija hacia Nominatim; la consulta va escapada con quote().
+            resp = urllib.request.urlopen(req, timeout=3)  # nosec B310
             data = json.loads(resp.read().decode('utf-8'))
             if data and len(data) > 0:
                 lat = float(data[0]['lat'])

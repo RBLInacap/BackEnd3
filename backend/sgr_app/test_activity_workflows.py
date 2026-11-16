@@ -13,11 +13,13 @@ from django.db import IntegrityError, close_old_connections, transaction
 from django.db.models.deletion import ProtectedError
 from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
+from django.utils.formats import localize
 from PIL import Image
 from rest_framework.test import APIClient
 
 from sgr_app.forms import AtencionSocialForm
 from sgr_app.models import (
+    ConceptoAjuste,
     Actividad,
     AjusteIncentivo,
     Area,
@@ -71,6 +73,8 @@ class ActivityWorkflowTests(TestCase):
             next_quarter_year = self.today.year
         next_quarter_start = date(next_quarter_year, next_quarter_month, 1)
         self.period_end = next_quarter_start - timedelta(days=1)
+        # RF-016: los compromisos deben comprometerse para una fecha posterior a hoy.
+        self.fecha_futura = min(self.today + timedelta(days=1), self.period_end)
 
         self.delegacion = Delegacion.objects.create(nombre='Delegación de prueba', codigo='TST')
         self.area = Area.objects.create(nombre='Área de prueba')
@@ -380,7 +384,7 @@ class ActivityWorkflowTests(TestCase):
             'direccion': 'Calle de prueba 123',
             'solicitud_problema': 'Luminaria apagada',
             'accion_ejecutada': 'Se inspeccionó el poste',
-            'compromiso_fecha': self.today.isoformat(),
+            'compromiso_fecha': self.fecha_futura.isoformat(),
             'compromiso_territorio': 'Sector Centro',
             'compromiso_area_apoyo': 'Operaciones y Territorio',
             'compromiso_descripcion': 'Dar seguimiento a la solicitud',
@@ -673,7 +677,7 @@ class ActivityWorkflowTests(TestCase):
             {actividad_aprobada.pk, actividad_pendiente.pk},
         )
         self.assertContains(response, 'Ver actividades fuente (1)')
-        self.assertContains(response, 'actividades con evidencia aprobada / meta del ítem')
+        self.assertContains(response, 'avance validado / meta del ítem')
         self.assertContains(response, 'Atención histórica aprobada')
         self.assertContains(response, 'Atención histórica pendiente')
         self.assertNotContains(response, 'Atención fuera del período')
@@ -816,7 +820,7 @@ class ActivityWorkflowTests(TestCase):
         response = self.client.post('/ajustes/', {
             'periodo': str(self.periodo.pk),
             'funcionario': str(self.funcionario.pk),
-            'tipo': 'BONIFICACION',
+            'concepto': str(ConceptoAjuste.objects.get(nombre='Bonificación').pk),
             'motivo': 'Resultado destacado',
             'valor_porcentaje': '7.5',
         })
@@ -903,10 +907,13 @@ class ActivityWorkflowTests(TestCase):
         self.assertLessEqual(metrics['meta_esperada_pct'], 100.0)
 
     def test_activity_registration_saves_requester_and_multiple_evidence(self):
+        self.funcionario.area_entidad = self.area
+        self.funcionario.save(update_fields=['area_entidad'])
         servicio = CatalogoServicio.objects.create(
             codigo='ACT-01',
             nombre='Atención territorial',
-            area='Operaciones',
+            area=self.area.nombre,
+            area_ref=self.area,
         )
         data = self.activity_form(
             latitud='-29.9',
@@ -936,10 +943,10 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(actividad.longitud, -71.2)
         self.assertEqual(actividad.catalogo_servicio_id, servicio.pk)
         self.assertEqual(actividad.catalogo_servicio_nombre, 'Atención territorial')
-        self.assertEqual(actividad.catalogo_servicio_area, 'Operaciones')
+        self.assertEqual(actividad.catalogo_servicio_area, self.area.nombre)
         compromiso = CompromisoAgenda.objects.get(actividad=actividad)
         self.assertEqual(actividad.compromiso_agenda_id, compromiso.id)
-        self.assertEqual(compromiso.fecha_compromiso, self.today)
+        self.assertEqual(compromiso.fecha_compromiso, self.fecha_futura)
         self.assertEqual(compromiso.territorio, 'Sector Centro')
         self.assertEqual(compromiso.descripcion, 'Dar seguimiento a la solicitud')
         audit = RegistroAuditoria.objects.get(
@@ -1029,6 +1036,10 @@ class ActivityWorkflowTests(TestCase):
             'funcionario': self.funcionario.pk,
             'delegacion': self.delegacion.pk,
             'fecha_actividad': (self.today + timedelta(days=1)).isoformat(),
+            'actividad_solicitud': 'Solicitud de prueba',
+            'accion_ejecutada': 'Acción de prueba',
+            'direccion': 'La Serena',
+            'contacto_nombre': 'Vecino de prueba',
             'contacto_telefono': '12345678',
         }
         response = self.client.post(
@@ -1097,6 +1108,7 @@ class ActivityWorkflowTests(TestCase):
                 'actividad_solicitud': 'Actividad API de prueba',
                 'accion_ejecutada': 'Acción de prueba',
                 'direccion': 'La Serena',
+                'contacto_nombre': 'Vecino de prueba',
                 'contacto_telefono': '12345678',
                 'fotos': self.upload('foto-api.jpg'),
             })
@@ -1243,7 +1255,7 @@ class ActivityWorkflowTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         compromiso = CompromisoAgenda.objects.get(actividad__funcionario=self.funcionario)
-        self.assertEqual(compromiso.fecha_compromiso, self.today)
+        self.assertEqual(compromiso.fecha_compromiso, self.fecha_futura)
 
     def test_activity_registration_requires_commitment_details(self):
         data = self.activity_form(compromiso_descripcion='')
@@ -1514,13 +1526,13 @@ class ActivityWorkflowTests(TestCase):
             {
                 'cargo_id': self.cargo.pk,
                 'cargo': self.cargo.nombre,
-                'total_ajustado_pct': 80,
+                'total_ponderado_pct': 80,
                 'meta_esperada_pct': 60,
             },
             {
                 'cargo_id': self.cargo.pk,
                 'cargo': self.cargo.nombre,
-                'total_ajustado_pct': 50,
+                'total_ponderado_pct': 50,
                 'meta_esperada_pct': 40,
             },
         ])
@@ -2016,7 +2028,7 @@ class ActivityWorkflowTests(TestCase):
         response = self.client.post(
             '/actividad-diaria/registrar-actividad/',
             self.activity_form(
-                compromiso_fecha=self.today.isoformat(),
+                compromiso_fecha=self.fecha_futura.isoformat(),
                 compromiso_territorio='Territorio inventado',
                 compromiso_area_apoyo='Área inventada',
                 compromiso_descripcion='   ',
@@ -2140,7 +2152,7 @@ class ActivityWorkflowTests(TestCase):
             'territorio': 'Sector Centro',
             'delegacion': str(self.delegacion.pk),
             'responsable': str(self.funcionario.pk),
-            'fecha_comprometida': self.today.isoformat(),
+            'fecha_comprometida': self.fecha_futura.isoformat(),
             'actividad': str(actividad.pk),
             'area_apoyo': 'Operaciones y Territorio',
             'descripcion': 'Dar seguimiento a la solicitud',
@@ -2210,7 +2222,7 @@ class ActivityWorkflowTests(TestCase):
             'territorio': 'Sector Centro',
             'delegacion': str(self.delegacion.pk),
             'responsable': str(self.funcionario.pk),
-            'fecha_comprometida': self.today.isoformat(),
+            'fecha_comprometida': self.fecha_futura.isoformat(),
             'actividad': str(actividad.pk),
             'area_apoyo': 'Operaciones y Territorio',
             'descripcion': 'Dar seguimiento a la solicitud',
@@ -2636,7 +2648,7 @@ class ActivityWorkflowTests(TestCase):
                     'territorio': 'Sector Centro',
                     'delegacion': str(self.delegacion.pk),
                     'responsable': str(self.funcionario.pk),
-                    'fecha_comprometida': self.today.isoformat(),
+                    'fecha_comprometida': self.fecha_futura.isoformat(),
                     'area_apoyo': 'Operaciones y Territorio',
                     'descripcion': 'Compromiso de prueba',
                     'estado': CompromisoAgenda.Estado.PENDIENTE,
@@ -2651,7 +2663,7 @@ class ActivityWorkflowTests(TestCase):
             'territorio': 'Sector Centro',
             'delegacion': str(self.delegacion.pk),
             'responsable': str(self.funcionario.pk),
-            'fecha_comprometida': self.today.isoformat(),
+            'fecha_comprometida': self.fecha_futura.isoformat(),
             'area_apoyo': 'Operaciones y Territorio',
             'descripcion': 'Revisar luminarias de la plaza',
             'estado': CompromisoAgenda.Estado.PENDIENTE,
@@ -2667,7 +2679,7 @@ class ActivityWorkflowTests(TestCase):
         )
         self.assertIsNone(auditoria.valor_anterior)
         self.assertEqual(auditoria.valor_nuevo['responsable_id'], self.funcionario.pk)
-        self.assertEqual(compromiso.fecha_compromiso, self.today)
+        self.assertEqual(compromiso.fecha_compromiso, self.fecha_futura)
         observacion = ObservacionCompromiso.objects.get(compromiso=compromiso)
         self.assertEqual(observacion.autor_id, self.funcionario.pk)
         self.assertEqual(observacion.texto, 'Creado en prueba')
@@ -3194,11 +3206,13 @@ class ActivityWorkflowTests(TestCase):
         )
         self.client.force_login(admin)
 
+        area_dideco = Area.objects.create(nombre='DIDECO')
+
         create_response = self.client.post('/mantenedores/items/', {
             'action': 'guardar_catalogo',
             'codigo': 'SOC-01',
             'nombre': 'Atención social inicial',
-            'area': 'DIDECO',
+            'area_ref': str(area_dideco.pk),
         })
         self.assertRedirects(create_response, '/mantenedores/items/')
         servicio = CatalogoServicio.objects.get(codigo='SOC-01')
@@ -3216,7 +3230,7 @@ class ActivityWorkflowTests(TestCase):
             'catalogo_id': str(servicio.pk),
             'codigo': 'SOC-01',
             'nombre': 'Atención social actualizada',
-            'area': 'DIDECO',
+            'area_ref': str(area_dideco.pk),
         })
         self.assertRedirects(update_response, '/mantenedores/items/')
         servicio.refresh_from_db()
@@ -3297,6 +3311,10 @@ class ActivityWorkflowTests(TestCase):
         serializer = ActividadSerializer(data={
             'funcionario': self.funcionario.pk,
             'delegacion': self.delegacion.pk,
+            'actividad_solicitud': 'Solicitud de prueba',
+            'accion_ejecutada': 'Acción de prueba',
+            'direccion': 'La Serena',
+            'contacto_nombre': 'Vecino de prueba',
             'contacto_telefono': '12345678',
             'tipo_actividad': tipo_incompatible.pk,
         })
@@ -3486,9 +3504,11 @@ class ActivityWorkflowTests(TestCase):
                 'territorio': 'Sector Centro',
                 'delegacion': str(self.delegacion.pk),
                 'responsable': str(reemplazo.pk),
-                'fecha_comprometida': self.today.isoformat(),
+                'fecha_comprometida': self.fecha_futura.isoformat(),
                 'area_apoyo': 'Operaciones y Territorio',
                 'descripcion': 'Trabajo finalizado',
+                # RF-018: la edición general no puede cambiar el estado;
+                # solo la transición controlada lo hace.
                 'estado': CompromisoAgenda.Estado.REALIZADO,
                 'observacion': 'Trabajo verificado',
             },
@@ -3497,7 +3517,7 @@ class ActivityWorkflowTests(TestCase):
         self.assertRedirects(response, '/tubo/')
         compromiso.refresh_from_db()
         self.assertEqual(compromiso.responsable_id, reemplazo.pk)
-        self.assertEqual(compromiso.estado, CompromisoAgenda.Estado.REALIZADO)
+        self.assertEqual(compromiso.estado, CompromisoAgenda.Estado.PENDIENTE)
         auditoria = RegistroAuditoria.objects.get(
             entidad='CompromisoAgenda',
             identificador_registro=str(compromiso.pk),
@@ -3506,7 +3526,7 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(auditoria.valor_anterior['responsable_id'], self.funcionario.pk)
         self.assertEqual(auditoria.valor_anterior['estado'], CompromisoAgenda.Estado.PENDIENTE)
         self.assertEqual(auditoria.valor_nuevo['responsable_id'], reemplazo.pk)
-        self.assertEqual(auditoria.valor_nuevo['estado'], CompromisoAgenda.Estado.REALIZADO)
+        self.assertEqual(auditoria.valor_nuevo['estado'], CompromisoAgenda.Estado.PENDIENTE)
         observacion = ObservacionCompromiso.objects.get(compromiso=compromiso)
         self.assertEqual(observacion.texto, 'Trabajo verificado')
         self.assertEqual(observacion.compromiso_id, compromiso.pk)
@@ -3555,7 +3575,7 @@ class ActivityWorkflowTests(TestCase):
                         'territorio': 'Sector Centro',
                         'delegacion': str(self.delegacion.pk),
                         'responsable': str(reemplazo.pk),
-                        'fecha_comprometida': self.today.isoformat(),
+                        'fecha_comprometida': self.fecha_futura.isoformat(),
                         'area_apoyo': 'Operaciones y Territorio',
                         'descripcion': 'Cambio que debe revertirse',
                         'estado': CompromisoAgenda.Estado.REALIZADO,
@@ -3869,6 +3889,358 @@ class ActivityWorkflowTests(TestCase):
         self.assertNotContains(response, 'href="/admin/"')
 
 
+class RequisitosPendientesTests(TestCase):
+    """Pruebas de cierre para RF-028, RF-030, RF-031 y RF-038."""
+
+    def setUp(self):
+        # Reutiliza los datos base sin volver a ejecutar las pruebas de ActivityWorkflowTests.
+        ActivityWorkflowTests.setUp(self)
+
+    def _crear_compromiso(self, descripcion, **extra):
+        return CompromisoAgenda.objects.create(
+            solicitante='Vecino coordinación',
+            territorio='Sector Centro',
+            delegacion=self.delegacion,
+            responsable=self.funcionario,
+            creado_por=self.funcionario,
+            fecha_compromiso=self.fecha_futura,
+            fecha_comprometida=self.fecha_futura,
+            area_apoyo='Operaciones y Territorio',
+            descripcion=descripcion,
+            **extra,
+        )
+
+    def test_personal_dashboard_distinguishes_correction_and_shows_all_commitment_links(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Actividad con corrección',
+        )
+        Evidencia.objects.create(
+            actividad=actividad,
+            estado=Evidencia.Estado.CORRECCION,
+        )
+        por_actividad = self._crear_compromiso('Vinculado desde la actividad')
+        actividad.compromiso_agenda = por_actividad
+        actividad.save(update_fields=['compromiso_agenda'])
+        por_compromiso = self._crear_compromiso(
+            'Vinculado desde el compromiso',
+            actividad=actividad,
+        )
+        # Un compromiso vinculado por ambas relaciones no debe duplicarse.
+        por_actividad.actividad = actividad
+        por_actividad.save(update_fields=['actividad'])
+
+        response = self.client.get(
+            '/personal/',
+            {'id': self.funcionario.pk, 'periodo': self.periodo.pk},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Requiere corrección')
+        fila = next(
+            act for act in response.context['actividades'] if act.pk == actividad.pk
+        )
+        self.assertEqual(
+            [compromiso.pk for compromiso in fila.compromisos_vinculados],
+            sorted([por_actividad.pk, por_compromiso.pk]),
+        )
+        self.assertContains(response, f'#compromiso-{por_actividad.pk}')
+        self.assertContains(response, f'#compromiso-{por_compromiso.pk}')
+        item = response.context['metricas']['items'][0]
+        self.assertEqual(item['evidencias_correccion'], 1)
+        self.assertEqual(item['evidencias_rechazadas'], 0)
+
+    def test_personal_dashboard_shows_exact_last_entry_date(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+            actividad_solicitud='Último ingreso visible',
+        )
+
+        response = self.client.get('/personal/', {'id': self.funcionario.pk})
+
+        self.assertContains(response, 'Último ingreso:')
+        self.assertContains(
+            response,
+            timezone.localtime(actividad.fecha_registro).strftime('%d/%m/%Y %H:%M'),
+        )
+        self.assertEqual(
+            response.context['metricas']['ultima_actividad_fecha'],
+            actividad.fecha_registro,
+        )
+
+    def test_general_dashboard_shows_expected_target_per_cargo_and_period_dates(self):
+        coordinador = Usuario.objects.create_user(
+            username='coordinador.rf031',
+            password='TestPassword123!',
+            rol=Usuario.Rol.SUPERVISOR,
+        )
+        self.client.force_login(coordinador)
+
+        response = self.client.get('/dashboard/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Meta esperada al día')
+        self.assertContains(response, self.period_start.strftime('%d/%m/%Y'))
+        self.assertContains(response, self.period_end.strftime('%d/%m/%Y'))
+        grupos = response.context['resumenes_por_cargo']
+        self.assertTrue(grupos)
+        for grupo in grupos:
+            self.assertContains(response, f"{localize(grupo['meta_esperada_pct'])}%")
+
+    def test_closed_period_results_use_frozen_configuration(self):
+        for indice in range(2):
+            actividad = Actividad.objects.create(
+                funcionario=self.funcionario,
+                delegacion=self.delegacion,
+                item_medicion=self.item,
+                fecha_actividad=self.today,
+                actividad_solicitud=f'Actividad cerrada {indice}',
+            )
+            Evidencia.objects.create(
+                actividad=actividad,
+                estado=Evidencia.Estado.APROBADA,
+            )
+        antes = calcular_metricas_funcionario(self.funcionario, self.periodo, self.today)
+        self.assertEqual(antes['items'][0]['cumplimiento_pct'], 20.0)
+        self.assertEqual(antes['total_ponderado_pct'], 20.0)
+
+        self.periodo.cerrado = True
+        self.periodo.save()
+        version = VersionConfiguracionPeriodo.objects.get(
+            periodo=self.periodo,
+            version=self.periodo.version_cierre,
+        )
+        self.assertIn('reglas_calculo', version.configuracion)
+        self.assertIn('catalogos', version.configuracion)
+        self.assertEqual(version.configuracion['items'][0]['meta_cuantitativa'], 10.0)
+
+        # Un cambio que se salte los mantenedores no altera el resultado cerrado.
+        ItemMedicion.objects.filter(pk=self.item.pk).update(
+            meta_cuantitativa=1,
+            ponderador=50,
+        )
+        PeriodoMedicion.objects.filter(pk=self.periodo.pk).update(tope_cumplimiento=10)
+        periodo_cerrado = PeriodoMedicion.objects.get(pk=self.periodo.pk)
+
+        cerrado = calcular_metricas_funcionario(
+            self.funcionario,
+            periodo_cerrado,
+            self.today,
+        )
+        self.assertEqual(cerrado['items'][0]['meta'], 10.0)
+        self.assertEqual(cerrado['items'][0]['cumplimiento_pct'], 20.0)
+        self.assertEqual(cerrado['total_ponderado_pct'], 20.0)
+
+        # Al reabrir, rige la configuración vigente.
+        periodo_cerrado.cerrado = False
+        periodo_cerrado.save()
+        reabierto = calcular_metricas_funcionario(
+            self.funcionario,
+            periodo_cerrado,
+            self.today,
+        )
+        self.assertEqual(reabierto['items'][0]['meta'], 1.0)
+        self.assertEqual(reabierto['total_ponderado_pct'], 5.0)
+
+
+class CorreccionesRevisionCodigoTests(TestCase):
+    """Correcciones de la revisión de código (problemas 1, 2, 4, 6, 9, 10 y 12)."""
+
+    def setUp(self):
+        ActivityWorkflowTests.setUp(self)
+
+    def _actividad(self, **extra):
+        datos = {
+            'funcionario': self.funcionario,
+            'delegacion': self.delegacion,
+            'item_medicion': self.item,
+            'fecha_actividad': self.today,
+            'actividad_solicitud': 'Actividad de revisión',
+        }
+        datos.update(extra)
+        return Actividad.objects.create(**datos)
+
+    def test_resumen_comunal_api_solo_para_administracion_y_coordinacion(self):
+        delegado = Usuario.objects.create_user(
+            username='delegado.metricas',
+            password='TestPassword123!',
+            rol=Usuario.Rol.SUPERVISOR,
+            es_delegado=True,
+            delegacion=self.delegacion,
+        )
+        for usuario in (self.funcionario, delegado):
+            with self.subTest(usuario=usuario.username):
+                cliente = Client()
+                cliente.force_login(usuario)
+                respuesta = cliente.get('/api/metricas/', {'tipo': 'comunal'})
+                self.assertEqual(respuesta.status_code, 403)
+                self.assertNotIn('delegaciones', respuesta.json())
+
+        cliente = Client()
+        cliente.force_login(self.supervisor)
+        respuesta = cliente.get('/api/metricas/', {'tipo': 'comunal'})
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertIn('delegaciones', respuesta.json())
+
+    def test_validacion_api_no_permite_revertir_una_evidencia_decidida(self):
+        evidencia = Evidencia.objects.create(
+            actividad=self._actividad(),
+            estado=Evidencia.Estado.APROBADA,
+        )
+        cliente = Client()
+        cliente.force_login(self.supervisor)
+
+        for decision in (Evidencia.Estado.RECHAZADA, Evidencia.Estado.PENDIENTE):
+            with self.subTest(decision=decision):
+                respuesta = cliente.post(
+                    f'/api/evidencias/{evidencia.pk}/validar/',
+                    {'decision': decision, 'observacion': 'Intento de revertir'},
+                    content_type='application/json',
+                )
+                self.assertEqual(respuesta.status_code, 400)
+                evidencia.refresh_from_db()
+                self.assertEqual(evidencia.estado, Evidencia.Estado.APROBADA)
+
+    def test_login_api_exige_definir_la_clave_inicial(self):
+        usuario = Usuario.objects.create_user(
+            username='funcionario.clave.inicial',
+            password='ClaveInicial123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            delegacion=self.delegacion,
+            must_change_password=True,
+            initial_login_expires_at=timezone.now() + timedelta(minutes=10),
+        )
+        cliente = Client()
+        respuesta = cliente.post(
+            '/api/auth/login/',
+            {'username': usuario.username, 'password': 'ClaveInicial123!'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(respuesta.status_code, 403)
+        self.assertTrue(respuesta.json()['requires_password_change'])
+        self.assertNotIn('_auth_user_id', cliente.session)
+
+    def _payload_actividad_api(self, **extra):
+        datos = {
+            'funcionario': self.funcionario.pk,
+            'delegacion': self.delegacion.pk,
+            'item_medicion': self.item.pk,
+            'fecha_actividad': self.today.isoformat(),
+            'actividad_solicitud': 'Registro por API sin fotografía',
+            'accion_ejecutada': 'Acción registrada',
+            'direccion': 'La Serena',
+            'contacto_nombre': 'Vecino de prueba',
+            'contacto_telefono': '12345678',
+        }
+        datos.update(extra)
+        return datos
+
+    def test_alta_api_sin_foto_no_crea_evidencia_y_audita_al_actor_real(self):
+        cliente = Client()
+        cliente.force_login(self.supervisor)
+
+        respuesta = cliente.post(
+            '/api/actividades/',
+            self._payload_actividad_api(),
+            content_type='application/json',
+        )
+
+        self.assertEqual(respuesta.status_code, 201, respuesta.content)
+        actividad = Actividad.objects.get(funcionario=self.funcionario)
+        self.assertFalse(actividad.evidencias.exists())
+        registro = RegistroAuditoria.objects.get(
+            entidad='Actividad',
+            identificador_registro=str(actividad.pk),
+            accion='CREAR',
+        )
+        self.assertEqual(registro.usuario_id, self.supervisor.pk)
+        self.assertEqual(registro.valor_nuevo['funcionario_id'], self.funcionario.pk)
+
+    def test_alta_api_es_atomica_si_falla_la_auditoria(self):
+        cliente = Client()
+        cliente.force_login(self.supervisor)
+
+        with patch(
+            'sgr_app.views.registrar_evento_auditoria',
+            side_effect=RuntimeError('auditoría no disponible'),
+        ):
+            with self.assertRaises(RuntimeError):
+                cliente.post(
+                    '/api/actividades/',
+                    self._payload_actividad_api(
+                        url_foto_simulada='https://ejemplo.cl/foto.jpg',
+                    ),
+                    content_type='application/json',
+                )
+
+        self.assertFalse(Actividad.objects.exists())
+        self.assertFalse(Evidencia.objects.exists())
+
+    def test_api_compromiso_asigna_el_creador_desde_el_servidor(self):
+        otro = Usuario.objects.create_user(
+            username='suplantado.compromiso',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            delegacion=self.delegacion,
+        )
+        cliente = Client()
+        cliente.force_login(self.supervisor)
+
+        respuesta = cliente.post(
+            '/api/compromisos/',
+            {
+                'solicitante': 'Vecino API',
+                'origen': 'EXT',
+                'territorio': 'Sector Centro',
+                'delegacion': self.delegacion.pk,
+                'responsable': self.funcionario.pk,
+                'fecha_comprometida': self.fecha_futura.isoformat(),
+                'area_apoyo': 'Operaciones y Territorio',
+                'descripcion': 'Compromiso creado por API',
+                'creado_por': otro.pk,
+            },
+            content_type='application/json',
+        )
+
+        self.assertEqual(respuesta.status_code, 201, respuesta.content)
+        compromiso = CompromisoAgenda.objects.get(solicitante='Vecino API')
+        self.assertEqual(compromiso.creado_por_id, self.supervisor.pk)
+
+    def test_csv_tiene_una_sola_marca_bom_y_neutraliza_formulas(self):
+        self._actividad(
+            actividad_solicitud='=HYPERLINK("http://malicioso.example","clic")',
+            accion_ejecutada='+SUMA(1;1)',
+        )
+        cliente = Client()
+        cliente.force_login(self.supervisor)
+
+        respuesta = cliente.get('/informes/', {'formato': 'csv'})
+
+        self.assertEqual(respuesta.status_code, 200)
+        contenido = respuesta.content
+        self.assertEqual(contenido.count('﻿'.encode('utf-8')), 1)
+        texto = contenido.decode('utf-8-sig')
+        self.assertIn('\'=HYPERLINK', texto)
+        self.assertIn('\'+SUMA(1;1)', texto)
+        self.assertNotIn(',=HYPERLINK', texto)
+
+    def test_ficha_personal_con_id_no_numerico_no_falla(self):
+        cliente = Client()
+        cliente.force_login(self.supervisor)
+
+        respuesta = cliente.get('/personal/', {'id': 'abc'})
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertContains(respuesta, 'El funcionario solicitado no existe')
+
+
 class ConcurrentActivityPersistenceTests(TransactionTestCase):
     def setUp(self):
         self.delegacion = Delegacion.objects.create(
@@ -3915,3 +4287,57 @@ class ConcurrentActivityPersistenceTests(TransactionTestCase):
             .values_list('solicitud_problema', flat=True)
         )
         self.assertEqual(activities, ['Registro 1', 'Registro 2'])
+
+    def test_simultaneous_activities_from_different_delegations_keep_their_delegation(self):
+        """RF-034: dos delegaciones registran a la vez y cada registro queda íntegro."""
+        otra_delegacion = Delegacion.objects.create(
+            nombre='Delegación concurrente norte',
+            codigo='CNN',
+        )
+        funcionario_norte = Usuario.objects.create_user(
+            username='funcionario.concurrente.norte',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRATIVO,
+            delegacion=otra_delegacion,
+        )
+        participantes = [
+            (self.funcionarios[0], self.delegacion, 'Registro centro'),
+            (funcionario_norte, otra_delegacion, 'Registro norte'),
+        ]
+        start = threading.Barrier(2)
+
+        def create_activity(funcionario, delegacion, description):
+            close_old_connections()
+            try:
+                start.wait(timeout=5)
+                with transaction.atomic():
+                    return Actividad.objects.create(
+                        funcionario=funcionario,
+                        delegacion=delegacion,
+                        solicitud_problema=description,
+                        accion_ejecutada=f'Acción {description}',
+                    ).pk
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(create_activity, *participante)
+                for participante in participantes
+            ]
+            activity_ids = [future.result(timeout=10) for future in futures]
+
+        self.assertEqual(len(set(activity_ids)), 2)
+        guardadas = {
+            actividad.solicitud_problema: actividad
+            for actividad in Actividad.objects.filter(pk__in=activity_ids)
+        }
+        for funcionario, delegacion, description in participantes:
+            actividad = guardadas[description]
+            self.assertEqual(actividad.funcionario_id, funcionario.pk)
+            self.assertEqual(actividad.delegacion_id, delegacion.pk)
+            self.assertEqual(actividad.accion_ejecutada, f'Acción {description}')
+        self.assertNotEqual(
+            guardadas['Registro centro'].codigo_registro,
+            guardadas['Registro norte'].codigo_registro,
+        )

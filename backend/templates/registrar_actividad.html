@@ -211,6 +211,7 @@
     const funcionarioSelect = document.getElementById('funcionarioId');
     const itemSelect = document.getElementById('itemMedicion');
     const tipoActividadSelect = document.getElementById('tipoActividad');
+    const servicioSelect = document.getElementById('catalogoServicio');
     const feedback = document.getElementById('itemsMedicionFeedback');
     const form = itemSelect.closest('form');
     const submitButton = form.querySelector('button[type="submit"]');
@@ -221,6 +222,7 @@
       const requestId = ++itemsRequestId;
       const selectedItemId = itemSelect.value;
       const selectedTipoActividadId = tipoActividadSelect.value;
+      const selectedServicioId = servicioSelect.value;
       if (!funcionarioId) {
         itemSelect.replaceChildren(new Option('Selecciona un funcionario primero...', ''));
         itemSelect.required = false;
@@ -230,6 +232,10 @@
         );
         tipoActividadSelect.required = false;
         tipoActividadSelect.disabled = false;
+        servicioSelect.replaceChildren(
+          new Option('Selecciona un funcionario primero...', '')
+        );
+        servicioSelect.disabled = false;
         feedback.textContent = '';
         submitButton.disabled = submitInitiallyDisabled;
         return;
@@ -241,6 +247,8 @@
         new Option('Cargando tipos de actividad...', '')
       );
       tipoActividadSelect.disabled = true;
+      servicioSelect.replaceChildren(new Option('Cargando servicios...', ''));
+      servicioSelect.disabled = true;
       submitButton.disabled = true;
       feedback.textContent = '';
 
@@ -283,6 +291,16 @@
           tipo => String(tipo.id) === selectedTipoActividadId
         ) ? selectedTipoActividadId : '';
         tipoActividadSelect.disabled = false;
+        servicioSelect.replaceChildren(
+          new Option('Sin servicio de catálogo', '')
+        );
+        data.servicios.forEach(servicio => {
+          servicioSelect.add(new Option(servicio.label, String(servicio.id)));
+        });
+        servicioSelect.value = data.servicios.some(
+          servicio => String(servicio.id) === selectedServicioId
+        ) ? selectedServicioId : '';
+        servicioSelect.disabled = false;
         submitButton.disabled = submitInitiallyDisabled;
         feedback.textContent = data.items.length
           ? 'Ítems vigentes cargados para el cargo y período del funcionario.'
@@ -298,6 +316,10 @@
         );
         tipoActividadSelect.required = true;
         tipoActividadSelect.disabled = true;
+        servicioSelect.replaceChildren(
+          new Option('Error al cargar servicios', '')
+        );
+        servicioSelect.disabled = true;
         feedback.textContent = 'No fue posible cargar los ítems. Vuelve a seleccionar el funcionario para reintentar.';
       }
     }

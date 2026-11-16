@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Panel Supervisor | Matriz SGR La Serena{% endblock %}
+{% block extra_css %}{% block mapa_css %}{% endblock %}{% endblock %}
 
 {% block content %}
 <div class="d-flex flex-column gap-4">
@@ -11,7 +12,7 @@
         </span>
         <h1 class="h3 fw-bold text-white mt-2 mb-1">Seguimiento de gestión</h1>
         <p class="text-white-50 mb-0">
-          Período: {{ periodo_nombre_actual }}
+          Período: {{ periodo_nombre_actual }}{% if periodo.fecha_inicio %} ({{ periodo.fecha_inicio|date:"d/m/Y" }} – {{ periodo.fecha_termino|date:"d/m/Y" }}){% endif %}
           {% if request.user.esta_limitado_a_delegacion %}
             · Delegación: {{ request.user.delegacion.nombre|default:"Sin delegación asignada" }}
           {% endif %}
@@ -57,6 +58,10 @@
     </div>
   </div>
 
+  {% block panel_territorial %}{% endblock %}
+
+  {% block comparacion_territorial %}{% include "partials/comparacion_territorial.html" %}{% endblock %}
+
   <section class="card shadow-sm border-0 overflow-hidden">
     <div class="card-header bg-white">
       <h2 class="h5 mb-1">Desempeño por cargo</h2>
@@ -69,6 +74,7 @@
             <th scope="col">Cargo</th>
             <th scope="col" class="text-center">Funcionarios</th>
             <th scope="col" class="text-center">Resultado promedio</th>
+            <th scope="col" class="text-center">Meta esperada al día</th>
             <th scope="col" class="text-center">Brecha vs. esperado</th>
             <th scope="col">Detalle</th>
           </tr>
@@ -79,6 +85,7 @@
             <th scope="row">{{ grupo.cargo }}</th>
             <td class="text-center">{{ grupo.total_funcionarios }}</td>
             <td class="text-center fw-semibold">{{ grupo.promedio_ponderado_pct }}%</td>
+            <td class="text-center text-secondary">{{ grupo.meta_esperada_pct }}%</td>
             <td class="text-center fw-semibold {% if grupo.brecha_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
               {{ grupo.brecha_pct }} pp
             </td>
@@ -89,8 +96,9 @@
                   {% for f in grupo.funcionarios %}
                   <li>
                     <a href="{% url 'web_personal' %}?id={{ f.funcionario_id }}&periodo={{ periodo.pk }}">
-                      {{ f.nombre_completo }} — {{ f.total_ajustado_pct }}%
+                      {{ f.nombre_completo }} — {{ f.total_ponderado_pct }}%
                     </a>
+                    <small class="text-secondary">· último ingreso: {% if f.ultima_actividad_fecha %}{{ f.ultima_actividad_fecha|date:"d/m/Y H:i" }}{% else %}sin registros{% endif %}</small>
                   </li>
                   {% endfor %}
                 </ul>
@@ -98,7 +106,7 @@
             </td>
           </tr>
           {% empty %}
-          <tr><td colspan="5" class="text-center text-secondary py-3">No hay funcionarios con cargo asignado para este período.</td></tr>
+          <tr><td colspan="6" class="text-center text-secondary py-3">No hay funcionarios con cargo asignado para este período.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -152,3 +160,5 @@
   </div>
 </div>
 {% endblock %}
+
+{% block extra_js %}{% block mapa_js %}{% endblock %}{% endblock %}

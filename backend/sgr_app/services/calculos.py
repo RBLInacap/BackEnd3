@@ -12,6 +12,7 @@ from sgr_app.models import (
     PeriodoMedicion,
     Usuario,
 )
+from sgr_app.services.configuracion import items_calculo, parametros_calculo
 
 
 def calcular_dias_periodo(periodo: PeriodoMedicion, fecha_corte: date = None):
@@ -33,12 +34,13 @@ def calcular_dias_periodo(periodo: PeriodoMedicion, fecha_corte: date = None):
     # Meta esperada al día en % (RN-007): (días transcurridos / días totales) * 100
     meta_esperada_dia_pct = round((dias_transcurridos / dias_totales) * 100.0, 2)
     pct_diario_esperado = round(100.0 / dias_totales, 2)
+    parametros = parametros_calculo(periodo)
     umbral_ambar_dia = round(
-        meta_esperada_dia_pct * periodo.umbral_semaforo_ambar / 100.0,
+        meta_esperada_dia_pct * parametros.umbral_semaforo_ambar / 100.0,
         2,
     )
     umbral_verde_dia = round(
-        meta_esperada_dia_pct * periodo.umbral_semaforo_verde / 100.0,
+        meta_esperada_dia_pct * parametros.umbral_semaforo_verde / 100.0,
         2,
     )
 
@@ -49,8 +51,8 @@ def calcular_dias_periodo(periodo: PeriodoMedicion, fecha_corte: date = None):
         'dias_transcurridos': dias_transcurridos,
         'pct_diario_esperado': pct_diario_esperado,
         'meta_esperada_pct': meta_esperada_dia_pct,
-        'umbral_verde_ratio': periodo.umbral_semaforo_verde,
-        'umbral_ambar_ratio': periodo.umbral_semaforo_ambar,
+        'umbral_verde_ratio': parametros.umbral_semaforo_verde,
+        'umbral_ambar_ratio': parametros.umbral_semaforo_ambar,
         'umbral_verde_dia': umbral_verde_dia,
         'umbral_60_dia': umbral_ambar_dia,
         'umbral_ambar_dia': umbral_ambar_dia,
@@ -104,9 +106,40 @@ def recalcular_indicadores_actividad(actividad: Actividad):
         if meta.delegacion_id:
             actividades = actividades.filter(delegacion_id=meta.delegacion_id)
 
-        avance_aprobado = actividades.filter(
-            evidencias__estado=Evidencia.Estado.APROBADA,
-        ).distinct().count()
+        if item.medir_compromisos:
+            compromisos = CompromisoAgenda.objects.filter(
+                actividad__item_medicion=item,
+                actividad__anulada=False,
+                actividad__fecha_actividad__gte=item.periodo.fecha_inicio,
+                actividad__fecha_actividad__lte=item.periodo.fecha_termino,
+                fecha_comprometida__range=(
+                    item.periodo.fecha_inicio,
+                    item.periodo.fecha_termino,
+                ),
+                estado__in=(
+                    CompromisoAgenda.Estado.COMPLETADO,
+                    CompromisoAgenda.Estado.REALIZADO,
+                    CompromisoAgenda.Estado.CUMPLIDO,
+                ),
+                actividad__evidencias__estado=Evidencia.Estado.APROBADA,
+            ).exclude(
+                actividad__evidencias__estado__in=(
+                    Evidencia.Estado.PENDIENTE,
+                    Evidencia.Estado.RECHAZADA,
+                    Evidencia.Estado.CORRECCION,
+                )
+            )
+            if meta.funcionario_id:
+                compromisos = compromisos.filter(responsable_id=meta.funcionario_id)
+            if meta.delegacion_id:
+                compromisos = compromisos.filter(
+                    delegacion_id=meta.delegacion_id,
+                )
+            avance_aprobado = compromisos.distinct().count()
+        else:
+            avance_aprobado = actividades.filter(
+                evidencias__estado=Evidencia.Estado.APROBADA,
+            ).distinct().count()
         for indicador in meta.indicadores.all():
             indicador.actualizarAvance(avance_aprobado)
 
@@ -119,6 +152,55 @@ def recalcular_indicadores_actividad(actividad: Actividad):
     return resultados
 
 
+def _conteos_actividades_por_item_y_estado(actividades_base, items):
+    """
+    {(item_id, estado): n} = actividades distintas del ítem con al menos una
+    evidencia en ese estado (misma semántica que .filter().distinct().count()).
+    """
+    item_ids = [item.id for item in items]
+    if not item_ids:
+        return {}
+    filas = (
+        actividades_base.filter(item_medicion_id__in=item_ids, evidencias__isnull=False)
+        .values('item_medicion_id', 'evidencias__estado')
+        .annotate(total=Count('id', distinct=True))
+        .order_by()
+    )
+    return {(f['item_medicion_id'], f['evidencias__estado']): f['total'] for f in filas}
+
+
+def _avances_compromisos_por_item(funcionario, periodo, items):
+    """{item_id: compromisos cumplidos con evidencia aprobada} para ítems por compromisos."""
+    item_ids = [item.id for item in items if item.medir_compromisos]
+    if not item_ids:
+        return {}
+    compromisos = CompromisoAgenda.objects.filter(
+        responsable=funcionario,
+        actividad__item_medicion_id__in=item_ids,
+        actividad__anulada=False,
+        actividad__fecha_actividad__range=(periodo.fecha_inicio, periodo.fecha_termino),
+        fecha_comprometida__range=(periodo.fecha_inicio, periodo.fecha_termino),
+        estado__in=(
+            CompromisoAgenda.Estado.COMPLETADO,
+            CompromisoAgenda.Estado.REALIZADO,
+            CompromisoAgenda.Estado.CUMPLIDO,
+        ),
+        actividad__evidencias__estado=Evidencia.Estado.APROBADA,
+    ).exclude(
+        actividad__evidencias__estado__in=(
+            Evidencia.Estado.PENDIENTE,
+            Evidencia.Estado.RECHAZADA,
+            Evidencia.Estado.CORRECCION,
+        )
+    )
+    filas = (
+        compromisos.values('actividad__item_medicion_id')
+        .annotate(total=Count('id', distinct=True))
+        .order_by()
+    )
+    return {f['actividad__item_medicion_id']: f['total'] for f in filas}
+
+
 def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion, fecha_corte: date = None):
     """
     Calcula el cumplimiento detallado por ítem de medición, cumplimiento ponderado total
@@ -126,12 +208,9 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
     """
     info_tiempo = calcular_dias_periodo(periodo, fecha_corte)
     meta_esperada_pct = info_tiempo['meta_esperada_pct']
-
-    items = (
-        ItemMedicion.objects.filter(cargo=funcionario.cargo, periodo=periodo, activo=True)
-        if periodo.pk
-        else ItemMedicion.objects.none()
-    )
+    # RF-038: un período cerrado se calcula con su configuración congelada.
+    parametros = parametros_calculo(periodo)
+    items = items_calculo(periodo, funcionario.cargo_id)
     detalles_items = []
     total_ponderado_acumulado = 0.0
 
@@ -143,23 +222,22 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
         anulada=False,
     )
 
+    # RNF-002: conteos agregados en 2 consultas en lugar de 4 por ítem.
+    items = list(items)
+    conteos_evidencia = _conteos_actividades_por_item_y_estado(actividades_base, items)
+    avances_compromisos = _avances_compromisos_por_item(funcionario, periodo, items)
+
     for item in items:
         # Solo actividades cuya evidencia esté APROBADA (RN-009, CA-01, CA-02)
-        avance_aprobado = actividades_base.filter(
-            item_medicion=item,
-            evidencias__estado=Evidencia.Estado.APROBADA
-        ).distinct().count()
+        if item.medir_compromisos:
+            avance_aprobado = avances_compromisos.get(item.id, 0)
+        else:
+            avance_aprobado = conteos_evidencia.get((item.id, Evidencia.Estado.APROBADA), 0)
 
         # Evidencias en otros estados para seguimiento
-        evidencias_pendientes = actividades_base.filter(
-            item_medicion=item,
-            evidencias__estado=Evidencia.Estado.PENDIENTE
-        ).distinct().count()
-
-        evidencias_rechazadas = actividades_base.filter(
-            item_medicion=item,
-            evidencias__estado=Evidencia.Estado.RECHAZADA
-        ).distinct().count()
+        evidencias_pendientes = conteos_evidencia.get((item.id, Evidencia.Estado.PENDIENTE), 0)
+        evidencias_rechazadas = conteos_evidencia.get((item.id, Evidencia.Estado.RECHAZADA), 0)
+        evidencias_correccion = conteos_evidencia.get((item.id, Evidencia.Estado.CORRECCION), 0)
 
         # % Cumplimiento del ítem (RN-004)
         if item.meta_cuantitativa > 0:
@@ -168,16 +246,19 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
             cumplimiento_item_pct = 0.0
 
         # Ponderación con tope máximo (RN-005: tope configurable, ej 150%)
-        tope = periodo.tope_cumplimiento or 150.0
+        tope = parametros.tope_cumplimiento or 150.0
         cumplimiento_con_tope = min(cumplimiento_item_pct, tope)
-        aporte_ponderado = (item.ponderador * cumplimiento_con_tope) / 100.0
+        aporte_ponderado = round(
+            (item.ponderador * cumplimiento_con_tope) / 100.0,
+            2,
+        )
         total_ponderado_acumulado += aporte_ponderado
 
         color_item = determinar_color_semaforo(
             cumplimiento_item_pct,
             meta_esperada_pct,
-            periodo.umbral_semaforo_verde,
-            periodo.umbral_semaforo_ambar,
+            parametros.umbral_semaforo_verde,
+            parametros.umbral_semaforo_ambar,
         )
 
         detalles_items.append({
@@ -187,9 +268,11 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
             'meta': item.meta_cuantitativa,
             'unidad': item.unidad_medida,
             'ponderador': item.ponderador,
+            'medir_compromisos': item.medir_compromisos,
             'avance_aprobado': avance_aprobado,
             'evidencias_pendientes': evidencias_pendientes,
             'evidencias_rechazadas': evidencias_rechazadas,
+            'evidencias_correccion': evidencias_correccion,
             'cumplimiento_pct': round(cumplimiento_item_pct, 1),
             'aporte_ponderado': round(aporte_ponderado, 2),
             'semaforo': color_item
@@ -233,10 +316,10 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
 
     # Semáforo global del funcionario
     color_global = determinar_color_semaforo(
-        total_ajustado,
+        total_ponderado_acumulado,
         meta_esperada_pct,
-        periodo.umbral_semaforo_verde,
-        periodo.umbral_semaforo_ambar,
+        parametros.umbral_semaforo_verde,
+        parametros.umbral_semaforo_ambar,
     )
 
     # Métricas de inactividad y actividad reciente (RF-030)
@@ -286,6 +369,7 @@ def calcular_metricas_funcionario(funcionario: Usuario, periodo: PeriodoMedicion
         'semaforo_global': color_global,
         'items': detalles_items,
         'ultima_actividad': fecha_ultimo_ingreso.isoformat() if fecha_ultimo_ingreso else None,
+        'ultima_actividad_fecha': fecha_ultimo_ingreso,
         'dias_sin_ingreso': dias_sin_ingreso,
         'total_actividades': total_actividades_registradas,
         'promedio_diario': promedio_diario,
@@ -317,7 +401,10 @@ def calcular_resumen_delegacion(delegacion: Delegacion, periodo: PeriodoMedicion
 
     total_f = len(metricas_funcionarios)
     if total_f > 0:
-        promedio_ponderado = round(sum(m['total_ajustado_pct'] for m in metricas_funcionarios) / total_f, 2)
+        promedio_ponderado = round(
+            sum(m['total_ponderado_pct'] for m in metricas_funcionarios) / total_f,
+            2,
+        )
         conteo_verde = sum(1 for m in metricas_funcionarios if m['semaforo_global'] == 'VERDE')
         conteo_ambar = sum(1 for m in metricas_funcionarios if m['semaforo_global'] == 'AMBAR')
         conteo_rojo = sum(1 for m in metricas_funcionarios if m['semaforo_global'] == 'ROJO')
@@ -327,11 +414,12 @@ def calcular_resumen_delegacion(delegacion: Delegacion, periodo: PeriodoMedicion
         conteo_ambar = 0
         conteo_rojo = 0
 
+    parametros = parametros_calculo(periodo)
     semaforo_delegacion = determinar_color_semaforo(
         promedio_ponderado,
         info_tiempo['meta_esperada_pct'],
-        periodo.umbral_semaforo_verde,
-        periodo.umbral_semaforo_ambar,
+        parametros.umbral_semaforo_verde,
+        parametros.umbral_semaforo_ambar,
     )
 
     # Compromisos de la delegación en la agenda colectiva
@@ -352,8 +440,20 @@ def calcular_resumen_delegacion(delegacion: Delegacion, periodo: PeriodoMedicion
     ).count()
     fecha_referencia = fecha_corte or timezone.localdate()
     comp_vencidos = compromisos_del.filter(
-        fecha_comprometida__lt=fecha_referencia,
-        estado__in=[CompromisoAgenda.Estado.INGRESADO, CompromisoAgenda.Estado.PENDIENTE, CompromisoAgenda.Estado.EN_PROCESO]
+        Q(estado=CompromisoAgenda.Estado.VENCIDO)
+        | Q(
+            fecha_comprometida__lt=fecha_referencia,
+            estado__in=(
+                CompromisoAgenda.Estado.INGRESADO,
+                CompromisoAgenda.Estado.PENDIENTE,
+                CompromisoAgenda.Estado.EN_PROCESO,
+                CompromisoAgenda.Estado.REPROGRAMADO,
+            ),
+        )
+    ).count()
+    comp_reprogramados = compromisos_del.filter(
+        estado=CompromisoAgenda.Estado.REPROGRAMADO,
+        fecha_comprometida__gte=fecha_referencia,
     ).count()
 
     # Evidencias pendientes de validación ("Check" del Delegado)
@@ -410,6 +510,7 @@ def calcular_resumen_delegacion(delegacion: Delegacion, periodo: PeriodoMedicion
             'realizados': comp_realizados,
             'pendientes': comp_total - comp_realizados,
             'vencidos': comp_vencidos,
+            'reprogramados': comp_reprogramados,
             'realizados_fuera_plazo': comp_realizados_fuera_plazo,
         },
         'evidencias_pendientes_check': evidencias_pendientes,
@@ -427,11 +528,12 @@ def calcular_resumen_comunal(periodo: PeriodoMedicion, fecha_corte: date = None)
     info_tiempo = calcular_dias_periodo(periodo, fecha_corte)
     total_delegaciones = len(resumenes)
     promedio_comunal = round(sum(r['promedio_ponderado_pct'] for r in resumenes) / max(total_delegaciones, 1), 2)
+    parametros = parametros_calculo(periodo)
     semaforo_comunal = determinar_color_semaforo(
         promedio_comunal,
         info_tiempo['meta_esperada_pct'],
-        periodo.umbral_semaforo_verde,
-        periodo.umbral_semaforo_ambar,
+        parametros.umbral_semaforo_verde,
+        parametros.umbral_semaforo_ambar,
     )
 
     total_evidencias_pendientes = sum(r['evidencias_pendientes_check'] for r in resumenes)

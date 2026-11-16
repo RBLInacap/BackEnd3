@@ -1,0 +1,37 @@
+{% extends "dashboard_supervisor.html" %}
+{% comment %}
+Panel Territorial del delegado: mismo seguimiento del equipo que el supervisor,
+más la gestión del territorio (demandas, plazos, unidades de apoyo, mapa).
+Todos los datos se limitan a la delegación del usuario.
+{% endcomment %}
+{% block title %}Panel Territorial | Matriz SGR La Serena{% endblock %}
+
+{% block mapa_css %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+{% endblock %}
+
+{% block panel_territorial %}{% include "partials/panel_territorial.html" %}{% endblock %}
+
+{# La comparación entre delegaciones es solo para la supervisión comunal. #}
+{% block comparacion_territorial %}{% endblock %}
+
+{% block mapa_js %}
+{% if territorial.puntos_mapa %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+  (function () {
+    const puntos = JSON.parse(document.getElementById('puntos-mapa-territorial').textContent);
+    const mapa = L.map('mapa-territorial');
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri'
+    }).addTo(mapa);
+    const capa = L.featureGroup(puntos.map(function (p) {
+      return L.circleMarker([p.lat, p.lng], { radius: 6, color: '#B30000', fillOpacity: 0.6 })
+        .bindTooltip('Solicitud del ' + p.fecha.split('-').reverse().join('/'));
+    })).addTo(mapa);
+    mapa.fitBounds(capa.getBounds(), { padding: [20, 20], maxZoom: 15 });
+  })();
+</script>
+{% endif %}
+{% endblock %}

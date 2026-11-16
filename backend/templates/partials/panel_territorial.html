@@ -1,0 +1,191 @@
+{% comment %}
+Panel Territorial del delegado. Contexto: territorial = services.panel_territorial.panel_territorial().
+{% endcomment %}
+{% if territorial %}
+{% with r=territorial.resumen %}
+<section aria-labelledby="titulo-panel-territorial" class="d-flex flex-column gap-3">
+  <h2 id="titulo-panel-territorial" class="h5 fw-bold mb-0">Gestión del territorio</h2>
+  <div class="row g-3">
+    <div class="col-6 col-xl-3">
+      <div class="card p-3 h-100 shadow-sm">
+        <div class="small text-uppercase text-secondary fw-bold">Solicitudes del período</div>
+        <div class="fs-2 fw-bold mt-2">{{ r.solicitudes }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-3">
+      <div class="card p-3 h-100 shadow-sm">
+        <div class="small text-uppercase text-secondary fw-bold">Compromisos abiertos</div>
+        <div class="fs-2 fw-bold mt-2">{{ r.abiertos }}</div>
+        <div class="small {% if r.vencidos %}text-danger fw-semibold{% else %}text-secondary{% endif %}">{{ r.vencidos }} vencido{{ r.vencidos|pluralize }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-3">
+      <div class="card p-3 h-100 shadow-sm">
+        <div class="small text-uppercase text-secondary fw-bold">Resueltos en plazo</div>
+        <div class="fs-2 fw-bold mt-2">{% if r.pct_en_plazo is not None %}{{ r.pct_en_plazo }} %{% else %}—{% endif %}</div>
+        <div class="small text-secondary">{{ r.en_plazo }} de {{ r.realizados }} realizados</div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-3">
+      <div class="card p-3 h-100 shadow-sm">
+        <div class="small text-uppercase text-secondary fw-bold">Días promedio de respuesta</div>
+        <div class="fs-2 fw-bold mt-2">{% if r.dias_respuesta is not None %}{{ r.dias_respuesta }}{% else %}—{% endif %}</div>
+        <div class="small text-secondary">Del registro a la realización</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    {# Coordinación interdepartamental: unidad responsable de cada compromiso #}
+    <div class="col-12 col-xl-7">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-header bg-white">
+          <h3 class="h6 fw-bold mb-0">Compromisos por unidad de apoyo</h3>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <caption class="visually-hidden">Compromisos por unidad de apoyo</caption>
+            <thead class="table-light">
+              <tr>
+                <th scope="col">Unidad</th>
+                <th scope="col" class="text-end">Total</th>
+                <th scope="col" class="text-end">Abiertos</th>
+                <th scope="col" class="text-end">Vencidos</th>
+                <th scope="col" class="text-end">En plazo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for fila in territorial.por_area %}
+              <tr>
+                <th scope="row" class="fw-normal">{{ fila.area_apoyo }}</th>
+                <td class="text-end">{{ fila.total }}</td>
+                <td class="text-end">{{ fila.abiertos }}</td>
+                <td class="text-end">{% if fila.vencidos %}<span class="badge text-bg-danger">{{ fila.vencidos }}</span>{% else %}0{% endif %}</td>
+                <td class="text-end">{% if fila.pct_en_plazo is not None %}{{ fila.pct_en_plazo }} %{% else %}—{% endif %}</td>
+              </tr>
+              {% empty %}
+              <tr><td colspan="5" class="text-secondary">Sin compromisos en el período.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    {# Detección temprana: problemas más frecuentes #}
+    <div class="col-12 col-xl-5">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-header bg-white">
+          <h3 class="h6 fw-bold mb-0">Solicitudes más frecuentes</h3>
+        </div>
+        <ul class="list-group list-group-flush">
+          {% for fila in territorial.problemas %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>{{ fila.tipo }}</span>
+            <span class="badge text-bg-secondary rounded-pill">{{ fila.total }}</span>
+          </li>
+          {% empty %}
+          <li class="list-group-item text-secondary">Sin solicitudes en el período.</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-12 col-xl-7">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-header bg-white">
+          <h3 class="h6 fw-bold mb-0">Mapa de solicitudes del período</h3>
+        </div>
+        <div class="card-body p-0">
+          {% if territorial.puntos_mapa %}
+            <div id="mapa-territorial" style="height: 320px;" role="img"
+                 aria-label="Mapa con {{ territorial.puntos_mapa|length }} solicitudes geolocalizadas de la delegación"></div>
+            {{ territorial.puntos_mapa|json_script:"puntos-mapa-territorial" }}
+          {% else %}
+            <p class="text-secondary p-3 mb-0">No hay solicitudes geolocalizadas en el período.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-xl-5 d-flex flex-column gap-3">
+      <div class="card shadow-sm border-0">
+        <div class="card-header bg-white">
+          <h3 class="h6 fw-bold mb-0">Solicitudes por semana</h3>
+        </div>
+        <div class="card-body">
+          {% for fila in territorial.tendencia %}
+          <div class="d-flex align-items-center gap-2 mb-1">
+            <span class="small text-secondary" style="width: 4.5rem;">{{ fila.semana|date:"d/m" }}</span>
+            <div class="progress flex-grow-1" role="progressbar" aria-label="Semana del {{ fila.semana|date:'d/m' }}"
+                 aria-valuenow="{{ fila.total }}" aria-valuemin="0" aria-valuemax="{{ fila.total }}" style="height: 0.9rem;">
+              <div class="progress-bar bg-danger" style="width: {{ fila.pct|floatformat:0 }}%"></div>
+            </div>
+            <span class="small fw-semibold" style="width: 2rem;">{{ fila.total }}</span>
+          </div>
+          {% empty %}
+          <p class="text-secondary mb-0">Sin registros en las últimas 8 semanas.</p>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="card shadow-sm border-0">
+        <div class="card-header bg-white">
+          <h3 class="h6 fw-bold mb-0">Sectores con más compromisos</h3>
+        </div>
+        <ul class="list-group list-group-flush">
+          {% for fila in territorial.por_sector %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>{{ fila.territorio }}</span>
+            <span>
+              {% if fila.vencidos %}<span class="badge text-bg-danger me-1">{{ fila.vencidos }} vencido{{ fila.vencidos|pluralize }}</span>{% endif %}
+              <span class="badge text-bg-secondary rounded-pill">{{ fila.total }}</span>
+            </span>
+          </li>
+          {% empty %}
+          <li class="list-group-item text-secondary">Sin compromisos en el período.</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  {% if territorial.vencidos or territorial.proximos_vencer %}
+  <div class="row g-3">
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm border-0 h-100 border-start border-danger border-4">
+        <div class="card-header bg-white"><h3 class="h6 fw-bold mb-0 text-danger">Compromisos vencidos</h3></div>
+        <ul class="list-group list-group-flush">
+          {% for c in territorial.vencidos %}
+          <li class="list-group-item">
+            <a href="{% url 'web_editar_compromiso' c.pk %}" class="fw-semibold">#{{ c.pk }} · {{ c.area_apoyo }}</a>
+            <div class="small text-secondary">Vencía el {{ c.fecha_comprometida|date:"d/m/Y" }} · {{ c.territorio }} · {{ c.responsable.get_full_name|default:c.responsable.username }}</div>
+          </li>
+          {% empty %}
+          <li class="list-group-item text-secondary">Sin compromisos vencidos.</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm border-0 h-100 border-start border-warning border-4">
+        <div class="card-header bg-white"><h3 class="h6 fw-bold mb-0">Vencen en los próximos 3 días</h3></div>
+        <ul class="list-group list-group-flush">
+          {% for c in territorial.proximos_vencer %}
+          <li class="list-group-item">
+            <a href="{% url 'web_editar_compromiso' c.pk %}" class="fw-semibold">#{{ c.pk }} · {{ c.area_apoyo }}</a>
+            <div class="small text-secondary">Vence el {{ c.fecha_comprometida|date:"d/m/Y" }} · {{ c.territorio }} · {{ c.responsable.get_full_name|default:c.responsable.username }}</div>
+          </li>
+          {% empty %}
+          <li class="list-group-item text-secondary">Ninguno.</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endwith %}
+{% endif %}

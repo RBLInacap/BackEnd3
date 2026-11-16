@@ -1,0 +1,11 @@
+[Unit]
+Description=SGR - respaldo diario 02:00 (si el servidor estaba apagado, se ejecuta al encender)
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+# AWS Academy apaga la instancia: Persistent ejecuta el respaldo perdido al arrancar.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

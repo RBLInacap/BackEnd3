@@ -1,0 +1,10 @@
+[Unit]
+Description=SGR - ejecuta el monitor cada minuto
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

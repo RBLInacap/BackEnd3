@@ -1,5 +1,6 @@
 """Configuración del proyecto web Matriz SGR."""
 
+import sys
 from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
 from decouple import AutoConfig, Csv
@@ -72,6 +73,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'drf_spectacular',
     'corsheaders',
     'sgr_app',
 ]
@@ -90,7 +92,9 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.auth.middleware.LoginRequiredMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
+    'sgr_app.dos_factores.Exigir2FAMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'sgr_app.middleware.ContentSecurityPolicyMiddleware',
 ]
 
 ROOT_URLCONF = 'sgr_backend.urls'
@@ -158,6 +162,13 @@ AUTH_PASSWORD_VALIDATORS = [
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
 ]
+
+# Solo al ejecutar `manage.py test`: hash rápido para acelerar las pruebas.
+# PBKDF2 es lento a propósito (protege contra fuerza bruta) y las pruebas crean
+# cientos de usuarios. Nunca se aplica al servidor ni a otros comandos.
+TESTING = len(sys.argv) > 1 and sys.argv[1] == 'test'
+if TESTING:
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
 AUTHENTICATION_BACKENDS = [
     'django.contrib.auth.backends.ModelBackend',
@@ -244,17 +255,41 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = env(
 )
 SECURE_HSTS_PRELOAD = env('SECURE_HSTS_PRELOAD', default=False, cast=bool)
 
+# Decisiones deliberadas en `check --deploy`: los subdominios del dominio
+# municipal y su inclusión en la lista de precarga HSTS no dependen de este
+# proyecto. Actívalos con las variables anteriores cuando el dominio lo permita.
+SILENCED_SYSTEM_CHECKS = ['security.W005', 'security.W021']
+
 REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        # Solo sesión: BasicAuthentication enviaría credenciales en cada petición.
         'rest_framework.authentication.SessionAuthentication',
-        'rest_framework.authentication.BasicAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'sgr_app.permissions.AuthenticatedRolePermission',
     ],
+    # RNF-016: contrato OpenAPI 3 generado desde el código.
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'API Matriz SGR - Ilustre Municipalidad de La Serena',
+    'DESCRIPTION': (
+        'API REST del Sistema de Gestión de Resultados. Autenticación por sesión '
+        '(POST /api/v1/auth/login/). Las escrituras admiten control de concurrencia '
+        'con las cabeceras ETag / If-Match (412 si el registro cambió).'
+    ),
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'SERVE_PERMISSIONS': ['rest_framework.permissions.IsAuthenticated'],
+    'PREPROCESSING_HOOKS': ['sgr_app.openapi.solo_api_v1'],
+    'COMPONENT_SPLIT_REQUEST': True,
+    # Versión fija de Swagger UI (no "@latest").
+    'SWAGGER_UI_DIST': 'https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14',
+    'SWAGGER_UI_FAVICON_HREF': 'https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/favicon-32x32.png',
 }
 
 
@@ -273,3 +308,171 @@ DEFAULT_FROM_EMAIL = env(
     'DEFAULT_FROM_EMAIL',
     default=EMAIL_HOST_USER or 'sgr@laserena.cl',
 )
+
+
+# =========================================================================
+# Controles de seguridad adicionales (OWASP A05, A07, A09)
+# =========================================================================
+
+# Número de proxies de confianza delante de Django (ALB + Nginx = 2).
+# Con 0 se usa REMOTE_ADDR. Necesario para que el bloqueo por IP use la IP real.
+TRUSTED_PROXY_COUNT = env('TRUSTED_PROXY_COUNT', default=0, cast=int)
+
+# Bloqueo temporal ante intentos fallidos de inicio de sesión y 2FA.
+LOGIN_MAX_FAILED_ATTEMPTS = env('LOGIN_MAX_FAILED_ATTEMPTS', default=5, cast=int)
+LOGIN_MAX_FAILED_ATTEMPTS_PER_IP = env('LOGIN_MAX_FAILED_ATTEMPTS_PER_IP', default=30, cast=int)
+# Roles que deben activar verificación en dos pasos (RNF-004), p. ej.
+# "ADMINISTRADOR,SUPERVISOR". Vacío = opcional para todos.
+TWO_FACTOR_REQUIRED_ROLES = env('TWO_FACTOR_REQUIRED_ROLES', default='', cast=Csv())
+TWO_FACTOR_MAX_FAILED_ATTEMPTS = env('TWO_FACTOR_MAX_FAILED_ATTEMPTS', default=5, cast=int)
+LOGIN_LOCKOUT_MINUTES = env('LOGIN_LOCKOUT_MINUTES', default=15, cast=int)
+if TRUSTED_PROXY_COUNT < 0 or min(
+    LOGIN_MAX_FAILED_ATTEMPTS,
+    LOGIN_MAX_FAILED_ATTEMPTS_PER_IP,
+    TWO_FACTOR_MAX_FAILED_ATTEMPTS,
+    LOGIN_LOCKOUT_MINUTES,
+) <= 0:
+    raise ImproperlyConfigured(
+        'Los límites de intentos y el tiempo de bloqueo deben ser mayores que cero.'
+    )
+
+# Sesiones: duración máxima y cierre al cerrar el navegador.
+SESSION_COOKIE_AGE = env('SESSION_COOKIE_AGE', default=8 * 60 * 60, cast=int)
+SESSION_EXPIRE_AT_BROWSER_CLOSE = env(
+    'SESSION_EXPIRE_AT_BROWSER_CLOSE',
+    default=True,
+    cast=bool,
+)
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'same-origin'
+X_FRAME_OPTIONS = 'DENY'
+
+# Content-Security-Policy. Las plantillas actuales usan scripts y estilos en
+# línea, por eso se permite 'unsafe-inline'; el resto de orígenes queda acotado.
+# CSP_REPORT_ONLY=True solo informa violaciones en la consola del navegador.
+CSP_REPORT_ONLY = env('CSP_REPORT_ONLY', default=True, cast=bool)
+_CSP_MEDIA_ORIGIN = MEDIA_URL.rstrip('/') if MEDIA_URL.startswith('https://') else ''
+CONTENT_SECURITY_POLICY = {
+    'default-src': ["'self'"],
+    'script-src': ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net', 'https://unpkg.com'],
+    'style-src': [
+        "'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net',
+        'https://unpkg.com', 'https://fonts.googleapis.com',
+    ],
+    'font-src': ["'self'", 'data:', 'https://cdn.jsdelivr.net', 'https://fonts.gstatic.com'],
+    'img-src': [
+        "'self'", 'data:', 'blob:', 'https://unpkg.com',
+        'https://server.arcgisonline.com',
+        *([_CSP_MEDIA_ORIGIN] if _CSP_MEDIA_ORIGIN else []),
+    ],
+    'connect-src': ["'self'"],
+    'object-src': ["'none'"],
+    'base-uri': ["'self'"],
+    'form-action': ["'self'"],
+    'frame-ancestors': ["'none'"],
+}
+
+# =========================================================================
+# Operación: alertas, monitoreo, disponibilidad y respaldos (RNF-001/010/018)
+# =========================================================================
+ALERTAS_EMAIL = env('ALERTAS_EMAIL', default='', cast=Csv())
+# Errores 500 de Django se envían por correo a estas direcciones.
+ADMINS = [(correo, correo) for correo in ALERTAS_EMAIL]
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
+
+MONITOR_URL = env('MONITOR_URL', default='http://127.0.0.1:8000/health/?profundo=1')
+MONITOR_HOST = env('MONITOR_HOST', default='')
+MONITOR_CA_FILE = env('MONITOR_CA_FILE', default='')
+MONITOR_TIMEOUT = env('MONITOR_TIMEOUT', default=10, cast=int)
+MONITOR_STATE_FILE = (
+    env('MONITOR_STATE_FILE', default='').strip() or str(BASE_DIR / '.monitor_estado.json')
+)
+MONITOR_GAP_SECONDS = env('MONITOR_GAP_SECONDS', default=300, cast=int)
+MONITOR_DISK_ALERT_PCT = env('MONITOR_DISK_ALERT_PCT', default=85, cast=float)
+MONITOR_MEM_ALERT_PCT = env('MONITOR_MEM_ALERT_PCT', default=10, cast=float)
+
+# Jornada operativa para el cálculo de disponibilidad (0 = lunes).
+JORNADA_DIAS = env('JORNADA_DIAS', default='0,1,2,3,4')
+JORNADA_HORAS = env('JORNADA_HORAS', default='08:00-18:00')
+DISPONIBILIDAD_META_PCT = env('DISPONIBILIDAD_META_PCT', default=99.5, cast=float)
+
+BACKUP_DIR = env('BACKUP_DIR', default='').strip() or str(BASE_DIR / 'respaldos')
+BACKUP_LOCAL_DAYS = env('BACKUP_LOCAL_DAYS', default=7, cast=int)
+BACKUP_S3_BUCKET = env(
+    'BACKUP_S3_BUCKET',
+    default=env('AWS_STORAGE_BUCKET_NAME', default='') if USE_S3 else '',
+)
+BACKUP_S3_PREFIX = env('BACKUP_S3_PREFIX', default='respaldos/')
+
+# Registro técnico (OWASP A09). En producción systemd/journald captura la
+# consola; LOG_FILE permite además un archivo rotativo.
+LOG_LEVEL = env('LOG_LEVEL', default='INFO')
+LOG_FILE = env('LOG_FILE', default='').strip()
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        'excluir_health': {'()': 'sgr_app.logging_filters.ExcluirHealthCheck'},
+    },
+    'formatters': {
+        'detallado': {
+            'format': '{asctime} {levelname} {name} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'detallado',
+        },
+        'correo_admins': {
+            'class': 'django.utils.log.AdminEmailHandler',
+            'level': 'ERROR',
+            'include_html': False,
+            'filters': ['excluir_health'],
+        },
+        **({
+            'archivo': {
+                'class': 'logging.handlers.RotatingFileHandler',
+                'filename': LOG_FILE,
+                'maxBytes': 5 * 1024 * 1024,
+                'backupCount': 10,
+                'encoding': 'utf-8',
+                'formatter': 'detallado',
+            },
+        } if LOG_FILE else {}),
+    },
+    'loggers': {
+        # Errores 4xx/5xx de peticiones y de seguridad de Django (p. ej. CSRF).
+        # Los 500 se envían además por correo a ALERTAS_EMAIL (RNF-018).
+        'django.request': {
+            'handlers': [
+                'console',
+                *(['archivo'] if LOG_FILE else []),
+                *(['correo_admins'] if ALERTAS_EMAIL else []),
+            ],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'django.security': {
+            'handlers': ['console', *(['archivo'] if LOG_FILE else [])],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        # Autenticación: inicios/cierres de sesión, fallos y bloqueos.
+        'sgr.security': {
+            'handlers': ['console', *(['archivo'] if LOG_FILE else [])],
+            'level': 'WARNING' if TESTING else LOG_LEVEL,
+            'propagate': False,
+        },
+        # Monitoreo, respaldos y alertas.
+        'sgr.operacion': {
+            'handlers': ['console', *(['archivo'] if LOG_FILE else [])],
+            'level': 'ERROR' if TESTING else LOG_LEVEL,
+            'propagate': False,
+        },
+    },
+}

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Verificación en dos pasos | Matriz SGR{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 760px;">
+  <div class="mb-4">
+    <span class="badge text-bg-danger mb-2">Seguridad de la cuenta</span>
+    <h2 class="fw-bold mb-1">Verificación en dos pasos</h2>
+    <p class="text-secondary mb-0">
+      Además de tu contraseña, se pedirá un código de 6 dígitos generado por una aplicación en tu teléfono.
+    </p>
+  </div>
+
+  {% if messages %}
+    {% for message in messages %}
+      <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags|default:'info' }}{% endif %} py-2" role="status">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+
+  {% if activo %}
+    <div class="card border-0 shadow-sm p-4">
+      <p class="mb-3">
+        <i class="bi bi-shield-check text-success me-1" aria-hidden="true"></i>
+        <strong>Activada.</strong> Tu cuenta pide un código en cada inicio de sesión.
+      </p>
+      {% if obligatorio %}
+        <p class="text-secondary mb-0">Tu rol exige esta protección, por lo que no se puede desactivar.</p>
+      {% else %}
+        <form method="post" class="row g-2 align-items-end" novalidate>
+          {% csrf_token %}
+          <input type="hidden" name="accion" value="desactivar">
+          <div class="col-12 col-sm-6">
+            <label for="codigo-desactivar" class="form-label fw-semibold">Código actual para desactivar</label>
+            <input id="codigo-desactivar" name="codigo" class="form-control" inputmode="numeric" pattern="[0-9]{6}"
+                   maxlength="6" autocomplete="one-time-code" required>
+          </div>
+          <div class="col-12 col-sm-6">
+            <button type="submit" class="btn btn-outline-danger">Desactivar verificación en dos pasos</button>
+          </div>
+        </form>
+      {% endif %}
+    </div>
+  {% else %}
+    <div class="card border-0 shadow-sm p-4">
+      <ol class="mb-4">
+        <li>Instala <strong>Google Authenticator</strong> o <strong>Microsoft Authenticator</strong> en tu teléfono.</li>
+        <li>En la aplicación, elige <em>Agregar cuenta</em> y escanea este código QR.</li>
+        <li>Escribe el código de 6 dígitos que muestra la aplicación.</li>
+      </ol>
+      <div class="row g-4 align-items-center">
+        <div class="col-12 col-sm-5 text-center">
+          <img src="{{ qr }}" width="200" height="200" class="border rounded bg-white p-2"
+               alt="Código QR para agregar la cuenta del SGR a la aplicación de autenticación">
+        </div>
+        <div class="col-12 col-sm-7">
+          <p class="small text-secondary mb-1">¿No puedes escanear? Ingresa esta clave manualmente:</p>
+          <p class="font-monospace fw-semibold user-select-all mb-4" style="word-break: break-all;">{{ secreto }}</p>
+          <form method="post" novalidate>
+            {% csrf_token %}
+            <input type="hidden" name="accion" value="activar">
+            <label for="codigo-activar" class="form-label fw-semibold">Código de 6 dígitos</label>
+            <input id="codigo-activar" name="codigo" class="form-control mb-3" inputmode="numeric" pattern="[0-9]{6}"
+                   maxlength="6" autocomplete="one-time-code" required autofocus>
+            <button type="submit" class="btn btn-danger fw-semibold">Activar</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  <a href="{% url 'web_mi_ficha' %}" class="btn btn-light mt-3">Volver a mi ficha</a>
+</div>
+{% endblock %}

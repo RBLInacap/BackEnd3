@@ -68,6 +68,7 @@
             (ajustes aprobados: {% for ajuste in metricas.ajustes %}{% if not forloop.first %}, {% endif %}{{ ajuste.efecto_pct }}%{% endfor %})
           </div>
           {% endif %}
+          <div class="small text-secondary mb-2">El semáforo se calcula sobre la base por ítems, sin sumar ajustes aprobados.</div>
           <div class="small text-secondary mb-3">
             Meta esperada al día: <strong class="text-dark">{{ metricas.meta_esperada_pct }}%</strong>
           </div>
@@ -118,7 +119,7 @@
     </div>
     {% if periodo_configurado and metas_configuradas %}
       <div class="px-3 py-2 small bg-light border-bottom text-secondary">
-        Cumplimiento por ítem = (actividades con evidencia aprobada / meta del ítem) x 100.
+        Cumplimiento por ítem = (avance validado / meta del ítem) x 100.
         Aporte ponderado = ponderador x mínimo(cumplimiento, {{ periodo.tope_cumplimiento }}%) / 100.
         El total es la suma de los aportes ponderados.
       </div>
@@ -150,6 +151,7 @@
             <th class="text-center px-4 py-3 text-nowrap" style="min-width: 120px;">Ponderador</th>
             <th class="text-center px-4 py-3 text-nowrap" style="min-width: 150px;">Avance Aprobado</th>
             <th class="text-center px-4 py-3 text-nowrap" style="min-width: 130px;">En Revisión</th>
+            <th class="text-center px-4 py-3 text-nowrap" style="min-width: 130px;">Requieren corrección</th>
             <th class="text-center px-4 py-3 text-nowrap" style="min-width: 130px;">Rechazadas</th>
             <th class="text-center px-4 py-3 text-nowrap" style="min-width: 140px;">% Cumplimiento</th>
             <th class="text-center px-4 py-3 text-nowrap" style="min-width: 150px;">Aporte Ponderado</th>
@@ -163,6 +165,7 @@
               <td class="ps-4 pe-3 py-3">
                 <div class="fw-bold text-dark">{{ it.nombre }}</div>
                 <small class="text-secondary">{{ it.unidad }}</small>
+                {% if it.medir_compromisos %}<small class="d-block text-secondary">Mide compromisos cerrados con evidencia aprobada.</small>{% endif %}
                 <a class="d-block small mt-1" href="{% url 'web_personal' %}?id={{ funcionario.pk }}&periodo={{ periodo.pk }}&item={{ it.item_id }}#historial-actividades">
                   Ver actividades fuente ({{ it.avance_aprobado }})
                 </a>
@@ -173,6 +176,11 @@
               <td class="text-center px-4 py-3 text-secondary">
                 {% if it.evidencias_pendientes > 0 %}
                   <span class="text-warning fw-bold">{{ it.evidencias_pendientes }}</span>
+                {% else %}0{% endif %}
+              </td>
+              <td class="text-center px-4 py-3 text-secondary">
+                {% if it.evidencias_correccion > 0 %}
+                  <span class="text-warning-emphasis fw-bold">{{ it.evidencias_correccion }}</span>
                 {% else %}0{% endif %}
               </td>
               <td class="text-center px-4 py-3 text-secondary">
@@ -195,7 +203,7 @@
           {% endfor %}
           {% else %}
             <tr>
-              <td colspan="9" class="text-center text-secondary py-4">
+              <td colspan="10" class="text-center text-secondary py-4">
                 La ficha no tiene datos ponderables para el período seleccionado.
               </td>
             </tr>
@@ -204,7 +212,7 @@
         {% if periodo_configurado and metas_configuradas %}
         <tfoot class="bg-light fw-bold border-top">
           <tr>
-            <td colspan="7" class="text-end text-uppercase text-secondary small py-3 pe-4">Puntaje Total Ponderado Personal:</td>
+            <td colspan="8" class="text-end text-uppercase text-secondary small py-3 pe-4">Puntaje Total Ponderado Personal:</td>
             <td class="text-center text-danger fs-5 py-3 px-4">{{ metricas.total_ponderado_pct }}%</td>
             <td class="text-end pe-4 py-3">
               {% if metricas.semaforo_global == 'VERDE' %}
@@ -259,7 +267,7 @@
             <tr id="actividad-{{ act.id }}">
               <td class="ps-4 pe-2 py-3 text-nowrap">
                 <div class="fw-bold text-dark">{{ act.fecha_actividad|date:"d/m/Y" }}</div>
-                <small class="text-secondary font-monospace">{{ act.fecha_registro|date:"H:i" }} hrs</small>
+                <small class="text-secondary font-monospace">{{ act.fecha_registro|date:"H:i:s" }} hrs</small>
                 <small class="text-secondary d-block font-monospace">{{ act.codigo_registro }}</small>
                 {% if act.anulada %}
                   <span class="badge bg-secondary mt-1" title="{{ act.motivo_anulacion }}">Anulada</span>
@@ -293,11 +301,41 @@
                 <small class="text-muted d-block text-truncate" style="font-size: 0.72rem; max-width: 260px;" title="{{ act.direccion }}">
                   <i class="bi bi-geo-alt text-danger me-1"></i> {{ act.direccion|default:"La Serena" }}
                 </small>
+                <details class="mt-2">
+                  <summary class="small text-primary">Comentarios ({{ act.comentarios.count }})</summary>
+                  <ul class="list-group list-group-flush mt-1">
+                    {% for comentario in act.comentarios.all %}
+                    <li class="list-group-item px-0 py-1">
+                      {{ comentario.texto }}
+                      <small class="text-secondary d-block">{{ comentario.autor.get_full_name|default:comentario.autor.username }} · {{ comentario.creado_en|date:"d/m/Y H:i" }}</small>
+                    </li>
+                    {% empty %}
+                    <li class="list-group-item px-0 py-1 text-secondary">Sin comentarios.</li>
+                    {% endfor %}
+                  </ul>
+                  {% if puede_comentar_actividades %}
+                  <form method="post" action="{% url 'web_comentar_actividad' act.pk %}" class="mt-2">
+                    {% csrf_token %}
+                    <input type="hidden" name="periodo" value="{{ periodo_seleccionado }}">
+                    <label class="visually-hidden" for="comentarioActividad{{ act.pk }}">Agregar comentario</label>
+                    <textarea id="comentarioActividad{{ act.pk }}" name="comentario" class="form-control form-control-sm" rows="2" maxlength="2000" placeholder="Agregar comentario" required></textarea>
+                    <button type="submit" class="btn btn-sm btn-outline-primary mt-1">Comentar</button>
+                  </form>
+                  {% endif %}
+                </details>
               </td>
               <td class="px-2 py-3 text-center">
                 {% for evidencia in act.evidencias.all %}
                   <div class="d-inline-flex flex-column align-items-center gap-1 m-1">
-                    <img src="{{ evidencia.get_foto_url }}" class="rounded border shadow-xs" style="width: 44px; height: 44px; object-fit: cover; cursor: pointer;" alt="Foto de evidencia" onerror="this.onerror=null; this.src='/static/img/evidencia_terreno_placeholder.svg';" onclick="abrirModalFoto('{{ evidencia.get_foto_url }}', '{{ evidencia.codigo_verificador }}', '{{ evidencia.get_estado_display }}', '{{ act.item_medicion.nombre_item|default:'Actividad' }}')" title="Clic para ampliar fotografía">
+                    {# RNF-012: botón operable por teclado; datos en data-* (sin JavaScript en línea). #}
+                    <button type="button" class="btn p-0 border-0 js-ver-foto"
+                            data-foto-url="{{ evidencia.get_foto_url }}"
+                            data-codigo="{{ evidencia.codigo_verificador }}"
+                            data-estado="{{ evidencia.get_estado_display }}"
+                            data-item="{{ act.item_medicion.nombre_item|default:'Actividad' }}"
+                            aria-label="Ampliar fotografía de evidencia {{ evidencia.codigo_verificador }}">
+                      <img src="{{ evidencia.get_foto_url }}" class="rounded border shadow-xs" style="width: 44px; height: 44px; object-fit: cover;" alt="Evidencia {{ evidencia.codigo_verificador }} de {{ act.item_medicion.nombre_item|default:'la actividad' }} ({{ evidencia.get_estado_display|lower }})" onerror="this.onerror=null; this.src='/static/img/evidencia_terreno_placeholder.svg';">
+                    </button>
                     <span class="font-monospace text-secondary fw-bold" style="font-size: 0.68rem;">{{ evidencia.codigo_verificador }}</span>
                   </div>
                 {% empty %}
@@ -315,9 +353,17 @@
                       <span class="badge bg-warning-subtle text-warning-emphasis border border-warning fw-bold px-2 py-1">
                         <i class="bi bi-hourglass-split me-1"></i> En Revisión
                       </span>
-                    {% else %}
+                    {% elif evidencia.estado == 'CORRECCION' %}
+                      <span class="badge bg-warning-subtle text-warning-emphasis border border-warning fw-bold px-2 py-1">
+                        <i class="bi bi-pencil-square me-1"></i> Requiere corrección
+                      </span>
+                    {% elif evidencia.estado == 'RECHAZADA' %}
                       <span class="badge bg-danger-subtle text-danger border border-danger fw-bold px-2 py-1">
                         <i class="bi bi-x-circle me-1"></i> Rechazada
+                      </span>
+                    {% else %}
+                      <span class="badge bg-secondary-subtle text-secondary border fw-bold px-2 py-1">
+                        {{ evidencia.get_estado_display }}
                       </span>
                     {% endif %}
                   </div>
@@ -326,15 +372,17 @@
                 {% endfor %}
               </td>
               <td class="text-center px-2 py-3">
-                {% if act.compromiso_agenda %}
-                  <a href="{% url 'web_tubo' %}?delegacion_id={{ act.delegacion_id }}#compromiso-{{ act.compromiso_agenda.id }}" class="badge bg-danger-subtle text-danger border border-danger text-decoration-none px-2 py-1 d-inline-block" title="Ver en Tubo de Trabajo colectivo">
-                    <i class="bi bi-link-45deg"></i> #{{ act.compromiso_agenda.id }}
-                    {% if act.compromiso_agenda.estado_tablero == 'COMPLETADO' %}Completado
-                    {% elif act.compromiso_agenda.estado_tablero == 'VENCIDO' %}Vencido
-                    {% elif act.compromiso_agenda.estado_tablero == 'REPROGRAMADO' %}Reprogramado
-                    {% elif act.compromiso_agenda.estado_tablero == 'EN_PROCESO' %}En proceso
-                    {% else %}{{ act.compromiso_agenda.get_estado_display }}{% endif %}
+                {% if act.compromisos_vinculados %}
+                  {% for compromiso in act.compromisos_vinculados %}
+                  <a href="{% url 'web_tubo' %}?delegacion_id={{ act.delegacion_id }}#compromiso-{{ compromiso.id }}" class="badge bg-danger-subtle text-danger border border-danger text-decoration-none px-2 py-1 d-inline-block mb-1" title="Ver en Tubo de Trabajo colectivo">
+                    <i class="bi bi-link-45deg"></i> #{{ compromiso.id }}
+                    {% if compromiso.estado_tablero == 'COMPLETADO' %}Completado
+                    {% elif compromiso.estado_tablero == 'VENCIDO' %}Vencido
+                    {% elif compromiso.estado_tablero == 'REPROGRAMADO' %}Reprogramado
+                    {% elif compromiso.estado_tablero == 'EN_PROCESO' %}En proceso
+                    {% else %}{{ compromiso.get_estado_display }}{% endif %}
                   </a>
+                  {% endfor %}
                 {% else %}
                   <a href="{% url 'web_crear_compromiso' %}?actividad_id={{ act.id }}" class="btn btn-outline-danger btn-sm">
                     <i class="bi bi-link-45deg"></i> Asignar compromiso
@@ -387,8 +435,13 @@
                   </div>
                 {% endif %}
                 {% if act.evidencia %}
-                  <button type="button" class="btn btn-outline-secondary btn-sm p-1" onclick="abrirModalFoto('{{ act.evidencia.get_foto_url }}', '{{ act.evidencia.codigo_verificador }}', '{{ act.evidencia.get_estado_display }}', '{{ act.item_medicion.nombre_item|default:'Actividad' }}')" title="Ver evidencia completa">
-                    <i class="bi bi-eye"></i>
+                  <button type="button" class="btn btn-outline-secondary btn-sm p-1 js-ver-foto"
+                          data-foto-url="{{ act.evidencia.get_foto_url }}"
+                          data-codigo="{{ act.evidencia.codigo_verificador }}"
+                          data-estado="{{ act.evidencia.get_estado_display }}"
+                          data-item="{{ act.item_medicion.nombre_item|default:'Actividad' }}"
+                          title="Ver evidencia completa" aria-label="Ver evidencia completa {{ act.evidencia.codigo_verificador }}">
+                    <i class="bi bi-eye" aria-hidden="true"></i>
                   </button>
                 {% endif %}
               </td>
@@ -475,6 +528,14 @@
           <div class="d-flex justify-content-between py-2 border-bottom">
             <span>Promedio diario:</span>
             <strong class="text-dark">{{ metricas.promedio_diario }} actividades/día</strong>
+          </div>
+          <div class="d-flex justify-content-between py-2 border-bottom">
+            <span>Actividades registradas en el período:</span>
+            <strong class="text-dark">{{ metricas.total_actividades }}</strong>
+          </div>
+          <div class="d-flex justify-content-between py-2 border-bottom">
+            <span>Último ingreso:</span>
+            <strong class="text-dark">{% if metricas.ultima_actividad_fecha %}{{ metricas.ultima_actividad_fecha|date:"d/m/Y H:i" }}{% else %}Sin registros{% endif %}</strong>
           </div>
           <div class="d-flex justify-content-between py-2 border-bottom">
             <span>Días sin registrar actividad:</span>
@@ -902,6 +963,14 @@
   }
 
   let modalVerFotoInstance = null;
+  // Los datos se leen de atributos data-*, que el navegador entrega como texto;
+  // así un nombre con comillas no puede inyectar JavaScript.
+  document.addEventListener('click', function (event) {
+    const boton = event.target.closest('.js-ver-foto');
+    if (!boton) return;
+    abrirModalFoto(boton.dataset.fotoUrl, boton.dataset.codigo, boton.dataset.estado, boton.dataset.item);
+  });
+
   function abrirModalFoto(imgUrl, codigo, estado, item) {
     const imgEl = document.getElementById('modalFotoImg');
     imgEl.onerror = function() {
@@ -909,6 +978,7 @@
       this.src = '/static/img/evidencia_terreno_placeholder.svg';
     };
     imgEl.src = imgUrl || '/static/img/evidencia_terreno_placeholder.svg';
+    imgEl.alt = 'Evidencia ' + (codigo || '') + ' de ' + (item || 'la actividad') + ' (' + (estado || 'en revisión').toLowerCase() + ')';
     document.getElementById('modalFotoCodigo').textContent = codigo || 'SGR-FOTO';
     document.getElementById('modalFotoEstado').textContent = estado || 'En Revisión';
     document.getElementById('modalFotoItem').textContent = item || 'Actividad';

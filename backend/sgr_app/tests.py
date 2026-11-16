@@ -462,6 +462,7 @@ class MatrizSGRTestSuite(TestCase):
             'actividad_solicitud': 'Inspección operativa: Balmaceda 1234',
             'accion_ejecutada': 'Bacheo y demarcación de calzada completado.',
             'direccion': 'Balmaceda 1234, La Serena',
+            'contacto_nombre': 'Junta de vecinos Balmaceda',
             'contacto_telefono': '12345678',
             'url_foto_simulada': 'https://ejemplo.cl/foto1.jpg',
             'url_foto_simulada_2': 'https://ejemplo.cl/foto2.jpg',

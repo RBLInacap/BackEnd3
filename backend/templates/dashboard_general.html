@@ -9,7 +9,7 @@
       <div>
         <div class="d-flex align-items-center gap-2 mb-1">
           <span class="badge bg-white text-danger text-uppercase">Panel Coordinación & Delegaciones</span>
-          <span class="text-warning small font-monospace">Período: {{ periodo_nombre_actual }}</span>
+          <span class="text-warning small font-monospace">Período: {{ periodo_nombre_actual }}{% if comunal.info_tiempo.fecha_inicio %} ({{ comunal.info_tiempo.fecha_inicio|date:"d/m/Y" }} – {{ comunal.info_tiempo.fecha_termino|date:"d/m/Y" }}){% endif %}</span>
         </div>
         <h3 class="fw-black mb-0 text-white">Dashboard General de Gestión Territorial</h3>
         <small class="text-white-50">Monitoreo transversal de indicadores, cálculo de semáforo diario y alertas operativas.</small>
@@ -318,7 +318,7 @@
   <section class="card shadow-sm border-0 overflow-hidden">
     <div class="card-header bg-dark p-3 border-secondary">
       <h5 class="fw-bold mb-1 text-light">Desempeño global por cargo</h5>
-      <small class="text-secondary">Promedio del resultado final de los funcionarios visibles, incluidos ajustes aprobados.</small>
+      <small class="text-secondary">Promedio del avance ponderado por ítems; el semáforo excluye ajustes individuales.</small>
     </div>
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0 small">
@@ -327,6 +327,7 @@
             <th class="ps-4 py-3">Cargo</th>
             <th class="text-center py-3">Funcionarios</th>
             <th class="text-center py-3">Resultado promedio</th>
+            <th class="text-center py-3">Meta esperada al día</th>
             <th class="text-center py-3">Brecha vs. esperado</th>
             <th class="py-3">Detalle</th>
           </tr>
@@ -337,6 +338,7 @@
             <th class="ps-4 py-3">{{ grupo.cargo }}</th>
             <td class="text-center">{{ grupo.total_funcionarios }}</td>
             <td class="text-center fw-bold">{{ grupo.promedio_ponderado_pct }}%</td>
+            <td class="text-center text-secondary">{{ grupo.meta_esperada_pct }}%</td>
             <td class="text-center fw-semibold {% if grupo.brecha_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
               {{ grupo.brecha_pct }} pp
             </td>
@@ -347,7 +349,7 @@
                   {% for f in grupo.funcionarios %}
                   <li>
                     <a href="{% url 'web_personal' %}?id={{ f.funcionario_id }}&periodo={{ periodo.pk }}">
-                      {{ f.nombre_completo }} — {{ f.total_ajustado_pct }}%
+                      {{ f.nombre_completo }} — {{ f.total_ponderado_pct }}%
                     </a>
                   </li>
                   {% endfor %}
@@ -356,12 +358,14 @@
             </td>
           </tr>
           {% empty %}
-          <tr><td colspan="5" class="text-center text-secondary py-3">No hay funcionarios disponibles para esta selección.</td></tr>
+          <tr><td colspan="6" class="text-center text-secondary py-3">No hay funcionarios disponibles para esta selección.</td></tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
   </section>
+
+  {% include "partials/comparacion_territorial.html" %}
 
   <!-- Tabla Detallada de Funcionarios -->
   <div class="card shadow-sm border-0 overflow-hidden">
@@ -417,6 +421,9 @@
                     <span class="{% if f.dias_sin_ingreso > 2 %}text-warning fw-bold{% endif %}">
                       Hace {{ f.dias_sin_ingreso }} día(s)
                     </span>
+                  {% endif %}
+                  {% if f.ultima_actividad_fecha %}
+                    <small class="d-block font-monospace">{{ f.ultima_actividad_fecha|date:"d/m/Y H:i" }}</small>
                   {% endif %}
                 {% else %}
                   <span class="text-secondary opacity-50">Sin registros</span>

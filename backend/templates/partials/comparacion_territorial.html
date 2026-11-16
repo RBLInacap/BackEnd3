@@ -1,0 +1,45 @@
+{% comment %}
+Comparación de gestión territorial entre delegaciones (supervisor y administrador).
+Contexto: comparacion_territorial = lista de filas de services.panel_territorial.
+{% endcomment %}
+{% if comparacion_territorial %}
+<section class="card shadow-sm border-0 overflow-hidden" aria-labelledby="titulo-comparacion-territorial">
+  <div class="card-header bg-white">
+    <h2 id="titulo-comparacion-territorial" class="h5 mb-1">Gestión territorial por delegación</h2>
+    <p class="small text-secondary mb-0">
+      Solicitudes atendidas y compromisos del período. Ordenado por compromisos vencidos: arriba, los territorios que requieren apoyo.
+    </p>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <caption class="visually-hidden">Indicadores de gestión territorial por delegación</caption>
+      <thead class="table-light">
+        <tr>
+          <th scope="col">Delegación</th>
+          <th scope="col" class="text-end">Solicitudes</th>
+          <th scope="col" class="text-end">Compromisos</th>
+          <th scope="col" class="text-end">Abiertos</th>
+          <th scope="col" class="text-end">Vencidos</th>
+          <th scope="col" class="text-end">Resueltos en plazo</th>
+          <th scope="col" class="text-end">Días promedio de respuesta</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for fila in comparacion_territorial %}
+        <tr>
+          <th scope="row" class="fw-semibold">{{ fila.delegacion.nombre }}</th>
+          <td class="text-end">{{ fila.solicitudes }}</td>
+          <td class="text-end">{{ fila.total }}</td>
+          <td class="text-end">{{ fila.abiertos }}</td>
+          <td class="text-end">
+            {% if fila.vencidos %}<span class="badge text-bg-danger">{{ fila.vencidos }}</span>{% else %}0{% endif %}
+          </td>
+          <td class="text-end">{% if fila.pct_en_plazo is not None %}{{ fila.pct_en_plazo }} %{% else %}<span class="text-secondary">—</span>{% endif %}</td>
+          <td class="text-end">{% if fila.dias_respuesta is not None %}{{ fila.dias_respuesta }}{% else %}<span class="text-secondary">—</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}

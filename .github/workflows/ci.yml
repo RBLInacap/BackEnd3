@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  calidad-y-seguridad:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      SECRET_KEY: ci-solo-pruebas-no-usar-en-produccion
+      DEBUG: 'False'
+      USE_MYSQL: 'False'
+      USE_S3: 'False'
+      SECURE_SSL_REDIRECT: 'False'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Dependencias del sistema para mysqlclient
+        run: sudo apt-get update && sudo apt-get install -y pkg-config default-libmysqlclient-dev
+
+      - name: Instalar dependencias
+        run: pip install -r requirements-dev.txt
+
+      - name: Vulnerabilidades conocidas en dependencias (OWASP A06)
+        run: pip-audit -r requirements.txt
+
+      - name: Análisis estático de seguridad (bandit)
+        run: bandit -q -r sgr_app sgr_backend -x "*/migrations/*,*/test*.py,*/tests.py" -ll
+
+      - name: Migraciones al día
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Auditoría de despliegue de Django
+        env:
+          SECURE_SSL_REDIRECT: 'True'
+          SESSION_COOKIE_SECURE: 'True'
+          CSRF_COOKIE_SECURE: 'True'
+          SECRET_KEY: ${{ github.run_id }}-${{ github.sha }}-clave-larga-y-aleatoria-solo-para-check
+        run: python manage.py check --deploy --fail-level WARNING
+
+      - name: Pruebas con cobertura
+        run: |
+          coverage run --source=sgr_app --omit="*/migrations/*,*/test*.py,*/tests.py" manage.py test sgr_app
+          coverage report --fail-under=70

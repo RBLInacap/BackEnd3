@@ -1,0 +1,12 @@
+[Unit]
+Description=SGR - monitor de disponibilidad, capacidad y tareas (RNF-001/018)
+After=network.target sgr.service
+
+[Service]
+Type=oneshot
+User=sgr
+Group=sgr
+WorkingDirectory=/srv/sgr/app/backend
+EnvironmentFile=/etc/sgr.env
+ExecStart=/srv/sgr/venv/bin/python manage.py monitorear_disponibilidad
+TimeoutStartSec=60

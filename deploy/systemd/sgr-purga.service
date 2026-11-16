@@ -1,0 +1,14 @@
+[Unit]
+Description=SGR - purga diaria de archivos de evidencia vencidos (RNF-017)
+After=network-online.target mariadb.service
+Wants=network-online.target
+OnFailure=sgr-alerta@%n.service
+
+[Service]
+Type=oneshot
+User=sgr
+Group=sgr
+WorkingDirectory=/srv/sgr/app/backend
+EnvironmentFile=/etc/sgr.env
+ExecStart=/srv/sgr/venv/bin/python manage.py purgar_evidencias_vencidas
+TimeoutStartSec=1800

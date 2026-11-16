@@ -66,5 +66,23 @@
       </button>
     </div>
   </form>
+
+  <div class="card border-0 shadow-sm p-4 mt-4">
+    <div class="d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2">
+      <div>
+        <h5 class="fw-semibold mb-1">Verificación en dos pasos</h5>
+        <p class="text-secondary small mb-0">
+          {% if request.user.requires_2fa %}
+            <i class="bi bi-shield-check text-success" aria-hidden="true"></i> Activada.
+          {% else %}
+            Desactivada. Protege tu cuenta aunque alguien conozca tu contraseña.
+          {% endif %}
+        </p>
+      </div>
+      <a href="{% url 'web_configurar_2fa' %}" class="btn btn-outline-secondary">
+        {% if request.user.requires_2fa %}Administrar{% else %}Activar{% endif %}
+      </a>
+    </div>
+  </div>
 </div>
 {% endblock %}

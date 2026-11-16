@@ -18,6 +18,7 @@
 
     <form method="post">
       {% csrf_token %}
+      {% if huella_concurrencia %}<input type="hidden" name="_huella" value="{{ huella_concurrencia }}">{% endif %}
       <div class="card-body p-4">
         {% if form.non_field_errors %}
           <div class="alert alert-danger" role="alert">
@@ -68,5 +69,18 @@
       </div>
     </form>
   </div>
+  {% if object.pk %}
+  <section class="card border-0 shadow-sm mx-auto mt-3" style="max-width: 900px;">
+    <div class="card-body p-4">
+      <h2 class="h6 fw-bold">Agregar comentario</h2>
+      <form method="post" action="{% url 'web_comentar_compromiso' object.pk %}">
+        {% csrf_token %}
+        <label class="form-label" for="comentarioCompromiso">Comentario</label>
+        <textarea id="comentarioCompromiso" name="comentario" class="form-control" rows="2" maxlength="2000" required></textarea>
+        <button type="submit" class="btn btn-outline-danger mt-2">Agregar comentario</button>
+      </form>
+    </div>
+  </section>
+  {% endif %}
 </div>
 {% endblock %}

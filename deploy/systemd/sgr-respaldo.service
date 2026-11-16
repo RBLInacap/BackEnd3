@@ -1,0 +1,14 @@
+[Unit]
+Description=SGR - respaldo diario de la base de datos a S3 cifrado (RNF-010)
+After=network-online.target mariadb.service
+Wants=network-online.target
+OnFailure=sgr-alerta@%n.service
+
+[Service]
+Type=oneshot
+User=sgr
+Group=sgr
+WorkingDirectory=/srv/sgr/app/backend
+EnvironmentFile=/etc/sgr.env
+ExecStart=/srv/sgr/venv/bin/python manage.py respaldar_base_datos
+TimeoutStartSec=1800

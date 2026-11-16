@@ -22,6 +22,8 @@ local_settings.py
 !.env.example
 datos.json
 staticfiles/
+.coverage
+htmlcov/
 
 # Base de datos SQLite (se genera en local con migrate y poblar_sgr)
 backend/db.sqlite3
@@ -66,3 +68,10 @@ Thumbs.db
 # Documentos temporales de equipo y notas de trabajo
 kazu_docs/
 REPORTE_REVISION_NOCTURNA.md
+
+# Respaldos y estado del monitor (contienen datos de la base; nunca a Git)
+backend/respaldos/
+respaldos/
+*.sql.gz
+*.sqlite3.gz
+.monitor_estado.json

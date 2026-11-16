@@ -7,6 +7,9 @@
     <div>
       <h1 class="h3 fw-bold mb-1">Incentivos y penalizaciones</h1>
       <p class="text-secondary mb-0">Registra ajustes con motivo y responsable, y revisa su efecto en el resultado personal.</p>
+      {% if request.user.es_admin %}
+      <a href="{% url 'mantenedor_conceptos_ajuste_list' %}" class="btn btn-sm btn-outline-secondary mt-2">Administrar conceptos</a>
+      {% endif %}
     </div>
     <form method="get" class="d-flex align-items-center gap-2">
       <label for="periodoAjustes" class="small fw-bold text-nowrap">Período:</label>
@@ -80,13 +83,13 @@
                   <small class="d-block text-secondary">{{ ajuste.funcionario.delegacion.nombre|default:"Sin delegación" }}</small>
                 </td>
                 <td>
-                  <span class="badge {% if ajuste.tipo == 'PENALIZACION' or ajuste.tipo == 'DESCUENTO' %}bg-danger{% else %}bg-success{% endif %}">
+                  <span class="badge {% if ajuste.es_negativo %}bg-danger{% else %}bg-success{% endif %}">
                     {{ ajuste.get_tipo_display }} {{ ajuste.valor_porcentaje }}%
                   </span>
                   <div class="small mt-1">{{ ajuste.motivo }}</div>
                 </td>
                 <td>
-                  {{ ajuste.registrado_por.get_full_name|default:ajuste.registrado_por.username|default:"Responsable no registrado" }}
+                  {% if ajuste.registrado_por %}{{ ajuste.registrado_por.get_full_name|default:ajuste.registrado_por.username }}{% else %}Responsable no registrado{% endif %}
                   {% if ajuste.aprobadoPor %}
                   <small class="d-block text-secondary">Revisó: {{ ajuste.aprobadoPor.get_full_name|default:ajuste.aprobadoPor.username }}</small>
                   {% endif %}

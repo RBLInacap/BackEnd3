@@ -4,7 +4,7 @@ from django.utils import timezone
 from sgr_app.services.evidencias import metadatos_archivo_evidencia, validar_archivo_evidencia
 from sgr_app.models import (
     Usuario, Delegacion, Cargo, PeriodoMedicion, CatalogoServicio,
-    ItemMedicion, CompromisoAgenda, Actividad, Evidencia,
+    ItemMedicion, CompromisoAgenda, Actividad, Evidencia, TipoActividad,
     CasoSocial, AtencionSocial, RegistroAuditoria
 )
 from sgr_app.validators import (
@@ -17,13 +17,18 @@ from sgr_app.validators import (
 class DelegacionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Delegacion
-        fields = '__all__'
+        fields = [
+            'id', 'nombre', 'codigo', 'direccion', 'telefono', 'email', 'activo', 'ambito',
+            'creado_en',
+        ]
 
 
 class CargoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Cargo
-        fields = '__all__'
+        fields = [
+            'id', 'codigo', 'nombre', 'descripcion', 'activo', 'area',
+        ]
 
 
 class UsuarioSerializer(serializers.ModelSerializer):
@@ -89,13 +94,21 @@ class UsuarioSerializer(serializers.ModelSerializer):
 class PeriodoMedicionSerializer(serializers.ModelSerializer):
     class Meta:
         model = PeriodoMedicion
-        fields = '__all__'
+        fields = [
+            'id', 'nombre', 'anio', 'trimestre', 'fecha_inicio', 'fecha_termino',
+            'dias_computables', 'cerrado', 'estado', 'umbral_verde', 'umbral_ambar',
+            'umbral_semaforo_verde', 'umbral_semaforo_ambar', 'umbral_colectivo',
+            'tope_cumplimiento', 'version_de_parametro', 'version_cierre', 'cerrado_en',
+            'creado_en',
+        ]
 
 
 class CatalogoServicioSerializer(serializers.ModelSerializer):
     class Meta:
         model = CatalogoServicio
-        fields = '__all__'
+        fields = [
+            'id', 'codigo', 'nombre', 'area', 'activo', 'area_ref',
+        ]
 
 
 class ItemMedicionSerializer(serializers.ModelSerializer):
@@ -104,12 +117,16 @@ class ItemMedicionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ItemMedicion
-        fields = '__all__'
+        fields = [
+            'id', 'cargo_nombre', 'periodo_nombre', 'nombre_item', 'descripcion',
+            'tipo_unidad', 'meta_cuantitativa', 'ponderador', 'unidad_medida',
+            'medir_compromisos', 'activo', 'cargo', 'periodo',
+        ]
 
 
 class EvidenciaSerializer(serializers.ModelSerializer):
-    verificador_nombre = serializers.ReadOnlyField(source='verificador.get_full_name')
-    subido_por_nombre = serializers.ReadOnlyField(source='subido_por.get_full_name')
+    verificador_nombre = serializers.CharField(source='verificador.get_full_name', read_only=True)
+    subido_por_nombre = serializers.CharField(source='subido_por.get_full_name', read_only=True)
 
     class Meta:
         model = Evidencia
@@ -122,6 +139,7 @@ class EvidenciaSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'id', 'codigo_verificador', 'hash_sha256', 'fecha_subida',
+            'estado', 'verificador', 'fecha_validacion',
             'metadatos', 'subido_por', 'subido_por_nombre', 'archivos_eliminados_en',
         ]
 
@@ -191,11 +209,19 @@ class CompromisoAgendaSerializer(serializers.ModelSerializer):
     fecha_comprometida = serializers.DateField(required=False)
     delegacion_nombre = serializers.ReadOnlyField(source='delegacion.nombre')
     delegacion_codigo = serializers.ReadOnlyField(source='delegacion.codigo')
-    responsable_nombre = serializers.ReadOnlyField(source='responsable.get_full_name')
+    responsable_nombre = serializers.CharField(source='responsable.get_full_name', read_only=True)
 
     class Meta:
         model = CompromisoAgenda
-        fields = '__all__'
+        fields = [
+            'id', 'territorio', 'area_apoyo', 'fecha_compromiso', 'fecha_comprometida',
+            'delegacion_nombre', 'delegacion_codigo', 'responsable_nombre', 'origen',
+            'solicitante', 'fecha_registro', 'descripcion', 'estado', 'observacion',
+            'observaciones', 'actualizado_en', 'fecha_realizacion', 'delegacion',
+            'responsable', 'actividad', 'creado_por',
+        ]
+        # El autor y el estado los define el servidor, no quien llama a la API.
+        read_only_fields = ('estado', 'fecha_realizacion', 'creado_por')
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
@@ -214,9 +240,9 @@ class CompromisoAgendaSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'fecha_comprometida': 'La fecha comprometida es obligatoria.'
             })
-        if fecha < timezone.localdate():
+        if fecha <= timezone.localdate():
             raise serializers.ValidationError({
-                'fecha_comprometida': 'La fecha comprometida no puede ser anterior a hoy.'
+                'fecha_comprometida': 'La fecha comprometida debe ser posterior a hoy.'
             })
         delegacion = attrs.get(
             'delegacion',
@@ -281,24 +307,14 @@ class CompromisoAgendaSerializer(serializers.ModelSerializer):
             validated_data['fecha_comprometida'] = fecha
         return super().update(instance, validated_data)
 
-    def validate_estado(self, value):
-        estados_editables = [
-            CompromisoAgenda.Estado.INGRESADO,
-            CompromisoAgenda.Estado.PENDIENTE,
-            CompromisoAgenda.Estado.EN_PROCESO,
-            CompromisoAgenda.Estado.REPROGRAMADO,
-        ]
-        if value not in estados_editables and (self.instance is None or value != self.instance.estado):
-            raise serializers.ValidationError(
-                'El estado completado se determina mediante la validación de evidencias.'
-            )
-        return value
-
-
 class ActividadSerializer(serializers.ModelSerializer):
+    actividad_solicitud = serializers.CharField(required=True, allow_blank=False)
+    accion_ejecutada = serializers.CharField(required=True, allow_blank=False)
+    direccion = serializers.CharField(required=True, allow_blank=False)
+    contacto_nombre = serializers.CharField(required=True, allow_blank=False)
     contacto_telefono = serializers.CharField(required=True, allow_blank=False, allow_null=False)
     codigo_registro = serializers.ReadOnlyField()
-    funcionario_nombre = serializers.ReadOnlyField(source='funcionario.get_full_name')
+    funcionario_nombre = serializers.CharField(source='funcionario.get_full_name', read_only=True)
     delegacion_nombre = serializers.ReadOnlyField(source='delegacion.nombre')
     delegacion_codigo = serializers.ReadOnlyField(source='delegacion.codigo')
     item_nombre = serializers.ReadOnlyField(source='item_medicion.nombre_item')
@@ -359,9 +375,14 @@ class ActividadSerializer(serializers.ModelSerializer):
             'funcionario',
             self.instance.funcionario if self.instance else None,
         )
+        catalogo_servicio = attrs.get(
+            'catalogo_servicio',
+            self.instance.catalogo_servicio if self.instance else None,
+        )
         tipo_actividad_cambiado = (
             self.instance is None
-            or attrs.get('tipo_actividad') not in (None, tipo_actividad)
+            or 'tipo_actividad' in attrs
+            or 'funcionario' in attrs
         )
         item_context_changed = (
             self.instance is None
@@ -392,6 +413,17 @@ class ActividadSerializer(serializers.ModelSerializer):
                     'El ítem debe estar activo y corresponder al cargo y período de la actividad.'
                 )
 
+        tipos_area = TipoActividad.objects.none()
+        if funcionario and funcionario.area_entidad_id:
+            tipos_area = TipoActividad.objects.filter(
+                area_id=funcionario.area_entidad_id,
+                activo=True,
+                area__estado=True,
+            )
+        if tipo_actividad_cambiado and tipos_area.exists() and not tipo_actividad:
+            errors['tipo_actividad'] = (
+                'Selecciona un tipo de actividad vigente para el área del funcionario.'
+            )
         if tipo_actividad and tipo_actividad_cambiado:
             if not tipo_actividad.activo or not tipo_actividad.area.estado:
                 errors['tipo_actividad'] = 'El tipo de actividad seleccionado está inactivo.'
@@ -401,6 +433,24 @@ class ActividadSerializer(serializers.ModelSerializer):
                 and tipo_actividad.area_id != funcionario.area_entidad_id
             ):
                 errors['tipo_actividad'] = 'El tipo de actividad no pertenece al área del funcionario.'
+        if catalogo_servicio:
+            if not catalogo_servicio.activo:
+                errors['catalogo_servicio'] = 'El servicio seleccionado está inactivo.'
+            if (
+                funcionario
+                and funcionario.area_entidad_id
+                and catalogo_servicio.area_ref_id != funcionario.area_entidad_id
+            ):
+                errors['catalogo_servicio'] = (
+                    'El servicio no pertenece al área del funcionario.'
+                )
+            if (
+                tipo_actividad
+                and catalogo_servicio.area_ref_id != tipo_actividad.area_id
+            ):
+                errors['catalogo_servicio'] = (
+                    'El servicio debe pertenecer al área del tipo de actividad.'
+                )
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
@@ -408,7 +458,7 @@ class ActividadSerializer(serializers.ModelSerializer):
 
 class AtencionSocialSerializer(serializers.ModelSerializer):
     funcionario = serializers.PrimaryKeyRelatedField(read_only=True)
-    funcionario_nombre = serializers.ReadOnlyField(source='funcionario.get_full_name')
+    funcionario_nombre = serializers.CharField(source='funcionario.get_full_name', read_only=True)
     tipo_atencion_area = serializers.ReadOnlyField()
     subatencion = serializers.ReadOnlyField()
     tipo_atencion = serializers.CharField(
@@ -418,7 +468,12 @@ class AtencionSocialSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AtencionSocial
-        fields = '__all__'
+        fields = [
+            'id', 'funcionario', 'funcionario_nombre', 'tipo_atencion_area', 'subatencion',
+            'tipo_atencion', 'etapa', 'fecha', 'fecha_visita_programada', 'fecha_visita',
+            'fecha_entrega_beneficio', 'detalle', 'resultado', 'caso',
+            'tipo_atencion_catalogo', 'subatencion_catalogo',
+        ]
 
     def validate(self, attrs):
         etapa = attrs.get(
@@ -572,7 +627,10 @@ class CasoSocialSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CasoSocial
-        fields = '__all__'
+        fields = [
+            'id', 'delegacion_nombre', 'atenciones', 'codigo_caso', 'persona_anonimizada',
+            'persona_clave', 'fecha_apertura', 'cerrado', 'delegacion',
+        ]
 
     def validate(self, attrs):
         for field_name, label in (
@@ -587,8 +645,12 @@ class CasoSocialSerializer(serializers.ModelSerializer):
 
 
 class RegistroAuditoriaSerializer(serializers.ModelSerializer):
-    usuario_nombre = serializers.ReadOnlyField(source='usuario.get_full_name')
+    usuario_nombre = serializers.CharField(source='usuario.get_full_name', read_only=True)
 
     class Meta:
         model = RegistroAuditoria
-        fields = '__all__'
+        fields = [
+            'id', 'usuario_nombre', 'evento', 'accion', 'fecha_auditoria', 'fecha', 'entidad',
+            'identificador', 'identificador_registro', 'valor_anterior', 'valor_nuevo',
+            'ip_origen', 'funcionario', 'usuario',
+        ]

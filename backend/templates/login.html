@@ -94,13 +94,16 @@
     background-color: #FFFFFF !important;
     border-color: #CBD5E1 !important;
   }
-  .password-visibility-toggle:focus,
-  .password-visibility-toggle:focus-visible {
+  .password-visibility-toggle:focus {
     color: #64748B !important;
     background-color: #FFFFFF !important;
     border-color: #CBD5E1 !important;
     box-shadow: none !important;
-    outline: none;
+  }
+  /* RNF-012: indicador de foco visible al navegar con teclado. */
+  .password-visibility-toggle:focus-visible {
+    outline: 3px solid #1D4ED8;
+    outline-offset: 2px;
   }
 </style>
 <script>

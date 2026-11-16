@@ -14,6 +14,7 @@ from sgr_app.models import (
     Cargo,
     CasoSocial,
     CatalogoServicio,
+    ConceptoAjuste,
     CompromisoAgenda,
     Delegacion,
     Evidencia,
@@ -49,9 +50,9 @@ class AjusteIncentivoForm(forms.Form):
         queryset=Usuario.objects.none(),
         label='Funcionario',
     )
-    tipo = forms.ChoiceField(
-        choices=AjusteIncentivo.TIPO_CHOICES,
-        label='Tipo de ajuste',
+    concepto = forms.ModelChoiceField(
+        queryset=ConceptoAjuste.objects.none(),
+        label='Concepto de ajuste',
     )
     motivo = forms.CharField(
         label='Motivo',
@@ -64,13 +65,16 @@ class AjusteIncentivoForm(forms.Form):
         widget=forms.NumberInput(attrs={'step': '0.01', 'min': '0.01'}),
     )
 
-    def __init__(self, *args, funcionarios=None, **kwargs):
+    def __init__(self, *args, funcionarios=None, conceptos=None, **kwargs):
         super().__init__(*args, **kwargs)
         if funcionarios is None:
             funcionarios = Usuario.objects.none()
+        if conceptos is None:
+            conceptos = ConceptoAjuste.objects.filter(activo=True).order_by('nombre')
         self.fields['funcionario'].queryset = funcionarios
+        self.fields['concepto'].queryset = conceptos
         self.fields['funcionario'].widget.attrs.update({'class': 'form-select'})
-        self.fields['tipo'].widget.attrs.update({'class': 'form-select'})
+        self.fields['concepto'].widget.attrs.update({'class': 'form-select'})
         self.fields['motivo'].widget.attrs.update({'class': 'form-control'})
         self.fields['valor_porcentaje'].widget.attrs.update({'class': 'form-control'})
 
@@ -126,7 +130,6 @@ class CompromisoAgendaForm(forms.ModelForm):
             'actividad',
             'area_apoyo',
             'descripcion',
-            'estado',
             'observacion',
         )
         widgets = {
@@ -257,11 +260,6 @@ class CompromisoAgendaForm(forms.ModelForm):
                 'class',
                 'form-select' if isinstance(field.widget, forms.Select) else 'form-control',
             )
-        self.fields['estado'].choices = [
-            (value, label)
-            for value, label in CompromisoAgenda.ESTADO_CHOICES
-            if value != 'VENCIDO'
-        ]
 
     def clean(self):
         cleaned_data = super().clean()
@@ -290,10 +288,10 @@ class CompromisoAgendaForm(forms.ModelForm):
         ):
             self.add_error('actividad', 'La actividad ya está vinculada a otro compromiso.')
         if committed_date:
-            if committed_date < timezone.localdate():
+            if committed_date <= timezone.localdate():
                 self.add_error(
                     'fecha_comprometida',
-                    'La fecha comprometida no puede ser anterior a hoy.',
+                    'La fecha comprometida debe ser posterior a hoy.',
                 )
             if not self.periodo:
                 self.add_error(
@@ -372,6 +370,20 @@ class CompromisoEstadoForm(forms.Form):
         if not observacion:
             raise ValidationError('Explica el cambio de estado en la observación.')
         return observacion
+
+
+class ComentarioTextoForm(forms.Form):
+    comentario = forms.CharField(
+        max_length=2000,
+        label='Comentario',
+        widget=forms.Textarea(attrs={'rows': 2, 'class': 'form-control'}),
+    )
+
+    def clean_comentario(self):
+        comentario = self.cleaned_data['comentario'].strip()
+        if not comentario:
+            raise ValidationError('El comentario no puede estar vacío.')
+        return comentario
 
 
 class SolicitanteForm(forms.ModelForm):
@@ -776,6 +788,7 @@ class ItemPonderacionForm(forms.ModelForm):
             'meta_cuantitativa',
             'ponderador',
             'unidad_medida',
+            'medir_compromisos',
             'activo',
         )
         labels = {
@@ -783,6 +796,7 @@ class ItemPonderacionForm(forms.ModelForm):
             'tipo_unidad': 'Tipo de unidad',
             'meta_cuantitativa': 'Meta cuantitativa',
             'unidad_medida': 'Unidad de medida',
+            'medir_compromisos': 'Incluir compromisos validados en el avance',
             'activo': 'Vigente',
         }
         widgets = {
@@ -794,6 +808,7 @@ class ItemPonderacionForm(forms.ModelForm):
                 'class': 'form-control',
             }),
             'unidad_medida': forms.TextInput(attrs={'class': 'form-control'}),
+            'medir_compromisos': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'activo': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
 
@@ -1320,12 +1335,48 @@ class AreaForm(MantenedorModelForm):
 
 
 class CatalogoServicioForm(MantenedorModelForm):
+    area_ref = forms.ModelChoiceField(
+        queryset=Area.objects.none(),
+        label='Área',
+        empty_label='Selecciona un área',
+    )
+
     class Meta:
         model = CatalogoServicio
-        fields = ('codigo', 'nombre', 'area')
+        fields = ('codigo', 'nombre', 'area_ref')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        areas = Area.objects.filter(estado=True)
+        if self.instance.pk and self.instance.area_ref_id:
+            areas = areas | Area.objects.filter(pk=self.instance.area_ref_id)
+        self.fields['area_ref'].queryset = areas.distinct().order_by('nombre')
+        self.fields['area_ref'].widget.attrs['class'] = 'form-select'
+
+    def save(self, commit=True):
+        servicio = super().save(commit=False)
+        servicio.area = servicio.area_ref.nombre if servicio.area_ref_id else ''
+        if commit:
+            servicio.save()
+            self.save_m2m()
+        return servicio
 
     def clean_codigo(self):
         return self.cleaned_data['codigo'].strip().upper()
+
+
+class ConceptoAjusteForm(MantenedorModelForm):
+    class Meta:
+        model = ConceptoAjuste
+        fields = ('nombre', 'naturaleza', 'activo')
+        labels = {
+            'nombre': 'Nombre del concepto',
+            'naturaleza': 'Naturaleza',
+            'activo': 'Vigente',
+        }
+        widgets = {
+            'activo': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+        }
 
 
 class AreaCatalogForm(MantenedorModelForm):
@@ -1556,6 +1607,14 @@ class ActividadTerrenoForm(forms.Form):
         if funcionario and funcionario.cargo_id and self.fields['item_medicion_id'].queryset.exists() and not item:
             self.add_error('item_medicion_id', 'Selecciona un ítem válido.')
 
+        tipo_actividad = cleaned_data.get('tipo_actividad_id')
+        servicio = cleaned_data.get('catalogo_servicio_id')
+        if servicio and tipo_actividad and servicio.area_ref_id != tipo_actividad.area_id:
+            self.add_error(
+                'catalogo_servicio_id',
+                'El servicio debe pertenecer al área del tipo de actividad.',
+            )
+
         if (cleaned_data.get('latitud') is None) != (cleaned_data.get('longitud') is None):
             self.add_error('latitud', 'Debes ingresar latitud y longitud conjuntamente.')
 
@@ -1574,6 +1633,11 @@ class ActividadTerrenoForm(forms.Form):
             if not self.periodo:
                 self.add_error('compromiso_fecha', 'No existe un período activo para el compromiso.')
             elif fecha_compromiso and actividad_fecha:
+                if fecha_compromiso <= timezone.localdate():
+                    self.add_error(
+                        'compromiso_fecha',
+                        'La fecha del compromiso debe ser posterior a hoy.',
+                    )
                 if not (self.periodo.fecha_inicio <= fecha_compromiso <= self.periodo.fecha_termino):
                     self.add_error('compromiso_fecha', 'La fecha debe pertenecer al período activo.')
                 if fecha_compromiso < actividad_fecha:
