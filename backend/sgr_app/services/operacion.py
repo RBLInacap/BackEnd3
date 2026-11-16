@@ -20,6 +20,7 @@ logger = logging.getLogger('sgr.operacion')
 TAREAS_PROGRAMADAS = {
     'respaldar_base_datos': timedelta(hours=26),
     'purgar_evidencias_vencidas': timedelta(hours=26),
+    'verificar_coherencia': timedelta(hours=26),
 }
 
 

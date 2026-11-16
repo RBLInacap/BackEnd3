@@ -156,6 +156,7 @@ class TareasTests(TestCase):
         ahora = timezone.now()
         EjecucionTarea.objects.create(nombre='respaldar_base_datos', exito=True, fin=ahora - timedelta(hours=30))
         EjecucionTarea.objects.create(nombre='purgar_evidencias_vencidas', exito=True, fin=ahora - timedelta(hours=1))
+        EjecucionTarea.objects.create(nombre='verificar_coherencia', exito=True, fin=ahora - timedelta(hours=2))
         nombres = [nombre for nombre, _ in tareas_atrasadas(ahora)]
         self.assertEqual(nombres, ['respaldar_base_datos'])
 

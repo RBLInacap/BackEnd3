@@ -1,0 +1,16 @@
+[Unit]
+Description=SGR - verificación diaria de coherencia de datos (solo lectura)
+After=network-online.target mariadb.service
+Wants=network-online.target
+OnFailure=sgr-alerta@%n.service
+
+[Service]
+Type=oneshot
+User=sgr
+Group=sgr
+WorkingDirectory=/srv/sgr/app/backend
+EnvironmentFile=/etc/sgr.env
+# --alertar envía correo si hay críticos o advertencias; el servicio falla
+# (y dispara sgr-alerta@) solo ante hallazgos críticos.
+ExecStart=/srv/sgr/venv/bin/python manage.py verificar_coherencia --alertar
+TimeoutStartSec=900

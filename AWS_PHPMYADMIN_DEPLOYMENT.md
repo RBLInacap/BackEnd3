@@ -324,6 +324,7 @@ sudo bash /srv/sgr/app/deploy/instalar_tareas.sh
 | `sgr-monitor.timer` | cada minuto | Consulta `/health/` (BD, S3, disco); registra caídas con inicio, fin y causa; detecta periodos con el servidor apagado; alerta por correo al caer y al recuperarse, por disco/memoria altos y por tareas atrasadas. |
 | `sgr-respaldo.timer` | diario 02:00 | Respaldo de MariaDB comprimido, con SHA-256, a `/var/backups/sgr` (7 días) y a S3 cifrado (35 días). **RPO: 24 h.** |
 | `sgr-purga.timer` | diario 03:00 | Elimina los archivos de evidencia vencidos (`EVIDENCE_RETENTION_DAYS`). |
+| `sgr-coherencia.timer` | diario 04:00 | Revisa la coherencia de los datos (solo lectura) y envía correo si hay hallazgos críticos o advertencias. |
 
 `Persistent=true` hace que, si AWS Academy tenía la instancia apagada a esa hora, el respaldo y la purga se ejecuten al encenderla. Si una tarea falla, systemd envía una alerta por correo (`sgr-alerta@`). Prueba que todo funcione:
 
@@ -535,6 +536,14 @@ run_django registrar_mantenimiento --inicio "2026-11-20 20:00" --fin "2026-11-20
   Las ventanas registradas como mantenimiento no cuentan como caída. Los periodos con la instancia apagada sí cuentan como no disponibilidad: **en AWS Academy el laboratorio apaga la instancia al terminar cada sesión, por lo que la meta de 99,5 % solo es alcanzable en una cuenta AWS normal** con la instancia encendida de forma permanente.
 
 - **Historial de tareas automáticas:** `sudo journalctl -u 'sgr-*' --since today`.
+- **Coherencia de los datos** (solo lectura; no modifica nada):
+
+```bash
+run_django verificar_coherencia            # informe por severidad: CRITICO, ADVERTENCIA, INFO
+run_django verificar_coherencia --json     # para guardar o procesar el resultado
+```
+
+  Revisa claves huérfanas en todas las tablas y 35 reglas de negocio (columnas duplicadas que divergen, emails o RUN repetidos, períodos superpuestos, ponderaciones que no suman 100 %, evidencias autovalidadas, compromisos realizados sin fecha, etc.). Cada hallazgo indica los ID afectados y la acción sugerida. Ejecútalo antes de cualquier migración que modifique el esquema.
 
 ### 10.1 Respaldo manual y prueba de restauración (RTO)
 

@@ -11,7 +11,7 @@ install -d -o sgr -g sgr -m 700 /var/lib/sgr
 
 install -m 644 "$ORIGEN"/sgr-*.service "$ORIGEN"/sgr-*.timer /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now sgr-monitor.timer sgr-respaldo.timer sgr-purga.timer
+systemctl enable --now sgr-monitor.timer sgr-respaldo.timer sgr-purga.timer sgr-coherencia.timer
 
 echo "Temporizadores instalados:"
 systemctl list-timers 'sgr-*' --no-pager
