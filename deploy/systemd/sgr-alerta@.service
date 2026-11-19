@@ -1,5 +1,9 @@
 [Unit]
 Description=SGR - alerta por fallo de %i
+# Máximo un correo por hora por cada servicio que falla: el monitor corre cada
+# 60 s y, si queda roto, sin este límite enviaría un correo por minuto.
+StartLimitIntervalSec=3600
+StartLimitBurst=1
 
 [Service]
 Type=oneshot

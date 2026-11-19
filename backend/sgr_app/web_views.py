@@ -1608,6 +1608,8 @@ def web_registrar_solicitante(request):
     if not request.user.is_authenticated:
         messages.error(request, 'Debe iniciar sesión para registrar solicitantes.')
         return redirect('web_login')
+    if request.user.es_consulta:
+        raise PermissionDenied  # CU-38: el usuario de consulta solo lee.
 
     form = SolicitanteForm(request.POST if request.method == 'POST' else None)
     if request.method == 'POST' and form.is_valid():
@@ -1798,6 +1800,8 @@ def web_registrar_actividad_personal(request):
     if not request.user.is_authenticated:
         messages.error(request, "Debe iniciar sesión para registrar actividades.")
         return redirect('web_login')
+    if request.user.es_consulta:
+        raise PermissionDenied  # CU-38: el usuario de consulta solo lee.
 
     periodo = get_periodo_activo()
     funcionarios_disponibles = _funcionarios_disponibles_actividad(
@@ -3229,6 +3233,8 @@ def web_reactivar_compromiso(request, compromiso_id):
 def web_terreno(request):
     if not request.user.is_authenticated:
         return redirect('web_login')
+    if request.user.es_consulta:
+        raise PermissionDenied  # CU-38: el usuario de consulta solo lee.
 
     periodo = get_periodo_activo()
     items_medicion = ItemMedicion.objects.none()

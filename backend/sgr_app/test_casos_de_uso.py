@@ -301,6 +301,16 @@ class CasosDeUsoTests(TestCase):
         )
         self.assertEqual(consulta.post('/api/v1/compromisos/', {}).status_code, 403)
         self.assertEqual(consulta.post('/tubo/crear/', {}).status_code, 403)
+        # Tampoco ve los formularios de registro aunque escriba la URL.
+        for url in (
+            '/personal/registrar-actividad/',
+            '/actividad-diaria/registrar-actividad/',
+            '/actividad-diaria/registrar-solicitante/',
+            '/terreno/',
+            '/tubo/crear/',
+        ):
+            with self.subTest(formulario=url):
+                self.assertEqual(consulta.get(url).status_code, 403)
         self.act_a.refresh_from_db()
         self.assertFalse(self.act_a.anulada)
         self.assertNotContains(consulta.get('/tubo/'), '/anular/')
