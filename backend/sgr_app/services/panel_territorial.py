@@ -79,7 +79,7 @@ def _dias_respuesta_por_delegacion(compromisos):
 
 
 def comparacion_territorial(periodo, delegaciones, hoy=None):
-    """Una fila de indicadores por delegación (para supervisor y administrador)."""
+    """Una fila de indicadores por delegación (para coordinador y administrador)."""
     hoy = hoy or timezone.localdate()
     ids = [d.pk for d in delegaciones]
     cond = _condiciones(hoy)

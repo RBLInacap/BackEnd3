@@ -2,12 +2,12 @@ from datetime import timedelta
 from uuid import uuid4
 
 from django.contrib import messages
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.db import transaction
 from django.db.models import Q, Sum
 from django.http import HttpResponseRedirect
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse_lazy
 from django.utils import timezone
 from django.views.generic import CreateView, DeleteView, ListView, UpdateView, View
@@ -34,6 +34,7 @@ from sgr_app.models import (
     Area,
     Cargo,
     CatalogoServicio,
+    CompromisoAgenda,
     ConceptoAjuste,
     Delegacion,
     ItemMedicion,
@@ -50,14 +51,14 @@ from sgr_app.models import (
 
 
 class AdministradorRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
-    allow_supervisor = False
-    supervisor_can_manage = False
+    allow_coordinador = False
+    coordinador_can_manage = False
 
     def test_func(self):
         user = self.request.user
         return user.is_authenticated and (
             user.es_admin()
-            or (self.allow_supervisor and user.es_supervisor)
+            or (self.allow_coordinador and user.es_coordinador)
         )
 
 
@@ -183,7 +184,6 @@ def _auditoria_valor(instance):
                 'nombre_rol',
                 flat=True,
             )),
-            'es_delegado': instance.es_delegado,
             'area_id': instance.area_entidad_id,
             'cargo_id': instance.cargo_id,
             'delegacion_id': instance.delegacion_id,
@@ -345,9 +345,9 @@ class ActivoListView(AdministradorRequiredMixin, ListView):
             'can_manage': (
                 self.request.user.es_admin()
                 or (
-                    self.allow_supervisor
-                    and self.supervisor_can_manage
-                    and self.request.user.es_supervisor
+                    self.allow_coordinador
+                    and self.coordinador_can_manage
+                    and self.request.user.es_coordinador
                 )
             ),
         })
@@ -358,13 +358,26 @@ class SoftDeleteView(AdministradorRequiredMixin, DeleteView):
     success_url = reverse_lazy('mantenedor_delegaciones_list')
     success_message = 'Registro desactivado; se conservó su historial.'
 
+    def get_advertencias(self):
+        """CU-01/CU-03: dependencias activas que conviene revisar antes de desactivar."""
+        return []
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context['cancel_url'] = self.get_success_url()
+        context['advertencias'] = self.get_advertencias()
         return context
 
     def post(self, request, *args, **kwargs):
         self.object = self.get_object()
+        advertencias = self.get_advertencias()
+        if advertencias and not request.POST.get('confirmar_dependencias'):
+            # Con dependencias activas se exige confirmar expresamente el aviso.
+            messages.error(
+                request,
+                'Marca la casilla para confirmar que revisaste las dependencias activas.',
+            )
+            return self.render_to_response(self.get_context_data(object=self.object))
         previous_value = str(self.object)
         with transaction.atomic():
             self.object.activo = False
@@ -378,10 +391,16 @@ class SoftDeleteView(AdministradorRequiredMixin, DeleteView):
                 identificador=str(self.object.pk),
                 identificador_registro=str(self.object.pk),
                 valor_anterior={'registro': previous_value, 'activo': True},
-                valor_nuevo={'registro': previous_value, 'activo': False},
+                valor_nuevo={
+                    'registro': previous_value,
+                    'activo': False,
+                    **({'advertencias_confirmadas': advertencias} if advertencias else {}),
+                },
                 ip_origen=obtener_ip_cliente(request) or None,
             )
         messages.success(request, self.success_message)
+        if advertencias:
+            messages.warning(request, 'Recuerda reasignar: ' + ' '.join(advertencias))
         return HttpResponseRedirect(self.get_success_url())
 
 
@@ -427,9 +446,9 @@ class ActivoBooleanListView(AdministradorRequiredMixin, ListView):
             'can_manage': (
                 self.request.user.es_admin()
                 or (
-                    self.allow_supervisor
-                    and self.supervisor_can_manage
-                    and self.request.user.es_supervisor
+                    self.allow_coordinador
+                    and self.coordinador_can_manage
+                    and self.request.user.es_coordinador
                 )
             ),
         })
@@ -484,7 +503,7 @@ class AuditedSoftDeleteView(AdministradorRequiredMixin, DeleteView):
 REACTIVATABLE_RECORDS = {
     'delegaciones': (Delegacion, 'activo', 'mantenedor_delegaciones_list', False, False),
     'cargos': (Cargo, 'activo', 'mantenedor_cargos_list', False, False),
-    'periodos': (PeriodoMedicion, 'estado', 'mantenedor_periodos_list', False, False),
+    'periodos': (PeriodoMedicion, 'estado', 'mantenedor_periodos_list', True, True),
     'solicitantes': (Solicitante, 'estado', 'mantenedor_solicitantes_list', True, True),
     'funcionarios': (Usuario, 'is_active', 'mantenedor_funcionarios_list', False, False),
     'roles': (Rol, 'estado', 'mantenedor_roles_list', False, False),
@@ -530,8 +549,8 @@ class ReactivateRecordView(AdministradorRequiredMixin, View):
             self.model,
             self.active_field,
             self.list_url_name,
-            self.allow_supervisor,
-            self.supervisor_can_manage,
+            self.allow_coordinador,
+            self.coordinador_can_manage,
         ) = record_config
         return super().dispatch(request, *args, **kwargs)
 
@@ -570,7 +589,7 @@ class ReactivateRecordView(AdministradorRequiredMixin, View):
 
 
 class DelegacionListView(ActivoListView):
-    allow_supervisor = True
+    allow_coordinador = True
     supports_reactivation = True
     reactivation_entity = 'delegaciones'
     supports_reactivation = True
@@ -627,6 +646,27 @@ class DelegacionDeleteView(SoftDeleteView):
     def get_queryset(self):
         return Delegacion.objects.filter(activo=True)
 
+    def get_advertencias(self):
+        advertencias = []
+        funcionarios = self.object.usuarios.filter(is_active=True).count()
+        if funcionarios:
+            advertencias.append(
+                f'La delegación tiene {funcionarios} funcionario{"s" if funcionarios != 1 else ""} '
+                f'activo{"s" if funcionarios != 1 else ""} asignado{"s" if funcionarios != 1 else ""}.'
+            )
+        abiertos = self.object.compromisos.filter(anulado=False).exclude(
+            estado__in=(
+                CompromisoAgenda.Estado.REALIZADO,
+                CompromisoAgenda.Estado.COMPLETADO,
+                CompromisoAgenda.Estado.CUMPLIDO,
+            ),
+        ).count()
+        if abiertos:
+            advertencias.append(
+                f'Tiene {abiertos} compromiso{"s" if abiertos != 1 else ""} sin cerrar.'
+            )
+        return advertencias
+
 
 class DelegacionReactivateView(AdministradorRequiredMixin, View):
     def post(self, request, *args, **kwargs):
@@ -657,7 +697,7 @@ class DelegacionReactivateView(AdministradorRequiredMixin, View):
 
 
 class CargoListView(ActivoListView):
-    allow_supervisor = True
+    allow_coordinador = True
     supports_reactivation = True
     reactivation_entity = 'cargos'
     model = Cargo
@@ -715,10 +755,28 @@ class CargoDeleteView(SoftDeleteView):
     def get_queryset(self):
         return Cargo.objects.filter(activo=True)
 
+    def get_advertencias(self):
+        advertencias = []
+        funcionarios = self.object.usuarios.filter(is_active=True).count()
+        if funcionarios:
+            advertencias.append(
+                f'El cargo tiene {funcionarios} funcionario{"s" if funcionarios != 1 else ""} '
+                f'activo{"s" if funcionarios != 1 else ""} asignado{"s" if funcionarios != 1 else ""}.'
+            )
+        items = self.object.items_medicion.filter(
+            activo=True, periodo__cerrado=False,
+        ).count()
+        if items:
+            advertencias.append(
+                f'Tiene {items} ítem{"s" if items != 1 else ""} de medición vigente{"s" if items != 1 else ""} '
+                'en períodos abiertos.'
+            )
+        return advertencias
+
 
 class ItemListView(ActivoBooleanListView):
-    allow_supervisor = True
-    supervisor_can_manage_catalog = True
+    allow_coordinador = True
+    coordinador_can_manage_catalog = True
     model = ItemMedicion
     queryset = ItemMedicion.objects.select_related('cargo', 'periodo')
     template_name = 'mantenedores/items_list.html'
@@ -745,12 +803,12 @@ class ItemListView(ActivoBooleanListView):
                 'Modificar servicio' if catalogo_form.instance.pk else 'Agregar servicio'
             ),
             'can_manage_items': (
-                user.es_admin()
+                user.es_admin() or user.es_coordinador
             ),
             'ponderaciones_url': reverse_lazy('mantenedor_ponderaciones_config'),
             'can_manage_catalog': (
                 user.es_admin()
-                or (self.supervisor_can_manage_catalog and user.es_supervisor)
+                or (self.coordinador_can_manage_catalog and user.es_coordinador)
             ),
         })
         return context
@@ -839,6 +897,8 @@ class ItemListView(ActivoBooleanListView):
 
 
 class ConfigurarPonderacionesView(AdministradorRequiredMixin, View):
+    # CU-10/CU-11 (HU-04, HU-05): el Coordinador define metas y funciones por cargo.
+    allow_coordinador = True
     template_name = 'mantenedores/ponderaciones_form.html'
     success_message = 'La configuración del cargo y período suma exactamente 100%.'
 
@@ -880,7 +940,105 @@ class ConfigurarPonderacionesView(AdministradorRequiredMixin, View):
             'total_actual': total_actual,
             'error_message': error_message,
             'periodo_cerrado': bool(periodo and periodo.cerrado),
+            'periodos_futuros': self._periodos_futuros(periodo) if periodo else [],
+            'periodos_futuros_seleccionados': {
+                int(valor) for valor in request.POST.getlist('periodos_futuros') if valor.isdecimal()
+            } if request.method == 'POST' else set(),
         })
+
+    @staticmethod
+    def _periodos_futuros(periodo):
+        """CU-09: períodos abiertos posteriores al elegido, a los que se puede replicar."""
+        return PeriodoMedicion.objects.filter(
+            estado=True,
+            cerrado=False,
+            fecha_inicio__gt=periodo.fecha_inicio,
+        ).order_by('fecha_inicio')
+
+    def _replicar_configuracion(self, request, cargo, origen, destino):
+        """CU-09 (HU-25): copia los ítems vigentes del cargo a un período futuro.
+
+        Los ítems del destino con el mismo nombre se actualizan; los que no están en
+        el origen se desactivan (nunca se borran). Sube la versión del destino y
+        todo queda auditado.
+        """
+        destino = PeriodoMedicion.objects.select_for_update().get(pk=destino.pk)
+        if destino.cerrado:
+            raise ValidationError(f'El período {destino.nombre} está cerrado.')
+        campos = (
+            'descripcion', 'tipo_unidad', 'meta_cuantitativa', 'ponderador',
+            'unidad_medida', 'medir_compromisos',
+        )
+        fuente = list(ItemMedicion.objects.filter(cargo=cargo, periodo=origen, activo=True))
+        existentes = {
+            item.nombre_item: item
+            for item in ItemMedicion.objects.select_for_update().filter(cargo=cargo, periodo=destino)
+        }
+        anteriores = {item.pk: _auditoria_valor(item) for item in existentes.values()}
+        previous_periodo = _auditoria_periodo_snapshot(destino)
+        ip = obtener_ip_cliente(request) or None
+
+        ItemMedicion.objects.filter(cargo=cargo, periodo=destino).update(activo=False)
+        nombres_fuente = set()
+        for original in fuente:
+            nombres_fuente.add(original.nombre_item)
+            item = existentes.get(original.nombre_item) or ItemMedicion(
+                cargo=cargo, periodo=destino, nombre_item=original.nombre_item,
+            )
+            for campo in campos:
+                setattr(item, campo, getattr(original, campo))
+            item.activo = True
+            es_nuevo = item.pk is None
+            item.save()
+            if es_nuevo or anteriores.get(item.pk) != _auditoria_valor(item):
+                RegistroAuditoria.objects.create(
+                    usuario=request.user,
+                    funcionario=request.user,
+                    evento='CREACION' if es_nuevo else 'MODIFICACION',
+                    accion='REPLICAR_PONDERACION_ITEM',
+                    entidad='ItemMedicion',
+                    identificador=str(item.pk),
+                    identificador_registro=str(item.pk),
+                    valor_anterior=None if es_nuevo else anteriores.get(item.pk),
+                    valor_nuevo={**_auditoria_valor(item), 'replicado_desde_periodo': origen.pk},
+                    ip_origen=ip,
+                )
+        for nombre, item in existentes.items():
+            if nombre not in nombres_fuente and anteriores[item.pk].get('activo'):
+                item.refresh_from_db()
+                RegistroAuditoria.objects.create(
+                    usuario=request.user,
+                    funcionario=request.user,
+                    evento='MODIFICACION',
+                    accion='REPLICAR_PONDERACION_ITEM',
+                    entidad='ItemMedicion',
+                    identificador=str(item.pk),
+                    identificador_registro=str(item.pk),
+                    valor_anterior=anteriores[item.pk],
+                    valor_nuevo={**_auditoria_valor(item), 'replicado_desde_periodo': origen.pk},
+                    ip_origen=ip,
+                )
+
+        destino.version_de_parametro = _siguiente_version_parametro(destino.version_de_parametro)
+        destino.save(update_fields=['version_de_parametro'])
+        RegistroAuditoria.objects.create(
+            usuario=request.user,
+            funcionario=request.user,
+            evento='MODIFICACION',
+            accion='VERSIONAR_PARAMETROS_PERIODO',
+            entidad='PeriodoMedicion',
+            identificador=str(destino.pk),
+            identificador_registro=str(destino.pk),
+            valor_anterior=previous_periodo,
+            valor_nuevo={
+                **_auditoria_periodo_snapshot(destino),
+                'cargo_id': cargo.pk,
+                'replicado_desde_periodo': origen.pk,
+            },
+            ip_origen=ip,
+        )
+        _guardar_version_configuracion_periodo(destino, request.user)
+        return destino
 
     def render_to_response(self, request, context):
         from django.shortcuts import render
@@ -922,6 +1080,19 @@ class ConfigurarPonderacionesView(AdministradorRequiredMixin, View):
             return self._render(
                 request,
                 error_message='Selecciona un cargo y período vigentes.',
+            )
+
+        # CU-09: períodos futuros a los que también se aplica la configuración.
+        ids_futuros = {
+            int(valor) for valor in request.POST.getlist('periodos_futuros') if valor.isdecimal()
+        }
+        periodos_futuros = list(self._periodos_futuros(periodo).filter(pk__in=ids_futuros))
+        if len(periodos_futuros) != len(ids_futuros):
+            return self._render(
+                request,
+                cargo=cargo,
+                periodo=periodo,
+                error_message='Solo puedes replicar a períodos futuros abiertos.',
             )
 
         with transaction.atomic():
@@ -1041,7 +1212,44 @@ class ConfigurarPonderacionesView(AdministradorRequiredMixin, View):
                 )
                 _guardar_version_configuracion_periodo(periodo, request.user)
 
+            replicados = []
+            if periodos_futuros:
+                total_vigente = (
+                    ItemMedicion.objects.filter(cargo=cargo, periodo=periodo, activo=True)
+                    .aggregate(total=Sum('ponderador'))['total']
+                    or 0
+                )
+                if round(total_vigente, 2) != 100:
+                    transaction.set_rollback(True)
+                    return self._render(
+                        request,
+                        cargo=cargo,
+                        periodo=periodo,
+                        error_message=(
+                            'Para replicar a otros períodos, la configuración vigente '
+                            'debe sumar exactamente 100%.'
+                        ),
+                    )
+                try:
+                    for destino in periodos_futuros:
+                        replicados.append(
+                            self._replicar_configuracion(request, cargo, periodo, destino).nombre
+                        )
+                except ValidationError as error:
+                    transaction.set_rollback(True)
+                    return self._render(
+                        request,
+                        cargo=cargo,
+                        periodo=periodo,
+                        error_message='No se pudo replicar la configuración: ' + '; '.join(error.messages),
+                    )
+
         messages.success(request, self.success_message)
+        if replicados:
+            messages.success(
+                request,
+                'La configuración también quedó vigente en: ' + ', '.join(replicados) + '.',
+            )
         return HttpResponseRedirect(
             f'{reverse_lazy("mantenedor_ponderaciones_config")}'
             f'?cargo={cargo.pk}&periodo={periodo.pk}'
@@ -1049,6 +1257,7 @@ class ConfigurarPonderacionesView(AdministradorRequiredMixin, View):
 
 
 class ItemConfigurationRedirectView(AdministradorRequiredMixin, View):
+    allow_coordinador = True
     message = ''
 
     def get_redirect_response(self, request, **kwargs):
@@ -1144,7 +1353,8 @@ class ConceptoAjusteDeleteView(AuditedSoftDeleteView):
 
 
 class PeriodoListView(ActivoBooleanListView):
-    allow_supervisor = True
+    allow_coordinador = True
+    coordinador_can_manage = True
     model = PeriodoMedicion
     template_name = 'mantenedores/periodos_list.html'
     activo_field = 'estado'
@@ -1158,6 +1368,7 @@ class PeriodoListView(ActivoBooleanListView):
 
 
 class PeriodoCreateView(AdministradorRequiredMixin, AuditedSaveMixin, CreateView):
+    allow_coordinador = True
     model = PeriodoMedicion
     form_class = MantenedorPeriodoForm
     template_name = 'mantenedores/form.html'
@@ -1171,6 +1382,7 @@ class PeriodoCreateView(AdministradorRequiredMixin, AuditedSaveMixin, CreateView
 
 
 class PeriodoUpdateView(AdministradorRequiredMixin, AuditedSaveMixin, UpdateView):
+    allow_coordinador = True
     model = PeriodoMedicion
     form_class = MantenedorPeriodoForm
     template_name = 'mantenedores/form.html'
@@ -1204,13 +1416,41 @@ class PeriodoUpdateView(AdministradorRequiredMixin, AuditedSaveMixin, UpdateView
                 anterior.version_de_parametro
             )
         form.instance = periodo
+        self.reabriendo = bool(anterior.cerrado and not periodo.cerrado)
         return super().form_valid(form)
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['user'] = self.request.user
+        return kwargs
+
+    def _form_valid_auditado(self, form):
+        response = super()._form_valid_auditado(form)
+        if getattr(self, 'reabriendo', False):
+            # CU-08 / RN-013: la reapertura queda auditada con su motivo.
+            RegistroAuditoria.objects.create(
+                usuario=self.request.user,
+                funcionario=self.request.user,
+                evento='MODIFICACION',
+                accion='REABRIR_PERIODO',
+                entidad='PeriodoMedicion',
+                identificador=str(self.object.pk),
+                identificador_registro=str(self.object.pk),
+                valor_anterior={'cerrado': True},
+                valor_nuevo={
+                    'cerrado': False,
+                    'motivo_reapertura': form.cleaned_data.get('motivo_reapertura', ''),
+                },
+                ip_origen=obtener_ip_cliente(self.request) or None,
+            )
+        return response
 
     def get_queryset(self):
         return PeriodoMedicion.objects.filter(estado=True)
 
 
 class PeriodoDeleteView(AuditedSoftDeleteView):
+    allow_coordinador = True
     model = PeriodoMedicion
     template_name = 'mantenedores/confirm_delete.html'
     activo_field = 'estado'
@@ -1220,8 +1460,8 @@ class PeriodoDeleteView(AuditedSoftDeleteView):
 
 
 class SolicitanteListView(ActivoBooleanListView):
-    allow_supervisor = True
-    supervisor_can_manage = True
+    allow_coordinador = True
+    coordinador_can_manage = True
     model = Solicitante
     template_name = 'mantenedores/solicitantes_list.html'
     activo_field = 'estado'
@@ -1245,7 +1485,7 @@ class SolicitanteCreateView(
     AuditedSaveMixin,
     CreateView,
 ):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Solicitante
     form_class = MantenedorSolicitanteForm
     template_name = 'mantenedores/form.html'
@@ -1263,7 +1503,7 @@ class SolicitanteUpdateView(
     AuditedSaveMixin,
     UpdateView,
 ):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Solicitante
     form_class = MantenedorSolicitanteForm
     template_name = 'mantenedores/form.html'
@@ -1280,7 +1520,7 @@ class SolicitanteUpdateView(
 
 
 class SolicitanteDeleteView(AuditedSoftDeleteView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Solicitante
     template_name = 'mantenedores/confirm_delete.html'
     activo_field = 'estado'
@@ -1290,7 +1530,7 @@ class SolicitanteDeleteView(AuditedSoftDeleteView):
 
 
 class FuncionarioListView(ActivoBooleanListView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Usuario
     template_name = 'mantenedores/funcionarios_list.html'
     activo_field = 'is_active'
@@ -1415,7 +1655,7 @@ class FuncionarioDeleteView(AuditedSoftDeleteView):
 
 
 class RolListView(ActivoBooleanListView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Rol
     template_name = 'mantenedores/roles_list.html'
     activo_field = 'estado'
@@ -1467,7 +1707,7 @@ class RolDeleteView(AuditedSoftDeleteView):
 
 
 class AreaListView(ActivoBooleanListView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Area
     template_name = 'mantenedores/areas_list.html'
     activo_field = 'estado'
@@ -1519,7 +1759,7 @@ class AreaDeleteView(AuditedSoftDeleteView):
 
 
 class CatalogoAreaListView(ActivoBooleanListView):
-    allow_supervisor = True
+    allow_coordinador = True
     template_name = 'mantenedores/catalogos_area_list.html'
     activo_field = 'activo'
     supports_reactivation = True
@@ -1706,3 +1946,115 @@ class SubatencionSocialDeleteView(AuditedSoftDeleteView):
     list_url = reverse_lazy('mantenedor_subatenciones_list')
     success_url = reverse_lazy('mantenedor_subatenciones_list')
     success_message = 'Subatención desactivada; se conservó el historial.'
+
+
+class ReglasAlertaView(AdministradorRequiredMixin, View):
+    """CU-07: el Administrador configura umbrales y destinatarios de cada alerta.
+
+    Cada cambio crea una versión nueva con su vigencia (no se edita ni se borra
+    la anterior) y queda en la auditoría.
+    """
+
+    template_name = 'mantenedores/reglas_alerta.html'
+
+    def _contexto(self, errores=None):
+        from sgr_app.models import ReglaAlerta
+        from sgr_app.services.alertas import reglas_vigentes
+
+        reglas = reglas_vigentes()
+        etiquetas = dict(ReglaAlerta.Tipo.choices)
+        return {
+            'title': 'Reglas de alerta',
+            'reglas': [
+                {'regla': regla, 'etiqueta': etiquetas[tipo]}
+                for tipo, regla in reglas.items()
+            ],
+            'destinatarios_opciones': ReglaAlerta.DESTINATARIOS,
+            'historial': ReglaAlerta.objects.select_related('creada_por')[:30],
+            'errores': errores or {},
+            'ahora': timezone.localtime().strftime('%Y-%m-%dT%H:%M'),
+        }
+
+    def get(self, request):
+        return render(request, self.template_name, self._contexto())
+
+    def post(self, request):
+        from datetime import datetime
+
+        from sgr_app.models import ReglaAlerta
+        from sgr_app.services.alertas import REGLAS_POR_DEFECTO, reglas_vigentes
+
+        tipo = request.POST.get('tipo', '')
+        if tipo not in REGLAS_POR_DEFECTO:
+            messages.error(request, 'Tipo de alerta no válido.')
+            return redirect('mantenedor_reglas_alerta')
+        errores = []
+        activa = bool(request.POST.get('activa'))
+        umbral_texto = (request.POST.get('umbral') or '').strip().replace(',', '.')
+        umbral = None
+        if umbral_texto:
+            try:
+                umbral = float(umbral_texto)
+            except ValueError:
+                errores.append('El umbral debe ser un número.')
+            else:
+                if umbral < 0:
+                    errores.append('El umbral no puede ser negativo.')
+                if tipo == 'RENDIMIENTO_BAJO' and umbral > 100:
+                    errores.append('El umbral de rendimiento bajo es un porcentaje entre 0 y 100.')
+        elif tipo != 'RENDIMIENTO_BAJO':
+            errores.append('Indica el umbral de la regla.')
+        validos = {codigo for codigo, _ in ReglaAlerta.DESTINATARIOS}
+        destinatarios = [d for d in request.POST.getlist('destinatarios') if d in validos]
+        if activa and not destinatarios:
+            errores.append('Una regla activa necesita al menos un destinatario.')
+        vigente_texto = (request.POST.get('vigente_desde') or '').strip()
+        vigente_desde = timezone.now()
+        if vigente_texto:
+            try:
+                vigente_desde = timezone.make_aware(datetime.fromisoformat(vigente_texto))
+            except ValueError:
+                errores.append('La fecha de vigencia no es válida.')
+        if errores:
+            return render(request, self.template_name, self._contexto({tipo: errores}), status=400)
+
+        anterior = reglas_vigentes()[tipo]
+        with transaction.atomic():
+            version = ReglaAlerta.objects.create(
+                tipo=tipo,
+                activa=activa,
+                umbral=umbral,
+                destinatarios=destinatarios,
+                vigente_desde=vigente_desde,
+                creada_por=request.user,
+            )
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                evento='MODIFICACION',
+                accion='CONFIGURAR_REGLA_ALERTA',
+                entidad='ReglaAlerta',
+                identificador=str(version.pk),
+                identificador_registro=str(version.pk),
+                valor_anterior={
+                    'tipo': tipo,
+                    'activa': anterior.activa,
+                    'umbral': anterior.umbral,
+                    'destinatarios': anterior.destinatarios,
+                    'por_defecto': anterior.es_por_defecto,
+                },
+                valor_nuevo={
+                    'tipo': tipo,
+                    'activa': activa,
+                    'umbral': umbral,
+                    'destinatarios': destinatarios,
+                    'vigente_desde': vigente_desde.isoformat(),
+                },
+                ip_origen=obtener_ip_cliente(request) or None,
+            )
+        messages.success(
+            request,
+            'Regla guardada como nueva versión; rige desde '
+            f'{timezone.localtime(vigente_desde):%d/%m/%Y %H:%M}.',
+        )
+        return redirect('mantenedor_reglas_alerta')

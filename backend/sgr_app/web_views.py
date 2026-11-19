@@ -61,6 +61,14 @@ from sgr_app.models import (
     Actividad, ComentarioActividad, Evidencia, CompromisoAgenda, CasoSocial, AtencionSocial, Solicitante,
     RegistroAuditoria, MetaModel, ObservacionCompromiso, CatalogoServicio,
     PasswordResetCode, TipoActividad, TipoAtencionSocial, SubatencionSocial,
+    AlertaRevisada, ReglaAlerta,
+)
+from sgr_app.services.alertas import (
+    REGLAS_POR_DEFECTO,
+    aplica_a,
+    reglas_de_alertas_generadas,
+    reglas_vigentes,
+    registrar_alertas_generadas,
 )
 from sgr_app.services.calculos import (
     calcular_dias_periodo,
@@ -70,7 +78,12 @@ from sgr_app.services.calculos import (
     determinar_color_semaforo,
     recalcular_indicadores_actividad,
 )
-from sgr_app.services.evidencias import metadatos_archivo_evidencia, validar_archivo_evidencia
+from sgr_app.services.evidencias import (
+    MAX_FOTOS_POR_REGISTRO,
+    MENSAJE_MAX_FOTOS,
+    metadatos_archivo_evidencia,
+    validar_archivo_evidencia,
+)
 from sgr_app.validators import normalize_chilean_phone
 
 ACTIVIDAD_TERRITORIOS = (
@@ -111,7 +124,7 @@ def web_password_reset_request(request):
                     ).first()
                     if not existing or existing.created_at <= now - PASSWORD_RESET_RESEND_DELAY:
                         if existing:
-                            existing.delete()
+                            existing.invalidar('REEMPLAZADO')
                         code = f'{secrets.randbelow(1_000_000):06d}'
                         send_code = True
                         reset_code = PasswordResetCode.objects.create(
@@ -245,7 +258,7 @@ def web_password_reset_change(request):
                     'must_change_password',
                     'initial_login_expires_at',
                 ])
-                reset_request.delete()
+                reset_request.invalidar('USADO')
 
             request.session.pop('password_reset_otp_id', None)
             return redirect('password_reset_complete')
@@ -288,12 +301,14 @@ def get_periodo_activo():
 
 
 def _puede_gestionar_compromiso(user, compromiso=None):
-    if user.es_admin() or user.es_supervisor:
+    if user.es_consulta:
+        return False
+    if user.es_admin() or user.es_coordinador:
         return True
     if user.esta_limitado_a_delegacion:
         return bool(user.delegacion_id and compromiso and compromiso.delegacion_id == user.delegacion_id)
     return bool(
-        user.es_administrativo
+        user.es_funcionario
         and compromiso
         and compromiso.creado_por_id == user.pk
         and compromiso.responsable_id == user.pk
@@ -383,7 +398,7 @@ def _puede_gestionar_ajustes(user):
         and (
             user.is_superuser
             or user.es_admin()
-            or user.es_supervisor
+            or user.es_coordinador
         )
     )
 
@@ -433,8 +448,7 @@ def web_ajustes_incentivo(request):
             messages.error(request, 'El período seleccionado no existe.')
 
     funcionarios = Usuario.objects.filter(
-        rol=Usuario.Rol.ADMINISTRATIVO,
-        es_delegado=False,
+        rol=Usuario.Rol.FUNCIONARIO,
         is_active=True,
     ).select_related('delegacion', 'cargo').order_by('last_name', 'first_name', 'username')
     conceptos = ConceptoAjuste.objects.filter(activo=True).order_by('nombre')
@@ -792,13 +806,13 @@ def web_logout(request):
 
 @never_cache
 def web_dashboard(request):
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         actividades = Actividad.objects.filter(funcionario=request.user)
         evidencias_pendientes = Evidencia.objects.filter(
             actividad__funcionario=request.user,
             estado=Evidencia.Estado.PENDIENTE,
         ).count()
-        return render(request, 'dashboard_administrativo.html', {
+        return render(request, 'dashboard_funcionario.html', {
             'periodo': get_periodo_activo(),
             'actividades_count': actividades.count(),
             'evidencias_pendientes': evidencias_pendientes,
@@ -881,7 +895,7 @@ def web_dashboard(request):
         if periodo and request.user.delegacion_id:
             context['territorial'] = panel_territorial(periodo, request.user.delegacion)
     else:
-        template = 'dashboard_admin.html' if request.user.es_admin() else 'dashboard_supervisor.html'
+        template = 'dashboard_admin.html' if request.user.es_admin() else 'dashboard_coordinador.html'
         if periodo:
             context['comparacion_territorial'] = comparacion_territorial(
                 periodo, list(Delegacion.objects.filter(activo=True).order_by('nombre')),
@@ -889,8 +903,8 @@ def web_dashboard(request):
     return render(request, template, context)
 
 def web_semaforo(request):
-    if request.user.es_administrativo:
-        messages.warning(request, 'El semáforo territorial está disponible para supervisores y administradores.')
+    if request.user.es_funcionario:
+        messages.warning(request, 'El semáforo territorial está disponible para coordinadores y administradores.')
         return redirect('web_dashboard')
 
     periodo, periodo_configurado = get_periodo_trimestre_actual()
@@ -924,11 +938,25 @@ def web_semaforo(request):
     umbral_ambar = periodo.umbral_semaforo_ambar if periodo else 60.0
     umbral_60_dia = comunal['info_tiempo']['umbral_60_dia'] if comunal else 0.0
 
+    # CU-15 (HU-19, RF-030): el umbral de días sin registros es el de la regla de
+    # inactividad vigente (CU-07), el mismo que usan las alertas operativas.
+    regla_inactividad = reglas_vigentes()['INACTIVIDAD']
+    umbral_inactividad = int(
+        regla_inactividad.umbral
+        if regla_inactividad.umbral is not None
+        else REGLAS_POR_DEFECTO['INACTIVIDAD']['umbral']
+    )
+    hoy = timezone.localdate()
+
     funcionarios_semaforo = []
     for d in delegaciones_filtradas:
         for f in d['funcionarios']:
             avance = f['total_ponderado_pct']
             color = determinar_color_semaforo(avance, meta_esperada_pct, umbral_verde, umbral_ambar)
+            dias_sin_registro = f.get('dias_sin_ingreso')
+            if dias_sin_registro is None and periodo:
+                # Sin registros en el período: se cuenta desde su inicio (igual que CU-37).
+                dias_sin_registro = max((min(hoy, periodo.fecha_termino) - periodo.fecha_inicio).days, 0)
             funcionarios_semaforo.append({
                 'id': f['funcionario_id'],
                 'area': f.get('cargo') or 'Gestión Territorial',
@@ -937,19 +965,33 @@ def web_semaforo(request):
                 'objetivo_al_dia': meta_esperada_pct,
                 'umbral_60': umbral_60_dia,
                 'avance_real': avance,
+                # CU-14 (HU-17): brecha en puntos porcentuales frente al esperado al día.
+                'brecha_pp': round(avance - meta_esperada_pct, 2),
                 'color_semaforo': color,
                 'dias_sin_ingreso': f.get('dias_sin_ingreso'),
+                'ultimo_registro': f.get('ultima_actividad_fecha'),
+                'dias_sin_registro': dias_sin_registro,
+                'total_registros': f.get('total_actividades', 0),
+                'promedio_diario': f.get('promedio_diario', 0),
+                'inactivo': bool(
+                    regla_inactividad.activa
+                    and dias_sin_registro is not None
+                    and dias_sin_registro >= umbral_inactividad
+                ),
             })
 
     funcionarios_semaforo.sort(key=lambda x: x['avance_real'], reverse=True)
+    total_inactivos = sum(1 for f in funcionarios_semaforo if f['inactivo'])
 
     if funcionarios_semaforo:
         promedio_avance = round(sum(f['avance_real'] for f in funcionarios_semaforo) / len(funcionarios_semaforo), 2)
+        brecha_promedio = round(promedio_avance - meta_esperada_pct, 2)
         color_promedio = determinar_color_semaforo(
             promedio_avance, meta_esperada_pct, umbral_verde, umbral_ambar
         )
     else:
         promedio_avance = 0.0
+        brecha_promedio = 0.0
         color_promedio = 'AMBAR'
 
     return render(request, 'semaforo_al_dia.html', {
@@ -965,6 +1007,9 @@ def web_semaforo(request):
         'umbral_ambar': umbral_ambar,
         'promedio_avance': promedio_avance,
         'color_promedio': color_promedio,
+        'brecha_promedio': brecha_promedio,
+        'umbral_inactividad': umbral_inactividad,
+        'total_inactivos': total_inactivos,
     })
 
 @login_required(login_url='web_login')
@@ -978,6 +1023,13 @@ def web_alertas_operativas(request):
 
     hoy = timezone.localdate()
     alertas = []
+    # CU-07: una situación nueva se evalúa con la regla vigente; una alerta ya
+    # generada se sigue evaluando con la regla con que se generó, de modo que un
+    # cambio de regla no altera las alertas ya generadas.
+    reglas = reglas_vigentes()
+    # Cada candidata: (clave, tipo, condición(regla) -> bool, constructor() -> dict).
+    candidatas = []
+
     compromisos = CompromisoAgenda.objects.select_related(
         'responsable', 'delegacion',
     ).exclude(
@@ -988,7 +1040,7 @@ def web_alertas_operativas(request):
             'CANCELADO',
         )
     )
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         compromisos = compromisos.filter(responsable=request.user)
     else:
         compromisos = _filtrar_por_delegacion(compromisos, request.user)
@@ -997,37 +1049,47 @@ def web_alertas_operativas(request):
             fecha_compromiso__range=(periodo.fecha_inicio, periodo.fecha_termino)
         )
 
-    fecha_alerta_proxima = hoy + timedelta(days=7)
+    url_tubo = f"{reverse('web_tubo')}?periodo={periodo.pk if periodo else 'todos'}"
+
+    def _alerta_compromiso(compromiso, tipo, nivel, titulo):
+        return lambda: {
+            'tipo': tipo,
+            'nivel': nivel,
+            'titulo': titulo,
+            'motivo': compromiso.descripcion or 'Compromiso sin descripción.',
+            'responsable': compromiso.responsable.get_full_name()
+            or compromiso.responsable.username,
+            'fecha': compromiso.fecha_compromiso,
+            'url': f'{url_tubo}#compromiso-{compromiso.pk}',
+        }
+
     for compromiso in compromisos:
         fecha_compromiso = compromiso.fecha_compromiso
         if fecha_compromiso < hoy:
-            alertas.append({
-                'tipo': 'VENCIMIENTO',
-                'nivel': 'danger',
-                'titulo': f'Compromiso #{compromiso.pk} vencido',
-                'motivo': compromiso.descripcion or 'Compromiso sin descripción.',
-                'responsable': compromiso.responsable.get_full_name()
-                or compromiso.responsable.username,
-                'fecha': fecha_compromiso,
-                'url': f"{reverse('web_tubo')}?periodo={periodo.pk if periodo else 'todos'}#compromiso-{compromiso.pk}",
-            })
-        elif fecha_compromiso <= fecha_alerta_proxima:
-            alertas.append({
-                'tipo': 'PLAZO_PRÓXIMO',
-                'nivel': 'warning',
-                'titulo': f'Compromiso #{compromiso.pk} próximo a vencer',
-                'motivo': compromiso.descripcion or 'Compromiso sin descripción.',
-                'responsable': compromiso.responsable.get_full_name()
-                or compromiso.responsable.username,
-                'fecha': fecha_compromiso,
-                'url': f"{reverse('web_tubo')}?periodo={periodo.pk if periodo else 'todos'}#compromiso-{compromiso.pk}",
-            })
+            candidatas.append((
+                f'VENCIMIENTO:compromiso:{compromiso.pk}:{fecha_compromiso.isoformat()}',
+                'VENCIMIENTO',
+                lambda regla, f=fecha_compromiso: f < hoy - timedelta(days=int(regla.umbral or 0)),
+                _alerta_compromiso(
+                    compromiso, 'VENCIMIENTO', 'danger', f'Compromiso #{compromiso.pk} vencido',
+                ),
+            ))
+        else:
+            candidatas.append((
+                f'PLAZO_PROXIMO:compromiso:{compromiso.pk}:{fecha_compromiso.isoformat()}',
+                'PLAZO_PROXIMO',
+                lambda regla, f=fecha_compromiso: f <= hoy + timedelta(days=int(regla.umbral or 0)),
+                _alerta_compromiso(
+                    compromiso, 'PLAZO_PRÓXIMO', 'warning',
+                    f'Compromiso #{compromiso.pk} próximo a vencer',
+                ),
+            ))
 
     evidencias_pendientes = Evidencia.objects.filter(
         estado=Evidencia.Estado.PENDIENTE,
         actividad__anulada=False,
     ).select_related('actividad', 'actividad__funcionario', 'actividad__delegacion')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         evidencias_pendientes = evidencias_pendientes.filter(
             actividad__funcionario=request.user,
         )
@@ -1044,83 +1106,177 @@ def web_alertas_operativas(request):
                 periodo.fecha_termino,
             )
         )
+    ahora = timezone.now()
+
+    def _alerta_evidencia(evidencia):
+        def construir():
+            funcionario = evidencia.actividad.funcionario
+            return {
+                'tipo': 'EVIDENCIA_PENDIENTE',
+                'nivel': 'warning',
+                'titulo': f'Evidencia {evidencia.codigo_verificador} pendiente de validación',
+                'motivo': (
+                    evidencia.actividad.actividad_solicitud
+                    or evidencia.actividad.solicitud_problema
+                    or 'Actividad sin descripción.'
+                ),
+                'responsable': funcionario.get_full_name() or funcionario.username,
+                'fecha': evidencia.fecha_subida,
+                'url': (
+                    f"{reverse('web_verificacion')}?estado=PENDIENTE"
+                    f"#evidencia-{evidencia.pk}"
+                ),
+            }
+        return construir
+
     for evidencia in evidencias_pendientes:
-        funcionario = evidencia.actividad.funcionario
-        alertas.append({
-            'tipo': 'EVIDENCIA_PENDIENTE',
-            'nivel': 'warning',
-            'titulo': f'Evidencia {evidencia.codigo_verificador} pendiente de validación',
-            'motivo': (
-                evidencia.actividad.actividad_solicitud
-                or evidencia.actividad.solicitud_problema
-                or 'Actividad sin descripción.'
-            ),
-            'responsable': funcionario.get_full_name() or funcionario.username,
-            'fecha': evidencia.fecha_subida,
-            'url': (
-                f"{reverse('web_verificacion')}?estado=PENDIENTE"
-                f"#evidencia-{evidencia.pk}"
-            ),
-        })
+        candidatas.append((
+            f'EVIDENCIA_PENDIENTE:evidencia:{evidencia.pk}',
+            'EVIDENCIA_PENDIENTE',
+            lambda regla, subida=evidencia.fecha_subida: bool(subida)
+            and subida <= ahora - timedelta(days=float(regla.umbral or 0)),
+            _alerta_evidencia(evidencia),
+        ))
 
     funcionarios = Usuario.objects.filter(
         is_active=True,
-        rol=Usuario.Rol.ADMINISTRATIVO,
-        es_delegado=False,
+        rol=Usuario.Rol.FUNCIONARIO,
     ).select_related('cargo', 'delegacion')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         funcionarios = funcionarios.filter(pk=request.user.pk)
     else:
         funcionarios = _filtrar_por_delegacion(funcionarios, request.user)
+
+    def _rendimiento_bajo(metricas):
+        def condicion(regla):
+            if regla.umbral is None:
+                return metricas['semaforo_global'] == 'ROJO'
+            esperado = metricas['meta_esperada_pct'] or 0
+            return bool(
+                esperado
+                and metricas['total_ponderado_pct'] / esperado * 100 < regla.umbral
+            )
+        return condicion
 
     if periodo:
         for funcionario in funcionarios:
             metricas = calcular_metricas_funcionario(funcionario, periodo, hoy)
             ultima_actividad = metricas['ultima_actividad']
-            if metricas['semaforo_global'] == 'ROJO':
-                alertas.append({
+            url_ficha = f"{reverse('web_personal')}?id={funcionario.pk}&periodo={periodo.pk}"
+            candidatas.append((
+                f'RENDIMIENTO_BAJO:funcionario:{funcionario.pk}:periodo:{periodo.fecha_inicio.isoformat()}',
+                'RENDIMIENTO_BAJO',
+                _rendimiento_bajo(metricas),
+                lambda m=metricas, u=url_ficha: {
                     'tipo': 'RENDIMIENTO_BAJO',
                     'nivel': 'danger',
                     'titulo': 'Avance bajo el umbral esperado',
                     'motivo': (
-                        f"Avance {metricas['total_ponderado_pct']:.1f}% frente a "
-                        f"{metricas['meta_esperada_pct']:.1f}% esperado."
+                        f"Avance {m['total_ponderado_pct']:.1f}% frente a "
+                        f"{m['meta_esperada_pct']:.1f}% esperado."
                     ),
-                    'responsable': metricas['nombre_completo'],
+                    'responsable': m['nombre_completo'],
                     'fecha': hoy,
-                    'url': f"{reverse('web_personal')}?id={funcionario.pk}&periodo={periodo.pk}",
-                })
+                    'url': u,
+                },
+            ))
             dias_sin_registro = metricas['dias_sin_ingreso']
             if dias_sin_registro is None:
                 dias_sin_registro = (hoy - periodo.fecha_inicio).days
-            if dias_sin_registro >= 7:
-                alertas.append({
+            candidatas.append((
+                (
+                    f'INACTIVIDAD:funcionario:{funcionario.pk}:periodo:{periodo.fecha_inicio.isoformat()}:'
+                    f'{ultima_actividad or "sin-registros"}'
+                ),
+                'INACTIVIDAD',
+                lambda regla, d=dias_sin_registro: d >= (regla.umbral or 0),
+                lambda m=metricas, d=dias_sin_registro, ua=ultima_actividad, u=url_ficha: {
                     'tipo': 'INACTIVIDAD',
                     'nivel': 'warning',
                     'titulo': 'Sin actividad registrada recientemente',
                     'motivo': (
                         'No hay actividades registradas en el período.'
-                        if not ultima_actividad
-                        else f'{dias_sin_registro} días desde el último registro.'
+                        if not ua
+                        else f'{d} días desde el último registro.'
                     ),
-                    'responsable': metricas['nombre_completo'],
-                    'fecha': (
-                        date.fromisoformat(ultima_actividad)
-                        if ultima_actividad
-                        else periodo.fecha_inicio
-                    ),
-                    'url': f"{reverse('web_personal')}?id={funcionario.pk}&periodo={periodo.pk}",
-                })
+                    'responsable': m['nombre_completo'],
+                    'fecha': date.fromisoformat(ua[:10]) if ua else periodo.fecha_inicio,
+                    'url': u,
+                },
+            ))
+
+    generadas = reglas_de_alertas_generadas(candidata[0] for candidata in candidatas)
+    nuevas = []
+    for clave, tipo, condicion, construir in candidatas:
+        regla = generadas.get(clave) or reglas[tipo]
+        if not regla.activa or not condicion(regla):
+            continue
+        if clave not in generadas:
+            nuevas.append((clave, regla))
+        if aplica_a(regla, request.user):
+            alertas.append({'clave': clave, **construir()})
+    registrar_alertas_generadas(nuevas)
 
     alertas.sort(
         key=lambda alerta: (alerta['fecha'].isoformat(), alerta['titulo'])
     )
+    # CU-37: marca de revisión (la alerta no se elimina; queda visible como revisada).
+    revisadas = {
+        revision.clave: revision
+        for revision in AlertaRevisada.objects.filter(
+            clave__in=[alerta['clave'] for alerta in alertas],
+        ).select_related('revisada_por')
+    }
+    for alerta in alertas:
+        alerta['revision'] = revisadas.get(alerta['clave'])
+    solo_pendientes = request.GET.get('ver') == 'pendientes'
+    if solo_pendientes:
+        alertas = [alerta for alerta in alertas if not alerta['revision']]
     return render(request, 'alertas_operativas.html', {
         'alertas': alertas,
         'periodos': periodos,
         'periodo_seleccionado': periodo,
         'hoy': hoy,
+        'solo_pendientes': solo_pendientes,
     })
+
+
+@login_required(login_url='web_login')
+@require_POST
+def web_marcar_alerta_revisada(request):
+    """CU-37: marca una alerta como revisada sin eliminar el evento original."""
+    clave = (request.POST.get('clave') or '').strip()[:200]
+    tipo = clave.split(':', 1)[0]
+    if tipo not in REGLAS_POR_DEFECTO:
+        messages.error(request, 'La alerta indicada no es válida.')
+        return redirect('web_alertas_operativas')
+    with transaction.atomic():
+        revision, creada = AlertaRevisada.objects.get_or_create(
+            clave=clave,
+            defaults={
+                'tipo': tipo,
+                'revisada_por': request.user,
+                'comentario': (request.POST.get('comentario') or '').strip()[:500],
+            },
+        )
+        if creada:
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                accion='REVISAR_ALERTA',
+                evento='MODIFICACION',
+                entidad='AlertaRevisada',
+                identificador=str(revision.pk),
+                identificador_registro=str(revision.pk),
+                valor_anterior=None,
+                valor_nuevo={'clave': clave, 'comentario': revision.comentario},
+                ip_origen=obtener_ip_cliente(request) or None,
+            )
+    messages.success(request, 'Alerta marcada como revisada.')
+    destino = request.POST.get('volver') or ''
+    if not destino.startswith('/alertas/'):
+        destino = reverse('web_alertas_operativas')
+    return redirect(destino)
 
 @login_required(login_url='web_login')
 def web_reportes(request):
@@ -1129,7 +1285,8 @@ def web_reportes(request):
     if not (
         request.user.is_superuser
         or request.user.es_admin()
-        or request.user.es_supervisor
+        or request.user.es_coordinador
+        or request.user.es_consulta
         or (request.user.esta_limitado_a_delegacion and request.user.delegacion_id)
     ):
         raise PermissionDenied
@@ -1147,8 +1304,7 @@ def web_reportes(request):
     )
     funcionarios = Usuario.objects.filter(
         is_active=True,
-        rol=Usuario.Rol.ADMINISTRATIVO,
-        es_delegado=False,
+        rol=Usuario.Rol.FUNCIONARIO,
     )
     funcionarios = _filtrar_por_delegacion(funcionarios, request.user)
     actividades = Actividad.objects.select_related(
@@ -1209,10 +1365,15 @@ def web_reportes(request):
         actividades = actividades.filter(evidencias__estado=estado).distinct()
     termino = request.GET.get('q', '').strip()
     if termino:
+        # CU-39 (HU-10): también se busca por código de registro o código verificador.
         actividades = actividades.filter(
             Q(actividad_solicitud__icontains=termino)
             | Q(accion_ejecutada__icontains=termino)
             | Q(direccion__icontains=termino)
+            | Q(codigo_registro__iexact=termino)
+            | Q(pk__in=Evidencia.objects.filter(
+                codigo_verificador__iexact=termino,
+            ).values('actividad_id'))
         )
 
     if request.GET.get('formato') == 'csv':
@@ -1320,7 +1481,7 @@ def web_personal(request):
             periodo_seleccionado = str(periodo_actual.pk) if periodo_actual.pk else 'actual'
 
     todos_funcionarios = Usuario.objects.filter(
-        rol=Usuario.Rol.ADMINISTRATIVO, es_delegado=False, is_active=True
+        rol=Usuario.Rol.FUNCIONARIO, is_active=True
     ).select_related('delegacion', 'cargo')
     todos_funcionarios = _filtrar_por_delegacion(
         todos_funcionarios,
@@ -1328,7 +1489,7 @@ def web_personal(request):
     )
     
     # Si el usuario logueado es Funcionario, solo puede ver su propia ficha personal
-    if request.user.is_authenticated and request.user.es_administrativo:
+    if request.user.is_authenticated and request.user.es_funcionario:
         funcionario = request.user
     else:
         id_param = (request.GET.get('id') or '').strip()
@@ -1413,11 +1574,7 @@ def web_personal(request):
 
     return render(request, 'dashboard_personal.html', {
         'funcionario': funcionario,
-        'puede_anular_actividades': (
-            request.user.is_superuser
-            or request.user.es_admin()
-            or request.user.es_supervisor
-        ),
+        'puede_anular_actividades': puede_anular_actividades(request.user),
         'todos_funcionarios': todos_funcionarios,
         'periodos_disponibles': periodos_disponibles,
         'periodo_seleccionado': periodo_seleccionado,
@@ -1435,7 +1592,7 @@ def web_personal(request):
         'periodo_configurado': periodo_configurado,
         'puede_comentar_actividades': (
             request.user.es_admin()
-            or request.user.es_supervisor
+            or request.user.es_coordinador
             or bool(funcionario and funcionario.pk == request.user.pk)
         ),
         'nombre_periodo_panel': (
@@ -1451,6 +1608,8 @@ def web_registrar_solicitante(request):
     if not request.user.is_authenticated:
         messages.error(request, 'Debe iniciar sesión para registrar solicitantes.')
         return redirect('web_login')
+    if request.user.es_consulta:
+        raise PermissionDenied  # CU-38: el usuario de consulta solo lee.
 
     form = SolicitanteForm(request.POST if request.method == 'POST' else None)
     if request.method == 'POST' and form.is_valid():
@@ -1534,8 +1693,7 @@ def _recalcular_metas_evidencia(evidencia):
 
 def _funcionarios_disponibles_actividad(user):
     funcionarios = Usuario.objects.filter(
-        rol=Usuario.Rol.ADMINISTRATIVO,
-        es_delegado=False,
+        rol=Usuario.Rol.FUNCIONARIO,
         is_active=True,
     )
     return _filtrar_por_delegacion(funcionarios, user)
@@ -1579,7 +1737,7 @@ def web_items_medicion_funcionario(request):
         )
 
     funcionario_id = request.GET.get('funcionario_id', '')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         if funcionario_id and funcionario_id != str(request.user.pk):
             return JsonResponse(
                 {'error': 'Solo puedes consultar tus propios ítems.'},
@@ -1642,6 +1800,8 @@ def web_registrar_actividad_personal(request):
     if not request.user.is_authenticated:
         messages.error(request, "Debe iniciar sesión para registrar actividades.")
         return redirect('web_login')
+    if request.user.es_consulta:
+        raise PermissionDenied  # CU-38: el usuario de consulta solo lee.
 
     periodo = get_periodo_activo()
     funcionarios_disponibles = _funcionarios_disponibles_actividad(
@@ -1713,7 +1873,7 @@ def web_registrar_actividad_personal(request):
         })
 
     funcionario_id = request.POST.get('funcionario_id', '') if request.method == 'POST' else request.GET.get('funcionario_id', '')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         funcionario = request.user
     elif str(funcionario_id).isdigit():
         funcionario = funcionarios_disponibles.filter(pk=int(funcionario_id)).first()
@@ -1754,7 +1914,7 @@ def web_registrar_actividad_personal(request):
         catalogo_queryset=_servicios_funcionario(funcionario),
         periodo=periodo,
     )
-    form.fields['funcionario_id'].required = not request.user.es_administrativo
+    form.fields['funcionario_id'].required = not request.user.es_funcionario
     if not form.is_valid():
         if funcionario:
             invalid_fields = set(form.errors.keys())
@@ -1804,8 +1964,8 @@ def web_registrar_actividad_personal(request):
         return redirect('web_registrar_actividad_diaria')
 
     data = form.cleaned_data
-    funcionario = request.user if request.user.es_administrativo else data['funcionario_id']
-    if request.user.es_administrativo and data['funcionario_id'] != request.user:
+    funcionario = request.user if request.user.es_funcionario else data['funcionario_id']
+    if request.user.es_funcionario and data['funcionario_id'] != request.user:
         raise PermissionDenied
 
     delegacion = funcionario.delegacion or Delegacion.objects.first()
@@ -1915,14 +2075,22 @@ def web_registrar_actividad_personal(request):
     return redirect(f"{reverse('web_personal')}?id={funcionario.pk}")
 
 
+def puede_anular_actividades(user):
+    """CU-26: anula el Delegado (en su delegación) y, por herencia, Coordinador y Administrador."""
+    if user.es_consulta:
+        return False
+    return bool(
+        user.is_superuser
+        or user.es_admin()
+        or user.es_coordinador
+        or (user.esta_limitado_a_delegacion and user.delegacion_id)
+    )
+
+
 @login_required(login_url='web_login')
 @require_POST
 def web_anular_actividad(request, actividad_id):
-    if not (
-        request.user.is_superuser
-        or request.user.es_admin()
-        or request.user.es_supervisor
-    ):
+    if not puede_anular_actividades(request.user):
         raise PermissionDenied
 
     actividades = Actividad.objects.all()
@@ -1988,7 +2156,7 @@ def web_agregar_evidencia(request, actividad_id):
     actividad = get_object_or_404(
         Actividad.objects.select_related('funcionario', 'delegacion'), id=actividad_id
     )
-    if request.user.es_administrativo and actividad.funcionario_id != request.user.id:
+    if request.user.es_funcionario and actividad.funcionario_id != request.user.id:
         messages.error(request, 'Solo puedes agregar evidencias a tus propias actividades.')
         return redirect('web_personal')
     if request.user.esta_limitado_a_delegacion and actividad.delegacion_id != request.user.delegacion_id:
@@ -2040,13 +2208,13 @@ def web_comentar_actividad(request, actividad_id):
     )
     puede_comentar = (
         request.user.es_admin()
-        or request.user.es_supervisor
+        or request.user.es_coordinador
         or (
             request.user.esta_limitado_a_delegacion
             and actividad.delegacion_id == request.user.delegacion_id
         )
         or (
-            request.user.es_administrativo
+            request.user.es_funcionario
             and actividad.funcionario_id == request.user.pk
         )
     )
@@ -2323,14 +2491,14 @@ def web_tubo(request):
         periodo_seleccionado = periodo_activo if periodo_activo and periodo_activo.pk else None
 
     delegaciones = Delegacion.objects.filter(activo=True)
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         delegaciones = delegaciones.filter(pk=request.user.delegacion_id) if request.user.delegacion_id else delegaciones.none()
     else:
         delegaciones = _filtrar_por_delegacion(delegaciones, request.user, campo='pk')
     usuarios_terreno = Usuario.objects.filter(
         is_active=True,
     ).select_related('delegacion')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         usuarios_terreno = usuarios_terreno.filter(pk=request.user.pk)
     else:
         usuarios_terreno = _filtrar_por_delegacion(
@@ -2340,13 +2508,41 @@ def web_tubo(request):
     hoy = timezone.now().date()
 
     compromisos_queryset = CompromisoAgenda.objects.all()
-    if request.user.es_administrativo:
-        compromisos_queryset = compromisos_queryset.filter(responsable=request.user)
+    if request.user.es_funcionario:
+        # CU-33 (HU-12): agenda compartida; el Funcionario ve los compromisos de su
+        # delegación, aunque solo gestiona los propios.
+        ambito = Q(responsable=request.user) | Q(creado_por=request.user)
+        if request.user.delegacion_id:
+            ambito |= Q(delegacion_id=request.user.delegacion_id)
+        compromisos_queryset = compromisos_queryset.filter(ambito)
     else:
         compromisos_queryset = _filtrar_por_delegacion(
             compromisos_queryset,
             request.user,
         )
+    # CU-25 / CU-33: filtros por responsable, territorio y rango de fechas.
+    responsables_filtro = Usuario.objects.filter(
+        pk__in=compromisos_queryset.values('responsable_id'),
+    ).order_by('first_name', 'last_name', 'username')
+    territorios_filtro = sorted(
+        set(compromisos_queryset.values_list('territorio', flat=True)) - {'', None}
+    )
+    filtro_responsable = request.GET.get('responsable', '')
+    filtro_estado = request.GET.get('estado', '')
+    filtro_territorio = request.GET.get('territorio', '')
+    filtro_area = request.GET.get('area', '')
+    filtro_desde = parse_date(request.GET.get('fecha_desde', '') or '')
+    filtro_hasta = parse_date(request.GET.get('fecha_hasta', '') or '')
+    if filtro_responsable.isdecimal():
+        compromisos_queryset = compromisos_queryset.filter(responsable_id=int(filtro_responsable))
+    if filtro_territorio:
+        compromisos_queryset = compromisos_queryset.filter(territorio=filtro_territorio)
+    if filtro_area:
+        compromisos_queryset = compromisos_queryset.filter(area_apoyo=filtro_area)
+    if filtro_desde:
+        compromisos_queryset = compromisos_queryset.filter(fecha_comprometida__gte=filtro_desde)
+    if filtro_hasta:
+        compromisos_queryset = compromisos_queryset.filter(fecha_comprometida__lte=filtro_hasta)
     if periodo_seleccionado:
         compromisos_queryset = compromisos_queryset.filter(
             fecha_comprometida__range=(
@@ -2360,10 +2556,25 @@ def web_tubo(request):
         'actividad__evidencias',
         'historial_observaciones__autor',
     ).order_by('fecha_comprometida'))
+    estados_filtro = [
+        ('INGRESADO', 'Ingresado'), ('PENDIENTE', 'Pendiente'), ('EN_PROCESO', 'En proceso'),
+        ('REPROGRAMADO', 'Reprogramado'), ('VENCIDO', 'Vencido'), ('REALIZADO', 'Realizado'),
+    ]
+    if filtro_estado:
+        realizados = {
+            CompromisoAgenda.Estado.COMPLETADO,
+            CompromisoAgenda.Estado.REALIZADO,
+            CompromisoAgenda.Estado.CUMPLIDO,
+        }
+        compromisos = [
+            c for c in compromisos
+            if (c.estado_tablero in realizados if filtro_estado == 'REALIZADO'
+                else c.estado_tablero == filtro_estado)
+        ]
     actividades_queryset = Actividad.objects.select_related(
         'funcionario', 'delegacion'
     ).filter(anulada=False)
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         actividades_queryset = actividades_queryset.filter(funcionario=request.user)
     else:
         actividades_queryset = _filtrar_por_delegacion(
@@ -2385,6 +2596,9 @@ def web_tubo(request):
 
     resumen_por_usuario = {}
     for compromiso in compromisos:
+        # Editar, cambiar estado y anular solo para quien puede gestionarlo.
+        compromiso.puede_anular = _puede_gestionar_compromiso(request.user, compromiso)
+        compromiso.puede_gestionar = compromiso.puede_anular
         resumen = resumen_por_usuario.setdefault(compromiso.responsable_id, {
             'usuario': compromiso.responsable,
             'ingresado': 0, 'pendiente': 0, 'en_proceso': 0,
@@ -2498,6 +2712,23 @@ def web_tubo(request):
         ],
         'resumen_colaboradores': resumen_colaboradores,
         'totales_colectivos': totales_colectivos,
+        'puede_reactivar_compromisos': request.user.es_admin(),
+        'responsables_filtro': responsables_filtro,
+        'territorios_filtro': territorios_filtro,
+        'estados_filtro': estados_filtro,
+        'filtro_responsable': filtro_responsable,
+        'filtro_estado': filtro_estado,
+        'filtro_territorio': filtro_territorio,
+        'filtro_area': filtro_area,
+        'filtro_desde': filtro_desde,
+        'filtro_hasta': filtro_hasta,
+        'compromisos_anulados': (
+            CompromisoAgenda.todos.filter(anulado=True)
+            .select_related('delegacion', 'responsable', 'anulado_por')
+            .order_by('-anulado_en')[:200]
+            if request.user.es_admin()
+            else []
+        ),
     })
 
 def web_cambiar_estado_compromiso(request, compromiso_id):
@@ -2583,19 +2814,20 @@ def web_crear_compromiso(request):
         origen = request.POST.get('origen') or 'INT'
         territorio = (request.POST.get('territorio') or '').strip() or 'La Serena'
         delegacion_id = request.POST.get('delegacion_id') or request.user.delegacion_id
-        if not request.user.es_admin() and not request.user.es_supervisor and (
+        if not request.user.es_admin() and not request.user.es_coordinador and (
             not request.user.delegacion_id or str(delegacion_id) != str(request.user.delegacion_id)
         ):
             raise PermissionDenied
         responsable_id = request.POST.get('responsable_id') or request.user.id
-        if request.user.es_administrativo:
+        if request.user.es_funcionario:
             responsable_id = request.user.id
         elif request.user.esta_limitado_a_delegacion:
             responsable = get_object_or_404(Usuario, id=responsable_id)
             if responsable.delegacion_id != request.user.delegacion_id:
                 raise PermissionDenied
         if request.user.rol not in (
-            Usuario.Rol.ADMINISTRADOR, Usuario.Rol.SUPERVISOR, Usuario.Rol.ADMINISTRATIVO
+            Usuario.Rol.ADMINISTRADOR, Usuario.Rol.COORDINADOR,
+            Usuario.Rol.DELEGADO, Usuario.Rol.FUNCIONARIO,
         ) and not request.user.is_superuser:
             raise PermissionDenied
         periodo = get_periodo_activo()
@@ -2674,8 +2906,9 @@ class CompromisoCreateView(LoginRequiredMixin, CreateView):
             request.user.is_superuser
             or request.user.rol in (
                 Usuario.Rol.ADMINISTRADOR,
-                Usuario.Rol.SUPERVISOR,
-                Usuario.Rol.ADMINISTRATIVO,
+                Usuario.Rol.COORDINADOR,
+                Usuario.Rol.DELEGADO,
+                Usuario.Rol.FUNCIONARIO,
             )
         ):
             raise PermissionDenied
@@ -2699,7 +2932,7 @@ class CompromisoCreateView(LoginRequiredMixin, CreateView):
         actividad_id = self.request.GET.get('actividad_id', '')
         if actividad_id.isdecimal():
             actividades = Actividad.objects.filter(pk=int(actividad_id))
-            if user.es_administrativo:
+            if user.es_funcionario:
                 actividades = actividades.filter(funcionario=user)
             elif user.esta_limitado_a_delegacion:
                 actividades = actividades.filter(delegacion_id=user.delegacion_id)
@@ -2784,7 +3017,37 @@ class CompromisoUpdateView(LoginRequiredMixin, ConcurrenciaContextMixin, UpdateV
         })
         return context
 
+    def _validar_fotos_compromiso(self, form, fotos, reemplazar):
+        """Las fotos se guardan como evidencias de la actividad asociada al compromiso."""
+        if reemplazar and not fotos:
+            form.add_error(None, 'Selecciona las fotografías nuevas para reemplazar las actuales.')
+            return None
+        if not fotos:
+            return None
+        actividad = form.cleaned_data.get('actividad')
+        if not actividad:
+            form.add_error(
+                'actividad',
+                'Para adjuntar fotografías, asocia una actividad al compromiso.',
+            )
+            return None
+        if actividad.anulada:
+            form.add_error('actividad', 'No se puede agregar evidencia a una actividad anulada.')
+            return None
+        try:
+            _validar_fotos(fotos)
+        except ValidationError as exc:
+            form.add_error(None, '; '.join(exc.messages))
+            return None
+        return actividad
+
     def form_valid(self, form):
+        fotos = self.request.FILES.getlist('fotos')
+        reemplazar = bool(self.request.POST.get('reemplazar_fotos'))
+        actividad_fotos = self._validar_fotos_compromiso(form, fotos, reemplazar)
+        if form.errors:
+            return self.form_invalid(form)
+
         with transaction.atomic():
             # RNF-003: rechaza el cambio si otra persona editó el compromiso.
             if self.hay_conflicto():
@@ -2794,6 +3057,37 @@ class CompromisoUpdateView(LoginRequiredMixin, ConcurrenciaContextMixin, UpdateV
             compromiso = form.save(commit=False)
             compromiso.save()
             form.save_m2m()
+            evidencias_reemplazadas = []
+            evidencias_nuevas = []
+            if actividad_fotos:
+                if reemplazar:
+                    # Normativa: las fotos anteriores no se borran; quedan en el historial.
+                    for evidencia in actividad_fotos.evidencias.all():
+                        evidencia.reemplazar(self.request.user)
+                        evidencias_reemplazadas.append(evidencia.codigo_verificador)
+                evidencias_nuevas = [
+                    evidencia.codigo_verificador
+                    for evidencia in _guardar_fotos(actividad_fotos, fotos, self.request.user)
+                ]
+                RegistroAuditoria.objects.create(
+                    usuario=self.request.user,
+                    funcionario=self.request.user,
+                    accion='ADJUNTAR_EVIDENCIA_COMPROMISO',
+                    evento='CREACION',
+                    entidad='Evidencia',
+                    identificador=str(actividad_fotos.pk),
+                    identificador_registro=str(actividad_fotos.pk),
+                    valor_anterior=(
+                        {'evidencias_reemplazadas': evidencias_reemplazadas}
+                        if evidencias_reemplazadas
+                        else None
+                    ),
+                    valor_nuevo={
+                        'compromiso_id': compromiso.pk,
+                        'evidencias_nuevas': evidencias_nuevas,
+                    },
+                    ip_origen=obtener_ip_cliente(self.request) or None,
+                )
             if (
                 actividad_anterior
                 and actividad_anterior != compromiso.actividad
@@ -2834,45 +3128,113 @@ class CompromisoUpdateView(LoginRequiredMixin, ConcurrenciaContextMixin, UpdateV
                     autor=self.request.user,
                     texto=snapshot_nuevo['observacion'],
                 )
-        messages.success(
-            self.request,
-            f'Compromiso #{compromiso.pk} actualizado y auditado.',
-        )
+        mensaje = f'Compromiso #{compromiso.pk} actualizado y auditado.'
+        if evidencias_nuevas:
+            mensaje += (
+                f' Se agregaron {len(evidencias_nuevas)} fotografía(s), pendientes de validación.'
+            )
+        if evidencias_reemplazadas:
+            mensaje += (
+                f' {len(evidencias_reemplazadas)} fotografía(s) anterior(es) quedaron en el historial.'
+            )
+        messages.success(self.request, mensaje)
         return redirect(self.get_success_url())
 
-def web_eliminar_compromiso(request, compromiso_id):
-    if not request.user.is_authenticated:
-        messages.error(request, "Debe iniciar sesión para eliminar compromisos.")
-        return redirect('web_login')
-
+@login_required(login_url='web_login')
+@require_POST
+def web_anular_compromiso(request, compromiso_id):
+    """Baja lógica: por normativa los compromisos no se eliminan, se anulan con motivo."""
     compromiso = get_object_or_404(CompromisoAgenda, id=compromiso_id)
     if not _puede_gestionar_compromiso(request.user, compromiso):
         raise PermissionDenied
 
-    if request.method == 'POST':
-        c_id = compromiso.id
-        solic = compromiso.solicitante
-        with transaction.atomic():
-            actividad = compromiso.actividad
-            if actividad and actividad.compromisos.count() == 1:
-                actividad.delete()
-            else:
-                compromiso.delete()
-            RegistroAuditoria.objects.create(
-                usuario=request.user,
-                accion='ELIMINAR_COMPROMISO',
-                entidad='CompromisoAgenda',
-                identificador_registro=str(c_id),
-                valor_anterior={'solicitante': solic},
-                valor_nuevo=None,
-                ip_origen=obtener_ip_cliente(request) or None
-            )
-        messages.success(request, f"Compromiso #{c_id} de '{solic}' eliminado del Tubo de Trabajo.")
+    motivo = (request.POST.get('motivo') or '').strip()
+    if not motivo:
+        messages.error(request, 'Indica el motivo de la anulación.')
+        return redirect('web_tubo')
+
+    with transaction.atomic():
+        compromiso = get_object_or_404(
+            CompromisoAgenda.objects.select_for_update(),
+            id=compromiso_id,
+        )
+        try:
+            compromiso.anular(request.user, motivo)
+        except ValidationError as exc:
+            messages.error(request, '; '.join(exc.messages))
+            return redirect('web_tubo')
+        RegistroAuditoria.objects.create(
+            usuario=request.user,
+            funcionario=request.user,
+            accion='ANULAR_COMPROMISO',
+            evento='MODIFICACION',
+            entidad='CompromisoAgenda',
+            identificador=str(compromiso.pk),
+            identificador_registro=str(compromiso.pk),
+            valor_anterior={'anulado': False, 'estado': compromiso.estado},
+            valor_nuevo={
+                'anulado': True,
+                'motivo_anulacion': compromiso.motivo_anulacion,
+                'solicitante': compromiso.solicitante,
+            },
+            ip_origen=obtener_ip_cliente(request) or None,
+        )
+    messages.success(
+        request,
+        f"Compromiso #{compromiso.pk} de '{compromiso.solicitante}' anulado. "
+        "Se conserva en el historial.",
+    )
+    return redirect('web_tubo')
+
+
+@login_required(login_url='web_login')
+@require_POST
+def web_reactivar_compromiso(request, compromiso_id):
+    """Solo el Administrador revierte una anulación, con motivo y auditoría."""
+    if not request.user.es_admin():
+        raise PermissionDenied
+
+    motivo = (request.POST.get('motivo') or '').strip()
+    if not motivo:
+        messages.error(request, 'Indica el motivo de la reactivación.')
+        return redirect(f"{reverse('web_tubo')}#tab-anulados")
+
+    with transaction.atomic():
+        compromiso = get_object_or_404(
+            CompromisoAgenda.todos.select_for_update(),
+            id=compromiso_id,
+            anulado=True,
+        )
+        anulacion = {
+            'anulado': True,
+            'anulado_en': compromiso.anulado_en.isoformat() if compromiso.anulado_en else None,
+            'anulado_por_id': compromiso.anulado_por_id,
+            'motivo_anulacion': compromiso.motivo_anulacion,
+        }
+        compromiso.reactivar()
+        RegistroAuditoria.objects.create(
+            usuario=request.user,
+            funcionario=request.user,
+            accion='REACTIVAR_COMPROMISO',
+            evento='MODIFICACION',
+            entidad='CompromisoAgenda',
+            identificador=str(compromiso.pk),
+            identificador_registro=str(compromiso.pk),
+            valor_anterior=anulacion,
+            valor_nuevo={'anulado': False, 'motivo_reactivacion': motivo},
+            ip_origen=obtener_ip_cliente(request) or None,
+        )
+    messages.success(
+        request,
+        f"Compromiso #{compromiso.pk} de '{compromiso.solicitante}' reactivado.",
+    )
     return redirect('web_tubo')
 
 def web_terreno(request):
     if not request.user.is_authenticated:
         return redirect('web_login')
+    if request.user.es_consulta:
+        raise PermissionDenied  # CU-38: el usuario de consulta solo lee.
 
     periodo = get_periodo_activo()
     items_medicion = ItemMedicion.objects.none()
@@ -2885,7 +3247,7 @@ def web_terreno(request):
     actividades = Actividad.objects.select_related(
         'delegacion', 'funcionario', 'item', 'item_medicion'
     ).order_by('-fecha_actividad')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         actividades = actividades.filter(funcionario=request.user)
     elif request.user.esta_limitado_a_delegacion:
         actividades = _filtrar_por_delegacion(actividades, request.user)
@@ -2918,6 +3280,8 @@ def web_terreno(request):
             validation_errors.append(('Acción ejecutada', 'Este campo es obligatorio.'))
         if not fotos:
             validation_errors.append(('Fotografías', 'Adjunta al menos una fotografía.'))
+        elif len(fotos) > MAX_FOTOS_POR_REGISTRO:
+            validation_errors.append(('Fotografías', MENSAJE_MAX_FOTOS))
         if not telefono:
             validation_errors.append(('Teléfono de contacto', 'Este campo es obligatorio.'))
             contacto_telefono = ''
@@ -3032,12 +3396,16 @@ def web_casos_sociales(request):
     user = request.user
     if not (
         user.is_superuser
-        or user.rol in (Usuario.Rol.ADMINISTRADOR, Usuario.Rol.SUPERVISOR)
+        or user.rol in (
+            Usuario.Rol.ADMINISTRADOR, Usuario.Rol.COORDINADOR, Usuario.Rol.DELEGADO,
+        )
+        or user.es_funcionario_social
     ):
         raise PermissionDenied
 
     casos = CasoSocial.objects.all()
-    if user.esta_limitado_a_delegacion:
+    if user.esta_limitado_a_delegacion or user.es_funcionario:
+        # CU-28: el Funcionario social trabaja con los casos de su delegación.
         casos = casos.filter(delegacion_id=user.delegacion_id) if user.delegacion_id else casos.none()
 
     case_form = CasoSocialForm(user=user)
@@ -3160,7 +3528,7 @@ def web_casos_sociales(request):
 
 def web_auditoria(request):
     if not request.user.is_authenticated or not (
-        request.user.es_admin() or request.user.es_supervisor
+        request.user.es_admin() or request.user.es_coordinador
     ):
         messages.warning(request, "Acceso restringido: El registro inmutable de auditoría está reservado para la Coordinación Comunal y Administradores (Seguridad RNF-008).")
         return redirect('web_dashboard')
@@ -3353,3 +3721,69 @@ def api_geocodificar_direccion(request):
             continue
 
     return JsonResponse({'encontrado': False, 'error': 'No se encontraron coordenadas exactas'}, status=200)
+
+
+@login_required(login_url='web_login')
+def web_brechas_historicas(request):
+    """CU-17 (HU-22): compara la brecha por cargo entre períodos cerrados.
+
+    Cada período se calcula con su propia configuración congelada al cierre
+    (RF-038). El informe es descriptivo: no toma decisiones de recursos humanos.
+    """
+    if not (request.user.es_admin() or request.user.es_coordinador):
+        raise PermissionDenied
+    cerrados = PeriodoMedicion.objects.filter(cerrado=True).order_by('-fecha_termino', '-pk')
+    seleccion = [p for p in request.GET.getlist('periodos') if p.isdecimal()]
+    periodos = list(
+        cerrados.filter(pk__in=seleccion) if seleccion else cerrados[:4]
+    )
+    periodos.sort(key=lambda periodo: periodo.fecha_inicio)
+    funcionarios = Usuario.objects.filter(
+        is_active=True,
+        rol=Usuario.Rol.FUNCIONARIO,
+        cargo__isnull=False,
+    ).select_related('cargo')
+    delegacion_id = request.GET.get('delegacion', '')
+    if delegacion_id.isdecimal():
+        funcionarios = funcionarios.filter(delegacion_id=int(delegacion_id))
+
+    filas = {}
+    for funcionario in funcionarios:
+        fila = filas.setdefault(funcionario.cargo_id, {
+            'cargo': funcionario.cargo,
+            'celdas': {periodo.pk: [] for periodo in periodos},
+        })
+        for periodo in periodos:
+            metricas = calcular_metricas_funcionario(funcionario, periodo, periodo.fecha_termino)
+            if metricas['items']:
+                fila['celdas'][periodo.pk].append(metricas['total_ponderado_pct'])
+
+    tabla = []
+    for fila in sorted(filas.values(), key=lambda f: f['cargo'].nombre):
+        celdas = []
+        for periodo in periodos:
+            valores = fila['celdas'][periodo.pk]
+            if valores:
+                avance = round(sum(valores) / len(valores), 1)
+                celdas.append({
+                    'periodo': periodo,
+                    'avance': avance,
+                    'brecha': round(avance - 100, 1),
+                    'funcionarios': len(valores),
+                })
+            else:
+                celdas.append({'periodo': periodo, 'avance': None})
+        con_datos = [c for c in celdas if c['avance'] is not None]
+        tendencia = None
+        if len(con_datos) >= 2:
+            tendencia = round(con_datos[-1]['avance'] - con_datos[0]['avance'], 1)
+        tabla.append({'cargo': fila['cargo'], 'celdas': celdas, 'tendencia': tendencia})
+
+    return render(request, 'brechas_historicas.html', {
+        'periodos_cerrados': cerrados,
+        'periodos': periodos,
+        'seleccion': [str(p.pk) for p in periodos],
+        'delegaciones': Delegacion.objects.filter(activo=True).order_by('nombre'),
+        'delegacion_id': delegacion_id,
+        'tabla': tabla,
+    })

@@ -1,6 +1,8 @@
 [Unit]
 Description=SGR - monitor de disponibilidad, capacidad y tareas (RNF-001/018)
 After=network.target sgr.service
+# CU-46: si el propio monitor falla, avisa por correo (limitado en sgr-alerta@).
+OnFailure=sgr-alerta@%n.service
 
 [Service]
 Type=oneshot

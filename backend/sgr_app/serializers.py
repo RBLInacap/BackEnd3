@@ -39,6 +39,7 @@ class UsuarioSerializer(serializers.ModelSerializer):
     delegacion_nombre = serializers.ReadOnlyField(source='delegacion.nombre')
     delegacion_codigo = serializers.ReadOnlyField(source='delegacion.codigo')
     roles = serializers.StringRelatedField(many=True, read_only=True)
+    es_delegado = serializers.ReadOnlyField()
 
     class Meta:
         model = Usuario
@@ -52,21 +53,13 @@ class UsuarioSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         role = attrs.get('rol', getattr(self.instance, 'rol', None))
-        is_delegate = attrs.get(
-            'es_delegado',
-            getattr(self.instance, 'es_delegado', False),
-        )
         delegation = attrs.get(
             'delegacion',
             getattr(self.instance, 'delegacion', None),
         )
-        if is_delegate and role != Usuario.Rol.SUPERVISOR:
+        if role == Usuario.Rol.DELEGADO and not delegation:
             raise serializers.ValidationError({
-                'es_delegado': 'El perfil Delegado requiere el rol Supervisor.',
-            })
-        if is_delegate and not delegation:
-            raise serializers.ValidationError({
-                'delegacion': 'El perfil Delegado requiere una delegación asignada.',
+                'delegacion': 'El rol Delegado requiere una delegación asignada.',
             })
         return attrs
 
@@ -135,13 +128,21 @@ class EvidenciaSerializer(serializers.ModelSerializer):
             'url_foto_simulada', 'url_foto_simulada_2', 'url_foto_simulada_3',
             'hash_sha256', 'estado', 'verificador', 'verificador_nombre',
             'fecha_validacion', 'observacion', 'fecha_subida', 'metadatos',
-            'subido_por', 'subido_por_nombre', 'archivos_eliminados_en',
+            'subido_por', 'subido_por_nombre', 'archivos_deshabilitados_en',
         ]
         read_only_fields = [
             'id', 'codigo_verificador', 'hash_sha256', 'fecha_subida',
             'estado', 'verificador', 'fecha_validacion',
-            'metadatos', 'subido_por', 'subido_por_nombre', 'archivos_eliminados_en',
+            'metadatos', 'subido_por', 'subido_por_nombre', 'archivos_deshabilitados_en',
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.archivos_deshabilitados_en:
+            # Retención vencida: el archivo se conserva, pero ya no se entrega su enlace.
+            for campo in ('archivo_foto', 'archivo_foto_2', 'archivo_foto_3'):
+                data[campo] = None
+        return data
 
     def validate(self, attrs):
         actividad = attrs.get('actividad')

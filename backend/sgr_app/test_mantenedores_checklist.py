@@ -475,6 +475,7 @@ class MantenedoresChecklistTests(TestCase):
                 ('COORDINADOR', 'Coordinador'),
                 ('DELEGADO', 'Delegado'),
                 ('FUNCIONARIO', 'Funcionario'),
+                ('CONSULTA', 'Usuario de consulta (solo lectura)'),  # CU-38
             ],
         )
         self.assertNotIn('es_delegado', response.context['form'].fields)
@@ -493,7 +494,7 @@ class MantenedoresChecklistTests(TestCase):
         self.assertEqual(response.status_code, 302)
 
         funcionario = Usuario.objects.get(email='delegada.prueba@example.com')
-        self.assertEqual(funcionario.rol, Usuario.Rol.SUPERVISOR)
+        self.assertEqual(funcionario.rol, Usuario.Rol.DELEGADO)
         self.assertTrue(funcionario.es_delegado)
 
     def test_functionary_can_receive_multiple_roles_with_effective_permissions(self):
@@ -576,7 +577,7 @@ class MantenedoresChecklistTests(TestCase):
         aprobador = Usuario.objects.create_user(
             username='aprobador.sin_delegacion',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
         )
         aprobador.roles.add(rol_aprobador)
         request.user = aprobador
@@ -597,7 +598,7 @@ class MantenedoresChecklistTests(TestCase):
         territorial_user = Usuario.objects.create_user(
             username='solo.gestion.territorial',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         territorial_user.roles.add(rol_territorial)
@@ -780,7 +781,7 @@ class MantenedoresChecklistTests(TestCase):
             username='funcionario.inactivo',
             password='TestPassword123!',
             email='funcionario.inactivo@example.com',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             is_active=False,
         )
         rol = Rol.objects.create(nombre_rol='Rol inactivo', estado=False)
@@ -936,7 +937,7 @@ class MantenedoresChecklistTests(TestCase):
         supervisor = Usuario.objects.create_user(
             username='supervisor.checklist',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
             delegacion=self.delegacion,
         )
         client = self.client
@@ -957,27 +958,18 @@ class MantenedoresChecklistTests(TestCase):
                 response = client.get(url)
                 self.assertEqual(response.status_code, 200)
                 self.assertContains(response, 'Mantenedores')
-                if url == '/mantenedores/solicitantes/':
+                # CU-10/11/12: el Coordinador gestiona períodos e ítems; solicitantes ya lo hacía.
+                if url in ('/mantenedores/solicitantes/', '/mantenedores/periodos/'):
                     self.assertTrue(response.context['can_manage'])
                 else:
                     self.assertFalse(response.context['can_manage'])
                 if url == '/mantenedores/items/':
-                    self.assertFalse(response.context['can_manage_items'])
+                    self.assertTrue(response.context['can_manage_items'])
                     self.assertTrue(response.context['can_manage_catalog'])
 
         restricted_objects = (
             ('delegaciones', self.delegacion),
             ('cargos', self.cargo),
-            (
-                'items',
-                ItemMedicion.objects.create(
-                    cargo=self.cargo,
-                    periodo=self.periodo,
-                    nombre_item='Ítem restringido',
-                    ponderador=10,
-                ),
-            ),
-            ('periodos', self.periodo),
             ('funcionarios', self.admin),
             ('roles', Rol.objects.create(nombre_rol='Rol restringido')),
             ('areas', Area.objects.create(nombre='Área restringida')),
@@ -1102,9 +1094,10 @@ class MantenedoresChecklistTests(TestCase):
                     self.client.patch(detail_url, {}).status_code,
                     403,
                 )
-                self.assertEqual(
+                # Normativa: la API no expone DELETE (405); nunca se borra.
+                self.assertIn(
                     self.client.delete(detail_url).status_code,
-                    403,
+                    (403, 405),
                 )
 
     def test_api_does_not_render_browsable_management_interface(self):

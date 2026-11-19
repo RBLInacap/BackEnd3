@@ -86,14 +86,14 @@ class ActivityWorkflowTests(TestCase):
         self.funcionario = Usuario.objects.create_user(
             username='funcionario.workflow',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=self.cargo,
             delegacion=self.delegacion,
         )
         self.supervisor = Usuario.objects.create_user(
             username='supervisor.workflow',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
             delegacion=self.delegacion,
         )
         self.periodo = PeriodoMedicion.objects.create(
@@ -348,7 +348,7 @@ class ActivityWorkflowTests(TestCase):
         other = Usuario.objects.create_user(
             username='otro.funcionario',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         compromiso = CompromisoAgenda.objects.create(
@@ -361,7 +361,7 @@ class ActivityWorkflowTests(TestCase):
             descripcion='Compromiso de otra persona',
         )
         client.raise_request_exception = False
-        response = client.post(f'/tubo/{compromiso.pk}/eliminar/')
+        response = client.post(f'/tubo/{compromiso.pk}/anular/', {'motivo': 'No corresponde'})
 
         self.assertEqual(response.status_code, 403)
         self.assertTrue(CompromisoAgenda.objects.filter(pk=compromiso.pk).exists())
@@ -396,7 +396,7 @@ class ActivityWorkflowTests(TestCase):
         coordinator = Usuario.objects.create_user(
             username='coordinador.dashboard.periodo',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(coordinator)
 
@@ -418,7 +418,7 @@ class ActivityWorkflowTests(TestCase):
         colega = Usuario.objects.create_user(
             username='funcionario.cargo.companero',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=self.cargo,
             delegacion=self.delegacion,
         )
@@ -430,7 +430,7 @@ class ActivityWorkflowTests(TestCase):
         funcionario_otra_delegacion = Usuario.objects.create_user(
             username='funcionario.cargo.otra.delegacion',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=otro_cargo,
             delegacion=otra_delegacion,
         )
@@ -450,8 +450,7 @@ class ActivityWorkflowTests(TestCase):
         delegado = Usuario.objects.create_user(
             username='delegado.cargo.dashboard',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             delegacion=self.delegacion,
         )
         self.client.force_login(delegado)
@@ -791,8 +790,16 @@ class ActivityWorkflowTests(TestCase):
             valor_porcentaje=2,
             estado='PENDIENTE',
         )
-        incentivo.aprobarAjuste(administrator)
-        penalizacion.aprobarAjuste(administrator)
+        # CU-20: aprueba una persona distinta de quien registró (maker-checker).
+        aprobador = Usuario.objects.create_user(
+            username='admin.aprobador.distinto',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        with self.assertRaises(ValueError):
+            incentivo.aprobarAjuste(administrator)
+        incentivo.aprobarAjuste(aprobador)
+        penalizacion.aprobarAjuste(aprobador)
 
         metricas = calcular_metricas_funcionario(self.funcionario, self.periodo, self.today)
 
@@ -837,6 +844,17 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(registro_creacion.valor_nuevo['motivo'], 'Resultado destacado')
         self.assertEqual(registro_creacion.valor_nuevo['registrado_por_id'], administrator.pk)
 
+        # CU-20: quien registró no puede decidir (maker-checker).
+        self.client.post(f'/ajustes/{ajuste.pk}/decidir/', {'decision': 'APROBAR'})
+        ajuste.refresh_from_db()
+        self.assertEqual(ajuste.estado, 'PENDIENTE')
+
+        aprobador = Usuario.objects.create_user(
+            username='admin.aprobador.ajuste',
+            password='TestPassword123!',
+            rol=Usuario.Rol.ADMINISTRADOR,
+        )
+        self.client.force_login(aprobador)
         response = self.client.post(
             f'/ajustes/{ajuste.pk}/decidir/',
             {'decision': 'APROBAR'},
@@ -845,7 +863,7 @@ class ActivityWorkflowTests(TestCase):
         self.assertRedirects(response, f'/ajustes/?periodo={self.periodo.pk}')
         ajuste.refresh_from_db()
         self.assertEqual(ajuste.estado, 'APROBADO')
-        self.assertEqual(ajuste.aprobadoPor, administrator)
+        self.assertEqual(ajuste.aprobadoPor, aprobador)
         self.assertIsNotNone(ajuste.fechaAprobacion)
         manager_page = self.client.get('/ajustes/', {'periodo': self.periodo.pk})
         self.assertContains(manager_page, 'Resultado destacado')
@@ -879,7 +897,7 @@ class ActivityWorkflowTests(TestCase):
         forbidden = Usuario.objects.create_user(
             username='funcionario.sin.permiso.ajustes',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         regular_client = Client()
@@ -1164,7 +1182,7 @@ class ActivityWorkflowTests(TestCase):
         )
         self.assertEqual(item_despues['avance_aprobado'], 0)
 
-    def test_expired_evidence_retention_removes_file_but_keeps_metadata(self):
+    def test_expired_evidence_retention_disables_file_without_deleting_it(self):
         actividad = Actividad.objects.create(
             funcionario=self.funcionario,
             delegacion=self.delegacion,
@@ -1189,15 +1207,21 @@ class ActivityWorkflowTests(TestCase):
             call_command('purgar_evidencias_vencidas', stdout=StringIO())
 
             evidencia.refresh_from_db()
-            self.assertFalse(evidencia.archivo_foto)
-            self.assertIsNotNone(evidencia.archivos_eliminados_en)
+            # Normativa: nada se elimina. El archivo se conserva, pero queda deshabilitado.
+            self.assertEqual(evidencia.archivo_foto.name, ruta_archivo)
+            self.assertTrue(evidencia.archivo_foto.storage.exists(ruta_archivo))
+            self.assertIsNotNone(evidencia.archivos_deshabilitados_en)
             self.assertEqual(
                 evidencia.metadatos,
                 {'formato': 'JPEG', 'tamano_bytes': 123},
             )
-            self.assertFalse(evidencia.archivo_foto.storage.exists(ruta_archivo))
+            self.assertEqual(evidencia.get_foto_url, '/static/img/evidencia_terreno_placeholder.svg')
+            self.client.force_login(self.funcionario)
+            datos_api = self.client.get(f'/api/v1/evidencias/{evidencia.pk}/').json()
+            self.assertIsNone(datos_api['archivo_foto'])
+            self.assertIsNotNone(datos_api['archivos_deshabilitados_en'])
 
-    def test_deleting_evidence_record_deletes_its_uploaded_file(self):
+    def test_evidence_file_is_never_deleted_from_storage(self):
         actividad = Actividad.objects.create(
             funcionario=self.funcionario,
             delegacion=self.delegacion,
@@ -1206,14 +1230,15 @@ class ActivityWorkflowTests(TestCase):
         )
         with override_settings(MEDIA_ROOT=self.media_dir.name):
             evidencia = Evidencia.objects.create(actividad=actividad)
-            evidencia.archivo_foto.save('eliminar.jpg', self.upload('foto.jpg'), save=True)
+            evidencia.archivo_foto.save('conservar.jpg', self.upload('foto.jpg'), save=True)
             storage = evidencia.archivo_foto.storage
             ruta_archivo = evidencia.archivo_foto.name
             self.assertTrue(storage.exists(ruta_archivo))
 
-            evidencia.delete()
+            # Ni siquiera una baja a nivel de base de datos borra el archivo.
+            Evidencia.objects.filter(pk=evidencia.pk).delete()
 
-            self.assertFalse(storage.exists(ruta_archivo))
+            self.assertTrue(storage.exists(ruta_archivo))
 
     def test_activity_registration_rolls_back_all_related_records_if_audit_fails(self):
         data = self.activity_form()
@@ -1365,7 +1390,7 @@ class ActivityWorkflowTests(TestCase):
         another_functionary = Usuario.objects.create_user(
             username='otro.funcionario.items',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=otro_cargo,
             delegacion=self.delegacion,
         )
@@ -1388,7 +1413,7 @@ class ActivityWorkflowTests(TestCase):
         funcionario_sin_cargo = Usuario.objects.create_user(
             username='funcionario.sin.cargo',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         items_response = self.client.get(
@@ -1792,7 +1817,7 @@ class ActivityWorkflowTests(TestCase):
 
         self.assertRedirects(response, '/mantenedores/funcionarios/')
         delegado = Usuario.objects.get(username='patricia.delegada@example.com')
-        self.assertEqual(delegado.rol, Usuario.Rol.SUPERVISOR)
+        self.assertEqual(delegado.rol, Usuario.Rol.DELEGADO)
         self.assertTrue(delegado.es_delegado)
         self.assertEqual(delegado.delegacion_id, self.delegacion.pk)
         auditoria = RegistroAuditoria.objects.get(
@@ -1800,8 +1825,7 @@ class ActivityWorkflowTests(TestCase):
             identificador_registro=str(delegado.pk),
             evento='CREACION',
         )
-        self.assertEqual(auditoria.valor_nuevo['rol'], Usuario.Rol.SUPERVISOR)
-        self.assertTrue(auditoria.valor_nuevo['es_delegado'])
+        self.assertEqual(auditoria.valor_nuevo['rol'], Usuario.Rol.DELEGADO)
         self.assertEqual(auditoria.valor_nuevo['delegacion_id'], self.delegacion.pk)
 
     def test_delegado_form_rejects_missing_delegation_or_wrong_role(self):
@@ -1834,7 +1858,7 @@ class ActivityWorkflowTests(TestCase):
             'apellidoPaterno': 'Gestora',
             'apellidoMaterno': 'Delegada',
             'correo': 'patricia.delegada@example.com',
-            'rol': Usuario.Rol.ADMINISTRATIVO,
+            'rol': 'SUPERVISOR',  # código de rol antiguo: ya no es válido
             'area_entidad': str(self.area.pk),
             'estado': 'on',
         })
@@ -1919,7 +1943,7 @@ class ActivityWorkflowTests(TestCase):
         coordinator = Usuario.objects.create_user(
             username='coordinador.workflow',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(coordinator)
 
@@ -2101,7 +2125,7 @@ class ActivityWorkflowTests(TestCase):
         coordinator = Usuario.objects.create_user(
             username='coordinador.compromiso.editar',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(coordinator)
         actividad = Actividad.objects.create(
@@ -2205,7 +2229,7 @@ class ActivityWorkflowTests(TestCase):
         another_functionary = Usuario.objects.create_user(
             username='otro.funcionario.compromiso',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=self.cargo,
             delegacion=self.delegacion,
         )
@@ -2407,7 +2431,7 @@ class ActivityWorkflowTests(TestCase):
         supervisor = Usuario.objects.create_user(
             username='supervisor.validacion.success',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(supervisor)
 
@@ -2462,7 +2486,7 @@ class ActivityWorkflowTests(TestCase):
         supervisor = Usuario.objects.create_user(
             username='supervisor.validacion.meta',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(supervisor)
 
@@ -2524,7 +2548,7 @@ class ActivityWorkflowTests(TestCase):
         supervisor = Usuario.objects.create_user(
             username='supervisor.validacion.motivo',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(supervisor)
 
@@ -2559,8 +2583,7 @@ class ActivityWorkflowTests(TestCase):
         delegado = Usuario.objects.create_user(
             username='delegado.validacion.correccion',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             delegacion=self.delegacion,
         )
         self.client.force_login(delegado)
@@ -2617,7 +2640,7 @@ class ActivityWorkflowTests(TestCase):
         supervisor = Usuario.objects.create_user(
             username='supervisor.validacion.atomic',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(supervisor)
 
@@ -2756,7 +2779,7 @@ class ActivityWorkflowTests(TestCase):
         colega = Usuario.objects.create_user(
             username='funcionario.agenda.colega',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         delegacion_ajena = Delegacion.objects.create(
@@ -2784,8 +2807,7 @@ class ActivityWorkflowTests(TestCase):
         delegado = Usuario.objects.create_user(
             username='delegado.agenda.compartida',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             delegacion=self.delegacion,
         )
         self.client.force_login(delegado)
@@ -2817,8 +2839,7 @@ class ActivityWorkflowTests(TestCase):
         delegado = Usuario.objects.create_user(
             username='delegado.alertas.operativas',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             delegacion=self.delegacion,
         )
         self.client.force_login(delegado)
@@ -2914,7 +2935,7 @@ class ActivityWorkflowTests(TestCase):
         funcionario_ajeno = Usuario.objects.create_user(
             username='funcionario.informe.ajeno',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=otra_delegacion,
         )
         Actividad.objects.create(
@@ -2982,7 +3003,7 @@ class ActivityWorkflowTests(TestCase):
         otro_funcionario = Usuario.objects.create_user(
             username='funcionario.filtro.informe',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         otra_delegacion = Delegacion.objects.create(
@@ -2992,7 +3013,7 @@ class ActivityWorkflowTests(TestCase):
         funcionario_otra_delegacion = Usuario.objects.create_user(
             username='funcionario.otra.delegacion.informe',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=otra_delegacion,
         )
         actividad_objetivo = Actividad.objects.create(
@@ -3464,6 +3485,119 @@ class ActivityWorkflowTests(TestCase):
             200,
         )
 
+    def _compromiso_con_actividad(self):
+        actividad = Actividad.objects.create(
+            funcionario=self.funcionario,
+            delegacion=self.delegacion,
+            item_medicion=self.item,
+            fecha_actividad=self.today,
+        )
+        compromiso = CompromisoAgenda.objects.create(
+            solicitante='Vecino con fotos',
+            territorio='Sector Centro',
+            delegacion=self.delegacion,
+            responsable=self.funcionario,
+            creado_por=self.funcionario,
+            fecha_compromiso=self.today,
+            fecha_comprometida=self.fecha_futura,
+            area_apoyo='Operaciones',
+            descripcion='Bache en la calle',
+            actividad=actividad,
+        )
+        return compromiso, actividad
+
+    def _datos_edicion(self, compromiso, **extra):
+        datos = {
+            'solicitante': compromiso.solicitante,
+            'origen': 'EXT',
+            'territorio': compromiso.territorio,
+            'delegacion': str(self.delegacion.pk),
+            'responsable': str(self.funcionario.pk),
+            'fecha_comprometida': self.fecha_futura.isoformat(),
+            'area_apoyo': compromiso.area_apoyo,
+            'descripcion': compromiso.descripcion,
+            'observacion': 'Se adjuntan fotos',
+            'actividad': str(compromiso.actividad_id or ''),
+        }
+        datos.update(extra)
+        return datos
+
+    def test_commitment_edit_saves_uploaded_photos_as_evidence(self):
+        compromiso, actividad = self._compromiso_con_actividad()
+        with override_settings(MEDIA_ROOT=self.media_dir.name):
+            response = self.client.post(
+                f'/tubo/{compromiso.pk}/editar/',
+                self._datos_edicion(
+                    compromiso, fotos=[self.upload('a.jpg'), self.upload('b.jpg')],
+                ),
+            )
+        self.assertRedirects(response, '/tubo/')
+        evidencias = Evidencia.objects.filter(actividad=actividad)
+        self.assertEqual(evidencias.count(), 2)
+        self.assertTrue(all(e.estado == Evidencia.Estado.PENDIENTE for e in evidencias))
+        self.assertTrue(all(e.subido_por_id == self.funcionario.pk for e in evidencias))
+        self.assertTrue(RegistroAuditoria.objects.filter(
+            accion='ADJUNTAR_EVIDENCIA_COMPROMISO', identificador_registro=str(actividad.pk),
+        ).exists())
+
+    def test_commitment_edit_replace_keeps_previous_photos_in_history(self):
+        compromiso, actividad = self._compromiso_con_actividad()
+        with override_settings(MEDIA_ROOT=self.media_dir.name):
+            anterior = Evidencia.objects.create(
+                actividad=actividad, subido_por=self.funcionario,
+                estado=Evidencia.Estado.APROBADA,
+            )
+            anterior.archivo_foto.save('anterior.jpg', self.upload('anterior.jpg'), save=True)
+            ruta_anterior = anterior.archivo_foto.name
+            response = self.client.post(
+                f'/tubo/{compromiso.pk}/editar/',
+                self._datos_edicion(
+                    compromiso, fotos=[self.upload('nueva.jpg')], reemplazar_fotos='on',
+                ),
+            )
+            self.assertRedirects(response, '/tubo/')
+            # La foto anterior no se borra: queda en el historial, fuera de la revisión.
+            historial = Evidencia.todas.get(pk=anterior.pk)
+            self.assertIsNotNone(historial.reemplazada_en)
+            self.assertEqual(historial.reemplazada_por, self.funcionario)
+            self.assertEqual(historial.estado, Evidencia.Estado.APROBADA)
+            self.assertTrue(historial.archivo_foto.storage.exists(ruta_anterior))
+        vigentes = list(actividad.evidencias.all())
+        self.assertEqual(len(vigentes), 1)
+        self.assertEqual(vigentes[0].estado, Evidencia.Estado.PENDIENTE)
+        auditoria = RegistroAuditoria.objects.get(accion='ADJUNTAR_EVIDENCIA_COMPROMISO')
+        self.assertEqual(
+            auditoria.valor_anterior['evidencias_reemplazadas'], [historial.codigo_verificador],
+        )
+
+    def test_commitment_edit_rejects_photos_it_cannot_attach(self):
+        compromiso, _ = self._compromiso_con_actividad()
+        sin_actividad = CompromisoAgenda.objects.create(
+            solicitante='Sin actividad', delegacion=self.delegacion,
+            responsable=self.funcionario, creado_por=self.funcionario,
+            fecha_comprometida=self.fecha_futura,
+        )
+        casos = [
+            (sin_actividad, {'fotos': [self.upload('x.jpg')], 'actividad': ''},
+             'asocia una actividad'),
+            (compromiso, {'reemplazar_fotos': 'on'}, 'Selecciona las fotografías nuevas'),
+            (compromiso, {'fotos': [SimpleUploadedFile('x.txt', b'texto', content_type='text/plain')]},
+             None),
+        ]
+        for objetivo, extra, mensaje in casos:
+            with self.subTest(mensaje=mensaje), override_settings(MEDIA_ROOT=self.media_dir.name):
+                descripcion_original = objetivo.descripcion
+                response = self.client.post(
+                    f'/tubo/{objetivo.pk}/editar/',
+                    self._datos_edicion(objetivo, descripcion='No debe guardarse', **extra),
+                )
+                self.assertEqual(response.status_code, 200)
+                if mensaje:
+                    self.assertContains(response, mensaje)
+                objetivo.refresh_from_db()
+                self.assertEqual(objetivo.descripcion, descripcion_original)
+        self.assertFalse(Evidencia.todas.exists())
+
     def test_commitment_update_reassignment_and_state_are_audited(self):
         compromiso = CompromisoAgenda.objects.create(
             solicitante='Vecindario Centro',
@@ -3481,7 +3615,7 @@ class ActivityWorkflowTests(TestCase):
         reemplazo = Usuario.objects.create_user(
             username='funcionario.reasignado',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         delegacion_coordinadora = Delegacion.objects.create(
@@ -3491,7 +3625,7 @@ class ActivityWorkflowTests(TestCase):
         coordinador = Usuario.objects.create_user(
             username='supervisor.interdelegacional',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
             delegacion=delegacion_coordinadora,
         )
         self.client.force_login(coordinador)
@@ -3557,7 +3691,7 @@ class ActivityWorkflowTests(TestCase):
         reemplazo = Usuario.objects.create_user(
             username='funcionario.reasignado.rollback',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         self.client.force_login(self.supervisor)
@@ -3692,11 +3826,12 @@ class ActivityWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(response.json()['encontrado'])
 
-    def test_deleting_commitment_removes_its_activity_and_evidence(self):
+    def test_annulling_commitment_keeps_it_with_activity_and_evidence(self):
+        """Normativa: nada se elimina; el compromiso se anula con motivo y se conserva."""
         coordinator = Usuario.objects.create_user(
-            username='coordinador.compromiso.eliminar',
+            username='coordinador.compromiso.anular',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(coordinator)
         actividad = Actividad.objects.create(
@@ -3712,14 +3847,48 @@ class ActivityWorkflowTests(TestCase):
             fecha_comprometida=self.today,
             actividad=actividad,
         )
-        Evidencia.objects.create(actividad=actividad)
+        evidencia = Evidencia.objects.create(actividad=actividad)
 
-        response = self.client.post(f'/tubo/{compromiso.id}/eliminar/')
+        sin_motivo = self.client.post(f'/tubo/{compromiso.id}/anular/', {'motivo': '  '})
+        self.assertEqual(sin_motivo.status_code, 302)
+        self.assertFalse(CompromisoAgenda.todos.get(pk=compromiso.id).anulado)
 
-        self.assertEqual(response.status_code, 302)
+        response = self.client.post(
+            f'/tubo/{compromiso.id}/anular/', {'motivo': 'Registrado por error'}, follow=True
+        )
+
+        self.assertContains(response, 'anulado')
+        anulado = CompromisoAgenda.todos.get(pk=compromiso.id)
+        self.assertTrue(anulado.anulado)
+        self.assertEqual(anulado.motivo_anulacion, 'Registrado por error')
+        self.assertEqual(anulado.anulado_por, coordinator)
+        self.assertIsNotNone(anulado.anulado_en)
+        # Deja de aparecer en tableros, alertas e indicadores...
         self.assertFalse(CompromisoAgenda.objects.filter(pk=compromiso.id).exists())
-        self.assertFalse(Actividad.objects.filter(pk=actividad.id).exists())
-        self.assertFalse(Evidencia.objects.filter(actividad_id=actividad.id).exists())
+        self.assertNotContains(self.client.get('/tubo/'), 'Solicitante de prueba')
+        # ...pero nada se borra: compromiso, actividad y evidencia siguen en la base.
+        self.assertTrue(Actividad.objects.filter(pk=actividad.id).exists())
+        self.assertTrue(Evidencia.objects.filter(pk=evidencia.id).exists())
+        self.assertTrue(
+            RegistroAuditoria.objects.filter(
+                accion='ANULAR_COMPROMISO', identificador_registro=str(compromiso.id)
+            ).exists()
+        )
+
+        repetido = self.client.post(f'/tubo/{compromiso.id}/anular/', {'motivo': 'Otra vez'})
+        self.assertEqual(repetido.status_code, 404)
+
+    def test_web_has_no_delete_route_for_commitments(self):
+        self.client.force_login(self.funcionario)
+        compromiso = CompromisoAgenda.objects.create(
+            solicitante='Vecino',
+            delegacion=self.delegacion,
+            responsable=self.funcionario,
+            creado_por=self.funcionario,
+        )
+        response = self.client.post(f'/tubo/{compromiso.id}/eliminar/')
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(CompromisoAgenda.objects.filter(pk=compromiso.id).exists())
 
     def test_rut_validation_checks_format_and_module_11(self):
         self.assertEqual(normalize_chilean_rut('11.111.111-1'), '11.111.111-1')
@@ -3978,7 +4147,7 @@ class RequisitosPendientesTests(TestCase):
         coordinador = Usuario.objects.create_user(
             username='coordinador.rf031',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(coordinador)
 
@@ -4070,8 +4239,7 @@ class CorreccionesRevisionCodigoTests(TestCase):
         delegado = Usuario.objects.create_user(
             username='delegado.metricas',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             delegacion=self.delegacion,
         )
         for usuario in (self.funcionario, delegado):
@@ -4111,7 +4279,7 @@ class CorreccionesRevisionCodigoTests(TestCase):
         usuario = Usuario.objects.create_user(
             username='funcionario.clave.inicial',
             password='ClaveInicial123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
             must_change_password=True,
             initial_login_expires_at=timezone.now() + timedelta(minutes=10),
@@ -4187,7 +4355,7 @@ class CorreccionesRevisionCodigoTests(TestCase):
         otro = Usuario.objects.create_user(
             username='suplantado.compromiso',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         cliente = Client()
@@ -4251,7 +4419,7 @@ class ConcurrentActivityPersistenceTests(TransactionTestCase):
             Usuario.objects.create_user(
                 username=f'funcionario.concurrente.{index}',
                 password='TestPassword123!',
-                rol=Usuario.Rol.ADMINISTRATIVO,
+                rol=Usuario.Rol.FUNCIONARIO,
                 delegacion=self.delegacion,
             )
             for index in range(2)
@@ -4297,7 +4465,7 @@ class ConcurrentActivityPersistenceTests(TransactionTestCase):
         funcionario_norte = Usuario.objects.create_user(
             username='funcionario.concurrente.norte',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=otra_delegacion,
         )
         participantes = [

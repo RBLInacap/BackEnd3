@@ -17,6 +17,10 @@
         {% endfor %}
       </select>
     </div>
+    <div class="form-check mb-2">
+      <input class="form-check-input" type="checkbox" id="ver-pendientes" name="ver" value="pendientes" {% if solo_pendientes %}checked{% endif %}>
+      <label class="form-check-label" for="ver-pendientes">Solo no revisadas</label>
+    </div>
     <button class="btn btn-outline-danger" type="submit">Filtrar</button>
     <span class="text-secondary small">Emitido al {{ hoy|date:"d/m/Y" }}</span>
   </form>
@@ -25,17 +29,30 @@
     <div class="table-responsive card">
       <table class="table table-hover align-middle mb-0">
         <thead>
-          <tr><th>Tipo</th><th>Alerta</th><th>Motivo</th><th>Responsable</th><th>Fecha</th><th></th></tr>
+          <tr><th>Tipo</th><th>Alerta</th><th>Motivo</th><th>Responsable</th><th>Fecha</th><th>Seguimiento</th><th></th></tr>
         </thead>
         <tbody>
           {% for alerta in alertas %}
-            <tr>
+            <tr {% if alerta.revision %}class="text-secondary"{% endif %}>
               <td><span class="badge text-bg-{{ alerta.nivel }}">{{ alerta.tipo|title }}</span></td>
               <td class="fw-semibold">{{ alerta.titulo }}</td>
               <td>{{ alerta.motivo }}</td>
               <td>{{ alerta.responsable }}</td>
               <td class="text-nowrap">{{ alerta.fecha|date:"d/m/Y" }}</td>
-              <td><a class="btn btn-sm btn-outline-primary" href="{{ alerta.url }}">Ver registro</a></td>
+              <td class="small">
+                {% if alerta.revision %}
+                  <span class="badge text-bg-success">Revisada</span>
+                  <div>{{ alerta.revision.revisada_por.get_full_name|default:alerta.revision.revisada_por.username }} · {{ alerta.revision.revisada_en|date:"d/m/Y H:i" }}</div>
+                {% else %}
+                  <form method="post" action="{% url 'web_marcar_alerta_revisada' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="clave" value="{{ alerta.clave }}">
+                    <input type="hidden" name="volver" value="{{ request.get_full_path }}">
+                    <button type="submit" class="btn btn-sm btn-outline-success text-nowrap">Marcar revisada</button>
+                  </form>
+                {% endif %}
+              </td>
+              <td><a class="btn btn-sm btn-outline-primary text-nowrap" href="{{ alerta.url }}">Ver registro</a></td>
             </tr>
           {% endfor %}
         </tbody>

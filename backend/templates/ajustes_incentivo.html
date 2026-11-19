@@ -106,7 +106,11 @@
                   {% endif %}
                 </td>
                 <td class="text-end">
-                  {% if ajuste.estado == 'PENDIENTE' and not periodo_cerrado %}
+                  {% if ajuste.estado == 'PENDIENTE' and not periodo_cerrado and ajuste.registrado_por_id == request.user.pk %}
+                  <small class="text-secondary">Lo registraste tú: debe decidirlo otra persona.</small>
+                  {% elif ajuste.estado == 'PENDIENTE' and not periodo_cerrado and ajuste.funcionario_id == request.user.pk %}
+                  <small class="text-secondary">Es tu propio ajuste: debe decidirlo otra persona.</small>
+                  {% elif ajuste.estado == 'PENDIENTE' and not periodo_cerrado %}
                   <form method="post" action="{% url 'web_decidir_ajuste_incentivo' ajuste.pk %}" class="d-flex flex-column gap-2 align-items-end">
                     {% csrf_token %}
                     <input type="hidden" name="decision" value="APROBAR">

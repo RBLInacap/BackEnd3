@@ -12,7 +12,7 @@
       <span class="text-secondary small ms-2">Evaluación por período y desglose de avance por ítem</span>
     </div>
     <form method="GET" action="{% url 'web_personal' %}" class="d-flex flex-wrap align-items-center gap-2">
-      {% if request.user.es_admin or request.user.es_supervisor %}
+      {% if request.user.es_admin or request.user.es_coordinador %}
       <label for="funcionarioPeriodo" class="small fw-bold text-secondary text-uppercase mb-0 text-nowrap">Funcionario:</label>
       <select id="funcionarioPeriodo" name="id" class="form-select form-select-sm border fw-semibold" style="min-width: 200px;">
         {% for f in todos_funcionarios %}
@@ -188,8 +188,14 @@
                   <span class="text-danger fw-bold">{{ it.evidencias_rechazadas }}</span>
                 {% else %}0{% endif %}
               </td>
-              <td class="text-center px-4 py-3 fw-bold text-dark">{{ it.cumplimiento_pct }}%</td>
-              <td class="text-center px-4 py-3 fw-bold text-danger fs-6 bg-light">{{ it.aporte_ponderado }}%</td>
+              <td class="text-center px-4 py-3 fw-bold text-dark">
+                {{ it.cumplimiento_pct }}%
+                {% if it.meta %}<small class="d-block fw-normal text-secondary" title="Fórmula aplicada (RN-004)">{{ it.avance_aprobado }} / {{ it.meta }} × 100</small>{% endif %}
+              </td>
+              <td class="text-center px-4 py-3 fw-bold text-danger fs-6 bg-light">
+                {{ it.aporte_ponderado }}%
+                <small class="d-block fw-normal text-secondary" title="Fórmula aplicada (RN-005)">{{ it.ponderador }} × mín({{ it.cumplimiento_pct }}; {{ periodo.tope_cumplimiento }}) / 100</small>
+              </td>
               <td class="text-end ps-3 pe-4 py-3">
                 {% if it.semaforo == 'VERDE' %}
                   <span class="badge badge-verde">Verde</span>

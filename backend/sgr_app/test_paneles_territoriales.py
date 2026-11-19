@@ -25,15 +25,15 @@ class PanelesTerritorialesTests(TestCase):
         cls.admin = Usuario.objects.create_superuser(
             username='p.admin', email='p.admin@example.com', password=PASSWORD, rol=Usuario.Rol.ADMINISTRADOR,
         )
-        cls.supervisor = Usuario.objects.create_user(username='p.sup', password=PASSWORD, rol=Usuario.Rol.SUPERVISOR)
+        cls.supervisor = Usuario.objects.create_user(username='p.sup', password=PASSWORD, rol=Usuario.Rol.COORDINADOR)
         cls.delegado = Usuario.objects.create_user(
-            username='p.del', password=PASSWORD, rol=Usuario.Rol.SUPERVISOR, es_delegado=True, delegacion=cls.del_a,
+            username='p.del', password=PASSWORD, rol=Usuario.Rol.DELEGADO, delegacion=cls.del_a,
         )
         cls.func_a = Usuario.objects.create_user(
-            username='p.func.a', password=PASSWORD, rol=Usuario.Rol.ADMINISTRATIVO, delegacion=cls.del_a,
+            username='p.func.a', password=PASSWORD, rol=Usuario.Rol.FUNCIONARIO, delegacion=cls.del_a,
         )
         cls.func_b = Usuario.objects.create_user(
-            username='p.func.b', password=PASSWORD, rol=Usuario.Rol.ADMINISTRATIVO, delegacion=cls.del_b,
+            username='p.func.b', password=PASSWORD, rol=Usuario.Rol.FUNCIONARIO, delegacion=cls.del_b,
         )
         # Delegación A: 1 realizado en plazo, 1 realizado fuera de plazo, 1 vencido, 1 por vencer.
         cls.c_en_plazo = cls._compromiso(cls.del_a, cls.func_a, 'Alumbrado Público', -10, realizado_dias=-12)
@@ -80,9 +80,9 @@ class PanelesTerritorialesTests(TestCase):
     def test_cada_rol_recibe_su_tablero(self):
         esperado = {
             self.admin: 'dashboard_admin.html',
-            self.supervisor: 'dashboard_supervisor.html',
+            self.supervisor: 'dashboard_coordinador.html',
             self.delegado: 'dashboard_delegado.html',
-            self.func_a: 'dashboard_administrativo.html',
+            self.func_a: 'dashboard_funcionario.html',
         }
         for usuario, plantilla in esperado.items():
             with self.subTest(usuario=usuario.username):

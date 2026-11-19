@@ -2,12 +2,16 @@
   <div class="d-flex justify-content-between align-items-start mb-1">
     <span class="badge bg-secondary-subtle text-dark font-monospace" style="font-size: 0.68rem;">#{{ item.id }}</span>
     <div class="d-flex gap-1">
+      {% if item.puede_gestionar %}
       <a href="{% url 'web_editar_compromiso' item.id %}" class="btn btn-sm btn-outline-secondary p-0 px-1 border-0" title="Editar compromiso">
         <i class="bi bi-pencil-square text-dark" style="font-size: 0.85rem;"></i>
       </a>
-      <button type="button" class="btn btn-sm btn-outline-secondary p-0 px-1 border-0" data-bs-toggle="modal" data-bs-target="#modalEliminarCompromiso{{ item.id }}" title="Eliminar compromiso">
-        <i class="bi bi-trash3 text-danger" style="font-size: 0.85rem;"></i>
+      {% endif %}
+      {% if item.puede_anular %}
+      <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1" style="font-size: 0.72rem;" data-bs-toggle="modal" data-bs-target="#modalAnularCompromiso{{ item.id }}" title="Anular compromiso">
+        Anular
       </button>
+      {% endif %}
     </div>
   </div>
 
@@ -35,7 +39,7 @@
     </div>
   </div>
 
-  {% if item.estado_tablero != 'COMPLETADO' and item.estado_tablero != 'REALIZADO' %}
+  {% if item.puede_gestionar and item.estado_tablero != 'COMPLETADO' and item.estado_tablero != 'REALIZADO' %}
     <form method="POST" action="{% url 'web_cambiar_estado_compromiso' item.id %}" class="mt-2 pt-2 border-top">
       {% csrf_token %}
       <select name="estado" class="form-select form-select-sm bg-white text-dark border fw-semibold mb-2" style="font-size: 0.75rem; background-color: #ffffff !important; color: #1e293b !important;" required>
@@ -125,9 +129,9 @@
             <input type="file" name="fotos" accept="image/*" multiple class="form-control bg-black text-light border-secondary">
             <div class="form-check mt-2">
               <input class="form-check-input" type="checkbox" name="reemplazar_fotos" id="reemplazarFotos{{ item.id }}">
-              <label class="form-check-label text-secondary" for="reemplazarFotos{{ item.id }}">Reemplazar la fotografía principal existente</label>
+              <label class="form-check-label text-secondary" for="reemplazarFotos{{ item.id }}">Reemplazar las fotografías actuales</label>
             </div>
-            <div class="form-text text-secondary">Las nuevas fotos quedan pendientes de validación. Al reemplazar, se reinicia la revisión.</div>
+            <div class="form-text text-secondary">Las fotos se agregan a la actividad asociada y quedan pendientes de validación. Al reemplazar, las anteriores se conservan en el historial y se reinicia la revisión.</div>
           </div>
         </div>
         <div class="modal-footer border-secondary">
@@ -139,33 +143,28 @@
   </div>
 </div>
 
-<!-- Modal Eliminar Compromiso #{{ item.id }} -->
-<div class="modal fade" id="modalEliminarCompromiso{{ item.id }}" tabindex="-1" aria-labelledby="lblEliminar{{ item.id }}" aria-hidden="true">
+{% if item.puede_anular %}
+<!-- Modal Anular Compromiso #{{ item.id }} -->
+<div class="modal fade" id="modalAnularCompromiso{{ item.id }}" tabindex="-1" aria-labelledby="lblAnular{{ item.id }}" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered text-start">
-    <div class="modal-content bg-dark text-light border-danger">
-      <div class="modal-header border-danger">
-        <h5 class="modal-title fw-bold text-danger" id="lblEliminar{{ item.id }}">
-          <i class="bi bi-exclamation-triangle-fill me-2"></i>Eliminar Compromiso #{{ item.id }}
-        </h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <form method="POST" action="{% url 'web_eliminar_compromiso' item.id %}">
+    <div class="modal-content">
+      <form method="POST" action="{% url 'web_anular_compromiso' item.id %}">
         {% csrf_token %}
-        <div class="modal-body small">
-          <p class="mb-2">¿Estás seguro de que deseas eliminar permanentemente este compromiso del Tubo de Trabajo?</p>
-          <div class="p-3 bg-black rounded border border-secondary mb-3">
-            <div><strong>Solicitante:</strong> {{ item.solicitante }}</div>
-            <div><strong>Delegación:</strong> {{ item.delegacion.nombre }}</div>
-            <div><strong>Responsable:</strong> {{ item.responsable.get_full_name|default:item.responsable.username }}</div>
-            <div><strong>Descripción:</strong> {{ item.descripcion }}</div>
-          </div>
-          <small class="text-danger fw-bold"><i class="bi bi-shield-lock me-1"></i>Esta acción quedará registrada en el log de auditoría institucional.</small>
+        <div class="modal-header">
+          <h5 class="modal-title" id="lblAnular{{ item.id }}">Anular compromiso #{{ item.id }}</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
         </div>
-        <div class="modal-footer border-secondary">
-          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
-          <button type="submit" class="btn btn-danger btn-sm fw-bold">Sí, Eliminar Compromiso</button>
+        <div class="modal-body">
+          <label for="motivoAnularCompromiso{{ item.id }}" class="form-label">Motivo</label>
+          <textarea id="motivoAnularCompromiso{{ item.id }}" name="motivo" class="form-control" rows="3" maxlength="2000" required data-autofocus></textarea>
+          <small class="text-secondary">{{ item.solicitante }} · El compromiso se conservará en el historial, pero dejará de mostrarse y de sumar al avance.</small>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-danger">Confirmar anulación</button>
         </div>
       </form>
     </div>
   </div>
 </div>
+{% endif %}

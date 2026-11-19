@@ -159,7 +159,11 @@ class BloqueoSegundoFactorTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(client.session.get('_auth_user_id'), str(self.user.pk))
-        self.assertFalse(BloqueoAcceso.objects.exists())
+        # Normativa: el registro no se borra; se reinicia el contador y se levanta el bloqueo.
+        self.assertFalse(
+            BloqueoAcceso.objects.filter(intentos_fallidos__gt=0).exists()
+            or BloqueoAcceso.objects.filter(bloqueado_hasta__isnull=False).exists()
+        )
 
     def test_api_2fa_tambien_se_bloquea(self, _mock_time):
         client = Client()

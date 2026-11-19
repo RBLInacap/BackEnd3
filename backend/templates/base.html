@@ -452,10 +452,10 @@
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_dashboard' %}active{% endif %}" href="{% url 'web_dashboard' %}">
               <i class="bi bi-speedometer2 me-1"></i>
-              {% if request.user.es_administrativo %}Panel Administrativo{% elif request.user.esta_limitado_a_delegacion %}Panel Delegado{% elif request.user.es_supervisor %}Panel Supervisor{% else %}Panel Administrador{% endif %}
+              {% if request.user.es_funcionario %}Panel Funcionario{% elif request.user.esta_limitado_a_delegacion %}Panel Delegado{% elif request.user.es_coordinador %}Panel Coordinador{% else %}Panel Administrador{% endif %}
             </a>
           </li>
-          {% if request.user.es_admin or request.user.es_supervisor %}
+          {% if request.user.es_admin or request.user.es_coordinador %}
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle {% if 'mantenedor_' in request.resolver_match.url_name %}active{% endif %}"
                href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -473,6 +473,7 @@
               <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_areas_list' %}active{% endif %}" href="{% url 'mantenedor_areas_list' %}"><i class="bi bi-diagram-3 me-2"></i>Áreas</a></li>
               {% if request.user.es_admin %}
               <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_conceptos_ajuste_list' %}active{% endif %}" href="{% url 'mantenedor_conceptos_ajuste_list' %}"><i class="bi bi-sliders me-2"></i>Conceptos de ajuste</a></li>
+              <li><a class="dropdown-item nav-dropdown-item {% if request.resolver_match.url_name == 'mantenedor_reglas_alerta' %}active{% endif %}" href="{% url 'mantenedor_reglas_alerta' %}"><i class="bi bi-bell me-2"></i>Reglas de alerta</a></li>
               {% endif %}
               <li><hr class="dropdown-divider"></li>
               <li><a class="dropdown-item nav-dropdown-item {% if 'tipos_actividad' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'mantenedor_tipos_actividad_list' %}"><i class="bi bi-list-task me-2"></i>Tipos de actividad</a></li>
@@ -486,6 +487,7 @@
               <i class="bi bi-person-check me-1"></i> Dashboard Personal
             </a>
           </li>
+          {% if not request.user.es_consulta %}
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle {% if 'web_registrar_solicitante' == request.resolver_match.url_name or 'web_registrar_actividad_diaria' == request.resolver_match.url_name or 'web_registrar_actividad_personal' == request.resolver_match.url_name %}active{% endif %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
               <i class="bi bi-journal-plus me-1"></i> Actividad Diaria
@@ -500,14 +502,15 @@
               <i class="bi bi-camera-fill me-1"></i> Evidencias de Terreno
             </a>
           </li>
-          {% if request.user.es_admin or request.user.es_supervisor or request.user.puede_aprobar_evidencias %}
+          {% endif %}
+          {% if request.user.es_admin or request.user.es_coordinador or request.user.puede_aprobar_evidencias %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_verificacion' %}active{% endif %}" href="{% url 'web_verificacion' %}">
               <i class="bi bi-check2-circle me-1"></i> Validar Evidencias
             </a>
           </li>
           {% endif %}
-          {% if request.user.es_admin or request.user.es_supervisor %}
+          {% if request.user.es_admin or request.user.es_coordinador %}
           <li class="nav-item">
             <a class="nav-link {% if 'ajuste_incentivo' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'web_ajustes_incentivo' %}">
               <i class="bi bi-award me-1"></i> Incentivos y Penalizaciones
@@ -524,14 +527,14 @@
               <i class="bi bi-bell me-1"></i> Alertas operativas
             </a>
           </li>
-          {% if request.user.es_admin or request.user.es_supervisor or request.user.esta_limitado_a_delegacion %}
+          {% if request.user.es_admin or request.user.es_coordinador or request.user.esta_limitado_a_delegacion or request.user.es_consulta %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_reportes' %}active{% endif %}" href="{% url 'web_reportes' %}">
               <i class="bi bi-file-earmark-bar-graph me-1"></i> Informes
             </a>
           </li>
           {% endif %}
-          {% if not request.user.es_administrativo %}
+          {% if not request.user.es_funcionario %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_semaforo' %}active{% endif %}" href="{% url 'web_semaforo' %}">
               <svg class="me-1 align-text-bottom" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
@@ -549,7 +552,14 @@
             </a>
           </li>
           {% endif %}
-          {% if request.user.es_admin or request.user.es_supervisor %}
+          {% if request.user.es_funcionario_social %}
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'web_casos_sociales' %}active{% endif %}" href="{% url 'web_casos_sociales' %}">
+              <i class="bi bi-people me-1"></i> Casos Sociales
+            </a>
+          </li>
+          {% endif %}
+          {% if request.user.es_admin or request.user.es_coordinador %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_auditoria' %}active{% endif %}" href="{% url 'web_auditoria' %}">
               <i class="bi bi-shield-check me-1"></i> Auditoría
@@ -642,6 +652,14 @@
   <!-- Bootstrap 5.3.3 JS Bundle -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="{% static 'js/chilean-mobile.js' %}"></script>
+  <script>
+    // Al abrir una ventana modal, el cursor queda en el campo marcado con data-autofocus
+    // (por ejemplo, el motivo de una anulación).
+    document.addEventListener('shown.bs.modal', function (event) {
+      const campo = event.target.querySelector('[data-autofocus]');
+      if (campo) campo.focus();
+    });
+  </script>
 
   <!-- Script Modo Offline y Sincronización Automática -->
   <script>

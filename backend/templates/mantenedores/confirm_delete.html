@@ -11,8 +11,23 @@
         <div class="alert alert-info" role="status">
           No se eliminará físicamente. El registro y sus relaciones históricas se conservarán, y dejará de aparecer en los mantenedores activos.
         </div>
+        {% if advertencias %}
+          <div class="alert alert-warning" role="alert">
+            <strong><i class="bi bi-exclamation-triangle-fill me-1"></i> Dependencias activas</strong>
+            <ul class="mb-0 mt-1">
+              {% for advertencia in advertencias %}<li>{{ advertencia }}</li>{% endfor %}
+            </ul>
+            <small class="d-block mt-1">Quedarán asociadas a un registro inactivo hasta que las reasignes.</small>
+          </div>
+        {% endif %}
         <form method="post">
           {% csrf_token %}
+          {% if advertencias %}
+            <div class="form-check mb-3">
+              <input class="form-check-input" type="checkbox" name="confirmar_dependencias" value="1" id="confirmar_dependencias" required>
+              <label class="form-check-label" for="confirmar_dependencias">Revisé las dependencias y quiero desactivar de todas formas.</label>
+            </div>
+          {% endif %}
           <button type="submit" class="btn btn-danger">Confirmar desactivación</button>
           <a href="{{ cancel_url }}" class="btn btn-outline-secondary">Cancelar</a>
         </form>

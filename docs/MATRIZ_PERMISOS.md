@@ -7,9 +7,10 @@ Describe quién puede hacer qué en el SGR, con mínimo privilegio y segregació
 | Perfil | Cómo se asigna | Ámbito de datos |
 |---|---|---|
 | **Administrador** | Rol `ADMINISTRADOR` o superusuario | Toda la comuna |
-| **Supervisor comunal** | Rol `SUPERVISOR` sin perfil delegado | Toda la comuna |
-| **Delegado territorial** | Rol `SUPERVISOR` con *Perfil Delegado* y una delegación asignada | Solo su delegación |
-| **Funcionario administrativo** | Rol `ADMINISTRATIVO` | Solo sus propios registros |
+| **Coordinador** | Rol `COORDINADOR` | Toda la comuna |
+| **Delegado** | Rol `DELEGADO` con una delegación asignada | Solo su delegación |
+| **Funcionario** | Rol `FUNCIONARIO` | Solo sus propios registros |
+| **Usuario de consulta** | Rol `CONSULTA` | Su ámbito, solo lectura (CU-38) |
 
 Los roles adicionales configurados en el mantenedor de roles pueden sumar permisos (`APROBAR_EVIDENCIA`, `REGISTRAR_ACTIVIDAD`, etc.).
 
@@ -19,7 +20,7 @@ Leyenda: ✅ permitido · 🔸 solo dentro de su ámbito · ❌ denegado (403) �
 
 ### Registros operativos
 
-| Recurso / operación | Administrador | Supervisor | Delegado | Funcionario |
+| Recurso / operación | Administrador | Coordinador | Delegado | Funcionario |
 |---|---|---|---|---|
 | Actividades: ver | ✅ | ✅ | 🔸 delegación | 🔸 propias |
 | Actividades: registrar | ✅ | ✅ | 🔸 | 🔸 propias |
@@ -35,9 +36,9 @@ Leyenda: ✅ permitido · 🔸 solo dentro de su ámbito · ❌ denegado (403) �
 
 ### Tableros, informes y auditoría
 
-| Recurso / operación | Administrador | Supervisor | Delegado | Funcionario |
+| Recurso / operación | Administrador | Coordinador | Delegado | Funcionario |
 |---|---|---|---|---|
-| Tablero principal | Panel Administrador | Panel Supervisor | **Panel Territorial** (su delegación) | Panel Administrativo |
+| Tablero principal | Panel Administrador | Panel Coordinador | **Panel Territorial** (su delegación) | Panel Funcionario |
 | Comparación territorial entre delegaciones | ✅ | ✅ | ❌ | ❌ |
 | Semáforo y alertas | ✅ | ✅ | 🔸 delegación | 🔸 alertas propias |
 | Tablero personal | ✅ | ✅ | ✅ | 🔸 propio |
@@ -46,7 +47,7 @@ Leyenda: ✅ permitido · 🔸 solo dentro de su ámbito · ❌ denegado (403) �
 
 ### Mantenedores (configuración)
 
-| Recurso / operación | Administrador | Supervisor | Delegado | Funcionario |
+| Recurso / operación | Administrador | Coordinador | Delegado | Funcionario |
 |---|---|---|---|---|
 | Delegaciones, cargos, roles, áreas, ítems, períodos, funcionarios (web) | ✅ | ❌ ³ | ❌ | ❌ |
 | Solicitantes (web) | ✅ | ✅ | ❌ | ❌ |

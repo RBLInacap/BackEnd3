@@ -7,7 +7,7 @@ permitidas y rechazos, incluidos intentos fuera de la delegación propia.
 from django.test import Client, TestCase
 from django.utils import timezone
 
-from sgr_app.models import Actividad, Cargo, Delegacion, Evidencia, Usuario
+from sgr_app.models import Actividad, Cargo, CompromisoAgenda, Delegacion, Evidencia, Usuario
 
 PASSWORD = 'TestPassword123!'
 PERMITIDO = 'permitido'      # la operación pasa la autorización (2xx o 400 de validación)
@@ -27,19 +27,19 @@ class MatrizPermisosTests(TestCase):
                 rol=Usuario.Rol.ADMINISTRADOR,
             ),
             'supervisor': Usuario.objects.create_user(
-                username='m.supervisor', password=PASSWORD, rol=Usuario.Rol.SUPERVISOR,
+                username='m.supervisor', password=PASSWORD, rol=Usuario.Rol.COORDINADOR,
             ),
             'delegado': Usuario.objects.create_user(
-                username='m.delegado', password=PASSWORD, rol=Usuario.Rol.SUPERVISOR,
-                es_delegado=True, delegacion=cls.del_a,
+                username='m.delegado', password=PASSWORD, rol=Usuario.Rol.DELEGADO,
+                delegacion=cls.del_a,
             ),
             'funcionario': Usuario.objects.create_user(
-                username='m.funcionario', password=PASSWORD, rol=Usuario.Rol.ADMINISTRATIVO,
+                username='m.funcionario', password=PASSWORD, rol=Usuario.Rol.FUNCIONARIO,
                 delegacion=cls.del_a, cargo=cargo,
             ),
         }
         otro = Usuario.objects.create_user(
-            username='m.otro', password=PASSWORD, rol=Usuario.Rol.ADMINISTRATIVO,
+            username='m.otro', password=PASSWORD, rol=Usuario.Rol.FUNCIONARIO,
             delegacion=cls.del_b, cargo=cargo,
         )
         hoy = timezone.localdate()
@@ -84,6 +84,27 @@ class MatrizPermisosTests(TestCase):
                 datos = self._cliente(perfil).get('/api/actividades/').json()
                 self.assertEqual({fila['id'] for fila in datos}, ids)
 
+    def test_detalle_de_compromiso_sin_actividad_de_origen(self):
+        """Regresión: un compromiso sin actividad provocaba un error 500 al funcionario."""
+        propio = CompromisoAgenda.objects.create(
+            solicitante='Junta Vecinal', delegacion=self.del_a,
+            responsable=self.perfiles['funcionario'], descripcion='Sin actividad',
+        )
+        ajeno = CompromisoAgenda.objects.create(
+            solicitante='Junta Vecinal', delegacion=self.del_b,
+            responsable=self.perfiles['supervisor'], descripcion='Sin actividad',
+        )
+        self._verificar(
+            {'administrador': PERMITIDO, 'supervisor': PERMITIDO,
+             'delegado': PERMITIDO, 'funcionario': PERMITIDO},
+            lambda c: c.get(f'/api/v1/compromisos/{propio.pk}/'),
+        )
+        self._verificar(
+            {'administrador': PERMITIDO, 'supervisor': PERMITIDO,
+             'delegado': FUERA_DE_ALCANCE, 'funcionario': FUERA_DE_ALCANCE},
+            lambda c: c.get(f'/api/v1/compromisos/{ajeno.pk}/'),
+        )
+
     def test_detalle_fuera_del_ambito_no_es_accesible(self):
         self._verificar(
             {'administrador': PERMITIDO, 'supervisor': PERMITIDO,
@@ -109,11 +130,34 @@ class MatrizPermisosTests(TestCase):
             lambda c: c.patch(f'/api/actividades/{self.act_propia.pk}/', {}, content_type='application/json'),
         )
 
-    def test_eliminar_actividades(self):
-        self._verificar(
-            {'delegado': DENEGADO, 'funcionario': DENEGADO},
-            lambda c: c.delete(f'/api/actividades/{self.act_propia.pk}/'),
+    def test_nadie_puede_eliminar_por_api(self):
+        """Normativa: ningún registro se elimina. La API rechaza DELETE (403 o 405) para todos."""
+        rutas = {
+            'delegaciones': (Delegacion, self.del_a.pk),
+            'usuarios': (Usuario, self.perfiles['funcionario'].pk),
+            'actividades': (Actividad, self.act_propia.pk),
+            'evidencias': (Evidencia, self.ev_propia.pk),
+        }
+        for recurso, (modelo, pk) in rutas.items():
+            for perfil in self.perfiles:
+                with self.subTest(recurso=recurso, perfil=perfil):
+                    response = self._cliente(perfil).delete(f'/api/{recurso}/{pk}/')
+                    self.assertIn(response.status_code, (403, 405))
+                    self.assertTrue(modelo.objects.filter(pk=pk).exists())
+
+    def test_anular_compromiso_por_api(self):
+        compromiso = CompromisoAgenda.objects.create(
+            solicitante='Junta Vecinal', delegacion=self.del_a,
+            responsable=self.perfiles['funcionario'], creado_por=self.perfiles['funcionario'],
         )
+        url = f'/api/v1/compromisos/{compromiso.pk}/anular/'
+        # El Funcionario anula desde la web; la API de compromisos no le permite cambios.
+        self.assertEqual(self._cliente('funcionario').post(url, {'motivo': 'x'}).status_code, 403)
+        delegado = self._cliente('delegado')
+        self.assertEqual(delegado.post(url, {}).status_code, 400)
+        self.assertEqual(delegado.post(url, {'motivo': 'Duplicado'}).status_code, 200)
+        self.assertTrue(CompromisoAgenda.todos.get(pk=compromiso.pk).anulado)
+        self.assertEqual(delegado.get(f'/api/v1/compromisos/{compromiso.pk}/').status_code, 404)
 
     def test_mantenedores_por_api_son_de_solo_lectura_para_todos(self):
         for recurso in ('delegaciones', 'cargos', 'periodos', 'catalogos', 'items-medicion', 'usuarios'):

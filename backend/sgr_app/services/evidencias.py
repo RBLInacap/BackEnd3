@@ -121,3 +121,8 @@ def metadatos_archivo_evidencia(archivo, subido_por):
         archivo._sgr_storage_name_set = True
     metadatos['subido_por'] = subido_por.get_username() if subido_por else None
     return metadatos
+
+
+# CU-29 (A3): al registrar una actividad se adjuntan hasta tres fotografías.
+MAX_FOTOS_POR_REGISTRO = 3
+MENSAJE_MAX_FOTOS = f'Puedes adjuntar hasta {MAX_FOTOS_POR_REGISTRO} fotografías por registro.'

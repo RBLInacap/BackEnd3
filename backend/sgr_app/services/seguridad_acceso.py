@@ -109,7 +109,12 @@ def _registrar_fallo(ambitos):
 def _limpiar(ambitos):
     from sgr_app.models import BloqueoAcceso
 
-    BloqueoAcceso.objects.filter(clave__in=[ambito.clave for ambito in ambitos]).delete()
+    # Por normativa no se borran registros: se reinicia el contador y se levanta el bloqueo.
+    BloqueoAcceso.objects.filter(clave__in=[ambito.clave for ambito in ambitos]).update(
+        intentos_fallidos=0,
+        bloqueado_hasta=None,
+        primer_fallo=timezone.now(),
+    )
 
 
 # --- API pública: inicio de sesión -------------------------------------------

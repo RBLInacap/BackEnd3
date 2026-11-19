@@ -95,6 +95,8 @@ MIDDLEWARE = [
     'sgr_app.dos_factores.Exigir2FAMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'sgr_app.middleware.ContentSecurityPolicyMiddleware',
+    'sgr_app.middleware.AuditarAccesoDenegadoMiddleware',
+    'sgr_app.middleware.SoloLecturaConsultaMiddleware',
 ]
 
 ROOT_URLCONF = 'sgr_backend.urls'
@@ -271,6 +273,8 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'sgr_app.permissions.AuthenticatedRolePermission',
     ],
+    # HU-26: los 403 de la API quedan en la auditoría.
+    'EXCEPTION_HANDLER': 'sgr_app.services.auditoria_acceso.exception_handler_api',
     # RNF-016: contrato OpenAPI 3 generado desde el código.
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
@@ -322,7 +326,7 @@ TRUSTED_PROXY_COUNT = env('TRUSTED_PROXY_COUNT', default=0, cast=int)
 LOGIN_MAX_FAILED_ATTEMPTS = env('LOGIN_MAX_FAILED_ATTEMPTS', default=5, cast=int)
 LOGIN_MAX_FAILED_ATTEMPTS_PER_IP = env('LOGIN_MAX_FAILED_ATTEMPTS_PER_IP', default=30, cast=int)
 # Roles que deben activar verificación en dos pasos (RNF-004), p. ej.
-# "ADMINISTRADOR,SUPERVISOR". Vacío = opcional para todos.
+# "ADMINISTRADOR,COORDINADOR,DELEGADO". Vacío = opcional para todos.
 TWO_FACTOR_REQUIRED_ROLES = env('TWO_FACTOR_REQUIRED_ROLES', default='', cast=Csv())
 TWO_FACTOR_MAX_FAILED_ATTEMPTS = env('TWO_FACTOR_MAX_FAILED_ATTEMPTS', default=5, cast=int)
 LOGIN_LOCKOUT_MINUTES = env('LOGIN_LOCKOUT_MINUTES', default=15, cast=int)
@@ -416,6 +420,7 @@ LOGGING = {
     'disable_existing_loggers': False,
     'filters': {
         'excluir_health': {'()': 'sgr_app.logging_filters.ExcluirHealthCheck'},
+        'sin_traceback_4xx': {'()': 'sgr_app.logging_filters.SinTracebackEnErroresCliente'},
     },
     'formatters': {
         'detallado': {
@@ -455,6 +460,7 @@ LOGGING = {
                 *(['correo_admins'] if ALERTAS_EMAIL else []),
             ],
             'level': 'WARNING',
+            'filters': ['sin_traceback_4xx'],
             'propagate': False,
         },
         'django.security': {
