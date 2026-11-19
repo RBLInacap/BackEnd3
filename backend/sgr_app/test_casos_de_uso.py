@@ -289,6 +289,19 @@ class CasosDeUsoTests(TestCase):
         })
         self.assertTrue(CasoSocial.objects.filter(codigo_caso='CS-001', delegacion=self.del_a).exists())
 
+    def test_cu28_area_territorial_accede_al_configurar_sus_tipos_de_atencion(self):
+        # CU-28 «Funcionario (área social o territorial)»: el acceso se otorga por
+        # configuración. Basta con que el área tenga tipos de atención social activos.
+        funcionario = self._c(self.func)
+        self.assertEqual(funcionario.get('/casos-sociales/').status_code, 403)
+        tipo = TipoAtencionSocial.objects.create(
+            area=self.area_otra, nombre='Orientación en terreno',
+        )
+        self.assertEqual(funcionario.get('/casos-sociales/').status_code, 200)
+        tipo.activo = False
+        tipo.save()
+        self.assertEqual(funcionario.get('/casos-sociales/').status_code, 403)
+
     # --- CU-38 ----------------------------------------------------------------
     def test_cu38_usuario_de_consulta_solo_lee(self):
         consulta = self._c(self.consulta)
