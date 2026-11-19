@@ -149,13 +149,35 @@ class Command(BaseCommand):
             ("Club Adulto Mayor Esperanza", dels["ANT"], func_centro, datetime.date(2026, 9, 18), "Taller de postulación Fondo Presidente de la República", CompromisoAgenda.Estado.INGRESADO),
         ]
         for sol, dl, resp, f_comp, desc, est in compromisos_data:
-            CompromisoAgenda.objects.get_or_create(
+            # Mantener ambas fechas alineadas y registrar la fecha de realización de
+            # los compromisos realizados (ver verificar_coherencia).
+            fecha_realizacion = None
+            if est == CompromisoAgenda.Estado.REALIZADO:
+                fecha_realizacion = timezone.make_aware(
+                    datetime.datetime.combine(f_comp - datetime.timedelta(days=2), datetime.time(12, 0))
+                )
+            compromiso, _ = CompromisoAgenda.objects.get_or_create(
                 solicitante=sol,
                 delegacion=dl,
                 responsable=resp,
                 fecha_comprometida=f_comp,
-                defaults={"descripcion": desc, "estado": est, "area_apoyo": "Operaciones"}
+                defaults={
+                    "descripcion": desc, "estado": est, "area_apoyo": "Operaciones",
+                    "fecha_compromiso": f_comp, "fecha_realizacion": fecha_realizacion,
+                },
             )
+            # Corrige registros sembrados por versiones anteriores del comando.
+            campos = []
+            if compromiso.fecha_compromiso != f_comp:
+                compromiso.fecha_compromiso = f_comp
+                campos.append("fecha_compromiso")
+            if compromiso.estado == CompromisoAgenda.Estado.REALIZADO and not compromiso.fecha_realizacion:
+                compromiso.fecha_realizacion = fecha_realizacion
+                campos.append("fecha_realizacion")
+            if campos:
+                CompromisoAgenda.objects.filter(pk=compromiso.pk).update(
+                    **{c: getattr(compromiso, c) for c in campos}
+                )
 
         # 8. Actividades y Evidencias (Códigos únicos alfanuméricos inmutables)
         # Actividades para Funcionario Centro

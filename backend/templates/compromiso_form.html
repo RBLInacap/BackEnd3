@@ -16,7 +16,7 @@
       </div>
     </div>
 
-    <form method="post">
+    <form method="post" enctype="multipart/form-data">
       {% csrf_token %}
       {% if huella_concurrencia %}<input type="hidden" name="_huella" value="{{ huella_concurrencia }}">{% endif %}
       <div class="card-body p-4">
@@ -34,6 +34,17 @@
               {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
             </div>
           {% endfor %}
+          {% if object.pk %}
+            <div class="col-12">
+              <label class="form-label fw-semibold" for="fotosCompromiso">Agregar fotografías</label>
+              <input type="file" id="fotosCompromiso" name="fotos" accept="image/jpeg,image/png,image/webp" multiple class="form-control">
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="reemplazar_fotos" id="reemplazarFotosForm">
+                <label class="form-check-label" for="reemplazarFotosForm">Reemplazar las fotografías actuales</label>
+              </div>
+              <div class="form-text">Las fotos se agregan a la actividad asociada y quedan pendientes de validación. Al reemplazar, las anteriores se conservan en el historial y se reinicia la revisión.</div>
+            </div>
+          {% endif %}
         </div>
         {% if periodo %}
           <div class="form-text mt-3">

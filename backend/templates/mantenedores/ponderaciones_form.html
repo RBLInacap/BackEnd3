@@ -113,6 +113,26 @@
               </article>
             </template>
 
+            <fieldset class="border rounded p-3 mt-3">
+              <legend class="float-none w-auto px-2 fs-6 fw-semibold mb-0">Aplicar también a períodos futuros (opcional)</legend>
+              {% if periodos_futuros %}
+                <p class="small text-secondary mb-2">
+                  La configuración vigente de este cargo (que debe sumar 100%) se copiará a los períodos marcados.
+                  Los ítems del período destino que no estén aquí se desactivarán, sin borrarse.
+                </p>
+                <div class="d-flex flex-wrap gap-3">
+                  {% for futuro in periodos_futuros %}
+                    <div class="form-check">
+                      <input class="form-check-input" type="checkbox" name="periodos_futuros" value="{{ futuro.pk }}" id="periodo-futuro-{{ futuro.pk }}" {% if futuro.pk in periodos_futuros_seleccionados %}checked{% endif %}>
+                      <label class="form-check-label" for="periodo-futuro-{{ futuro.pk }}">{{ futuro.nombre }} ({{ futuro.fecha_inicio|date:"d/m/Y" }})</label>
+                    </div>
+                  {% endfor %}
+                </div>
+              {% else %}
+                <p class="small text-secondary mb-0">No hay períodos futuros abiertos. Crea el período en Mantenedores &gt; Períodos para poder aplicarle esta configuración.</p>
+              {% endif %}
+            </fieldset>
+
             <div class="d-flex flex-wrap justify-content-between gap-2 mt-3">
               <button type="button" class="btn btn-outline-secondary" id="agregarPonderacionItem">Agregar ítem</button>
               <button type="submit" class="btn btn-danger fw-semibold">Validar y guardar conjunto (100%)</button>

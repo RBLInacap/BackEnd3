@@ -20,8 +20,6 @@ import time
 from datetime import date
 from django.db import IntegrityError, connections, models, router, transaction
 from django.db.utils import OperationalError
-from django.db.models.signals import post_delete
-from django.dispatch import receiver
 from django.contrib.auth.models import AbstractUser, UserManager
 from django.utils import timezone
 from django.core.exceptions import ValidationError
@@ -72,6 +70,8 @@ PERMISOS_PREDETERMINADOS_POR_ROL = {
         'GESTIONAR_COORDINACION',
     ),
     'ADMINISTRATIVO': ('REGISTRAR_ACTIVIDAD', 'VER_DASHBOARD'),
+    # CU-38: perfil de solo lectura de tableros e informes de su ámbito.
+    'CONSULTA': ('VER_DASHBOARD',),
 }
 
 
@@ -364,6 +364,7 @@ class Usuario(AbstractUser):
         ADMINISTRADOR = 'ADMINISTRADOR', 'Administrador'
         SUPERVISOR = 'SUPERVISOR', 'Supervisor'
         ADMINISTRATIVO = 'ADMINISTRATIVO', 'Administrativo'
+        CONSULTA = 'CONSULTA', 'Usuario de consulta'
 
     rol = models.CharField(max_length=20, choices=Rol.choices, default=Rol.ADMINISTRATIVO)
     es_delegado = models.BooleanField(
@@ -398,6 +399,7 @@ class Usuario(AbstractUser):
                     'ADMINISTRADOR',
                     'SUPERVISOR',
                     'ADMINISTRATIVO',
+                    'CONSULTA',
                 ]),
                 name='usuario_rol_valido',
             ),
@@ -480,6 +482,23 @@ class Usuario(AbstractUser):
         )
 
     @property
+    def es_consulta(self) -> bool:
+        """CU-38: usuario de solo lectura (tableros e informes de su ámbito)."""
+        return self.rol == self.Rol.CONSULTA and not self.is_superuser
+
+    @property
+    def es_funcionario_social(self) -> bool:
+        """CU-28 (HU-03): Funcionario de un área con tipos de atención social activos."""
+        return bool(
+            self.es_administrativo
+            and self.area_entidad_id
+            and TipoAtencionSocial.objects.filter(
+                area_id=self.area_entidad_id,
+                activo=True,
+            ).exists()
+        )
+
+    @property
     def es_administrativo(self) -> bool:
         return (
             self.rol == self.Rol.ADMINISTRATIVO
@@ -498,6 +517,8 @@ class Usuario(AbstractUser):
 
     @property
     def esta_limitado_a_delegacion(self) -> bool:
+        if self.rol == self.Rol.CONSULTA:
+            return bool(self.delegacion_id)
         return self.es_delegado or (
             self.tiene_permiso('GESTIONAR_DELEGACION')
             and not self.tiene_permiso('GESTIONAR_COORDINACION')
@@ -629,21 +650,46 @@ class Usuario(AbstractUser):
     verDashboardPersonal = ver_dashboard_personal
 
 
+class CodigoRecuperacionVigenteManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(invalidado_en__isnull=True)
+
+
 class PasswordResetCode(models.Model):
-    user = models.OneToOneField(
+    # Por normativa los códigos no se borran: al usarse o reemplazarse se invalidan
+    # y quedan como historial (`todos`). `objects` entrega solo el código vigente.
+    user = models.ForeignKey(
         Usuario,
-        on_delete=models.CASCADE,
-        related_name='password_reset_code',
+        on_delete=models.PROTECT,
+        related_name='codigos_recuperacion',
     )
     code_hash = models.CharField(max_length=256)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     attempts = models.PositiveSmallIntegerField(default=0)
     verified_at = models.DateTimeField(null=True, blank=True)
+    invalidado_en = models.DateTimeField(null=True, blank=True)
+    motivo_invalidacion = models.CharField(max_length=20, blank=True, default='')
+
+    objects = CodigoRecuperacionVigenteManager()
+    todos = models.Manager()
 
     class Meta:
         verbose_name = 'Código de recuperación de contraseña'
         verbose_name_plural = 'Códigos de recuperación de contraseña'
+        base_manager_name = 'todos'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user'],
+                condition=models.Q(invalidado_en__isnull=True),
+                name='codigo_recuperacion_vigente_unico',
+            ),
+        ]
+
+    def invalidar(self, motivo):
+        self.invalidado_en = timezone.now()
+        self.motivo_invalidacion = motivo
+        self.save(update_fields=['invalidado_en', 'motivo_invalidacion'])
 
 
 class EjecucionTarea(models.Model):
@@ -785,7 +831,9 @@ class Solicitante(models.Model):
     modificarContacto = modificar_contacto
 
     def eliminar_contacto(self):
-        self.delete()
+        """Baja lógica: por normativa el solicitante no se borra, se desactiva."""
+        self.estado = False
+        self.save(update_fields=['estado'])
 
     eliminarContacto = eliminar_contacto
 
@@ -1573,6 +1621,11 @@ class Actividad(models.Model):
 # =============================================================================
 # 2. CLASE COMPROMISO / COMPROMISOAGENDA
 # =============================================================================
+class CompromisoVigenteManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(anulado=False)
+
+
 class CompromisoAgenda(models.Model):
     """
     Entidad de seguimiento operativo asociada a una actividad (Clase Compromiso).
@@ -1615,12 +1668,63 @@ class CompromisoAgenda(models.Model):
     creado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, related_name='compromisos_creados')
     actualizado_en = models.DateTimeField(auto_now=True)
     fecha_realizacion = models.DateTimeField(null=True, blank=True)
+    # Baja lógica: por normativa los compromisos no se eliminan, se anulan con motivo.
+    anulado = models.BooleanField(default=False, verbose_name="Compromiso Anulado")
+    anulado_en = models.DateTimeField(null=True, blank=True)
+    anulado_por = models.ForeignKey(
+        Usuario,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='compromisos_anulados',
+    )
+    motivo_anulacion = models.TextField(blank=True, default='')
+
+    # `objects` solo entrega compromisos vigentes (tableros, alertas, indicadores);
+    # `todos` incluye los anulados para historial y auditoría.
+    objects = CompromisoVigenteManager()
+    todos = models.Manager()
 
     class Meta:
         db_table = 'Compromisos'
         verbose_name = "Compromiso"
         verbose_name_plural = "Compromisos"
         ordering = ['fecha_compromiso']
+        base_manager_name = 'todos'
+
+    def anular(self, usuario, motivo):
+        motivo = (motivo or '').strip()
+        if not motivo:
+            raise ValidationError({'motivo_anulacion': 'Indica el motivo de la anulación.'})
+        if self.anulado:
+            raise ValidationError({'anulado': 'El compromiso ya está anulado.'})
+        self.anulado = True
+        self.anulado_en = timezone.now()
+        self.anulado_por = usuario
+        self.motivo_anulacion = motivo
+        self.save(update_fields=[
+            'anulado',
+            'anulado_en',
+            'anulado_por',
+            'motivo_anulacion',
+            'actualizado_en',
+        ])
+
+    def reactivar(self):
+        """Revierte una anulación. Los datos de la anulación quedan en la auditoría."""
+        if not self.anulado:
+            raise ValidationError({'anulado': 'El compromiso no está anulado.'})
+        self.anulado = False
+        self.anulado_en = None
+        self.anulado_por = None
+        self.motivo_anulacion = ''
+        self.save(update_fields=[
+            'anulado',
+            'anulado_en',
+            'anulado_por',
+            'motivo_anulacion',
+            'actualizado_en',
+        ])
 
     def __str__(self):
         return f"Compromiso #{self.id} - {self.territorio} ({self.estado})"
@@ -1694,6 +1798,8 @@ class CompromisoAgenda(models.Model):
                 'estado': f'No se permite cambiar de {self.estado} a {nuevo_estado}.'
             })
         if nuevo_estado == self.Estado.REALIZADO:
+            if not self.actividad_id:
+                raise ValidationError({'estado': 'El compromiso no tiene una actividad asociada. Edítalo para asociarle una actividad y adjunta la evidencia; podrá marcarse como realizado cuando el Delegado la apruebe.'})
             evidencias = (
                 self.actividad.evidencias.all()
                 if self.actividad_id
@@ -1870,6 +1976,11 @@ class ComentarioActividad(models.Model):
 # =============================================================================
 # 3. CLASE EVIDENCIA
 # =============================================================================
+class EvidenciaVigenteManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(reemplazada_en__isnull=True)
+
+
 class Evidencia(models.Model):
     """
     Entidad que almacena los medios de prueba y archivos adjuntos (Clase Evidencia).
@@ -1898,7 +2009,8 @@ class Evidencia(models.Model):
         blank=True,
         related_name='evidencias_subidas',
     )
-    archivos_eliminados_en = models.DateTimeField(null=True, blank=True)
+    # Retención (RNF-017): al vencer, los archivos se deshabilitan; nunca se borran.
+    archivos_deshabilitados_en = models.DateTimeField(null=True, blank=True)
     estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.PENDIENTE, verbose_name="Estado de Validación")
     observacion = models.TextField(blank=True, null=True, verbose_name="Observacion")
     observacion_rechazo = models.TextField(blank=True, null=True)
@@ -1906,14 +2018,30 @@ class Evidencia(models.Model):
     verificador = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='evidencias_validadas')
     fecha_validacion = models.DateTimeField(null=True, blank=True)
     fecha_subida = models.DateTimeField(auto_now_add=True)
+    # Reemplazo: por normativa la foto anterior no se borra; queda en el historial
+    # (`todas`) y deja de contar en la revisión y el avance (`objects`).
+    reemplazada_en = models.DateTimeField(null=True, blank=True)
+    reemplazada_por = models.ForeignKey(
+        Usuario,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='evidencias_reemplazadas',
+    )
+
+    objects = EvidenciaVigenteManager()
+    todas = models.Manager()
 
     class Meta:
+        base_manager_name = 'todas'
         db_table = 'Evidencias'
         verbose_name = "Evidencia"
         verbose_name_plural = "Evidencias"
 
     @property
     def get_foto_url(self):
+        if self.archivos_deshabilitados_en:
+            return '/static/img/evidencia_terreno_placeholder.svg'
         if self.archivo:
             try:
                 return self.archivo.url
@@ -1930,6 +2058,8 @@ class Evidencia(models.Model):
 
     @property
     def get_foto_url_2(self):
+        if self.archivos_deshabilitados_en:
+            return ''
         if self.archivo_foto_2:
             try:
                 return self.archivo_foto_2.url
@@ -1939,6 +2069,8 @@ class Evidencia(models.Model):
 
     @property
     def get_foto_url_3(self):
+        if self.archivos_deshabilitados_en:
+            return ''
         if self.archivo_foto_3:
             try:
                 return self.archivo_foto_3.url
@@ -1947,6 +2079,12 @@ class Evidencia(models.Model):
         return self.url_foto_simulada_3 or ''
 
     CAMPOS_ARCHIVO = ('archivo_foto', 'archivo_foto_2', 'archivo_foto_3')
+
+    def reemplazar(self, usuario):
+        """Retira la evidencia de la revisión sin borrarla (queda en el historial)."""
+        self.reemplazada_en = timezone.now()
+        self.reemplazada_por = usuario
+        self.save(update_fields=['reemplazada_en', 'reemplazada_por'])
 
     MENSAJE_AUTOVALIDACION = (
         'No puedes validar evidencias de tus propias actividades ni las que subiste tú: '
@@ -2100,7 +2238,7 @@ class Evidencia(models.Model):
                         super().save(*args, **kwargs)
                     break
                 except IntegrityError:
-                    if not type(self).objects.filter(
+                    if not type(self)._base_manager.filter(
                         codigo_verificador=codigo,
                     ).exists():
                         raise
@@ -2110,7 +2248,7 @@ class Evidencia(models.Model):
                 )
         else:
             if self.pk and not self._state.adding:
-                codigo_guardado = type(self).objects.filter(
+                codigo_guardado = type(self)._base_manager.filter(
                     pk=self.pk,
                 ).values_list('codigo_verificador', flat=True).first()
                 if codigo_guardado != self.codigo_verificador:
@@ -2125,14 +2263,6 @@ class Evidencia(models.Model):
     def __str__(self):
         estado_str = "Aprobada" if self.estado else "Pendiente/Rechazada"
         return f"Evidencia #{self.id} - Actividad #{self.actividad.id} ({estado_str})"
-
-
-@receiver(post_delete, sender=Evidencia, dispatch_uid='sgr_delete_evidence_files')
-def eliminar_archivos_evidencia_al_eliminar_registro(sender, instance, **kwargs):
-    for campo in ('archivo', 'archivo_foto', 'archivo_foto_2', 'archivo_foto_3'):
-        archivo = getattr(instance, campo)
-        if archivo and archivo.name:
-            archivo.storage.delete(archivo.name)
 
 
 # =============================================================================
@@ -2466,6 +2596,9 @@ class AjusteIncentivo(models.Model):
             raise PermissionError("El funcionario no cuenta con el rol o los permisos requeridos.")
         if self.funcionario_id == funcionarioAprobador.id:
             raise ValueError("Un funcionario no puede auto-aprobar su propio ajuste de incentivo.")
+        if self.registrado_por_id and self.registrado_por_id == funcionarioAprobador.id:
+            # CU-20: segregación de funciones (maker-checker).
+            raise ValueError("Quien registró el ajuste no puede aprobarlo; debe decidirlo otra persona.")
         self.estado = "APROBADO"
         self.aprobadoPor = funcionarioAprobador
         self.fechaAprobacion = timezone.now()
@@ -2481,6 +2614,9 @@ class AjusteIncentivo(models.Model):
             raise PermissionError("El funcionario no cuenta con los permisos requeridos para rechazar ajustes.")
         if self.funcionario_id == funcionarioAprobador.id:
             raise ValueError("Un funcionario no puede rechazar o evaluar su propio ajuste de incentivo.")
+        if self.registrado_por_id and self.registrado_por_id == funcionarioAprobador.id:
+            # CU-20: segregación de funciones (maker-checker).
+            raise ValueError("Quien registró el ajuste no puede rechazarlo; debe decidirlo otra persona.")
         self.estado = "RECHAZADO"
         self.aprobadoPor = funcionarioAprobador
         self.fechaAprobacion = timezone.now()
@@ -2750,11 +2886,43 @@ class AtencionSocial(models.Model):
 # =============================================================================
 # 6. CLASE AUDITORIA / REGISTROAUDITORIA
 # =============================================================================
+def _registrar_intento_alteracion_auditoria(operacion, identificadores):
+    """HU-30 / CU-18: el intento de alterar la auditoría se deniega y queda registrado.
+
+    Se escribe en el log de seguridad y como evento de auditoría. Si el intento
+    ocurre dentro de una transacción que luego se revierte, el log se conserva.
+    """
+    from sgr_app.services.contexto import usuario_actual
+
+    usuario = usuario_actual()
+    identificadores = [str(identificador) for identificador in identificadores][:20]
+    logging.getLogger('sgr.security').warning(
+        'Intento de alterar la auditoría: operacion=%s registros=%s usuario=%r',
+        operacion, identificadores, getattr(usuario, 'username', None),
+    )
+    try:
+        RegistroAuditoria(
+            usuario=usuario,
+            funcionario=usuario,
+            evento='INTENTO_ALTERACION',
+            accion='INTENTO_ALTERAR_AUDITORIA',
+            entidad='RegistroAuditoria',
+            identificador=(identificadores[0] if identificadores else '0')[:50],
+            identificador_registro=(identificadores[0] if identificadores else '0')[:50],
+            valor_anterior=None,
+            valor_nuevo={'operacion': operacion, 'registros': identificadores},
+        ).save()
+    except Exception:
+        logging.getLogger('sgr.security').exception('No se pudo registrar el intento de alteración.')
+
+
 class RegistroAuditoriaQuerySet(models.QuerySet):
     def update(self, **kwargs):
+        _registrar_intento_alteracion_auditoria('UPDATE', self.values_list('pk', flat=True))
         raise ValidationError('Los registros de auditoría son inmutables.')
 
     def delete(self):
+        _registrar_intento_alteracion_auditoria('DELETE', self.values_list('pk', flat=True))
         raise ValidationError('Los registros de auditoría no se pueden eliminar.')
 
 
@@ -2792,6 +2960,7 @@ class RegistroAuditoria(models.Model):
 
     def save(self, *args, **kwargs):
         if self.pk and type(self).objects.filter(pk=self.pk).exists():
+            _registrar_intento_alteracion_auditoria('UPDATE', [self.pk])
             raise ValidationError('Los registros de auditoría son inmutables.')
         self._normalizar_campos_obligatorios()
         super().save(*args, **kwargs)
@@ -2823,6 +2992,7 @@ class RegistroAuditoria(models.Model):
             )
 
     def delete(self, *args, **kwargs):
+        _registrar_intento_alteracion_auditoria('DELETE', [self.pk])
         raise ValidationError('Los registros de auditoría no se pueden eliminar.')
 
     def __str__(self):
@@ -2864,3 +3034,91 @@ Periodo = PeriodoMedicion
 Item = ItemMedicion
 MetaModel = Meta
 Auditoria = RegistroAuditoria
+
+
+# =============================================================================
+# REGLAS Y SEGUIMIENTO DE ALERTAS OPERATIVAS (HU-31, CU-07 y CU-37)
+# =============================================================================
+class ReglaAlerta(models.Model):
+    """Versión de una regla de alerta (CU-07).
+
+    Por normativa no se edita ni se borra: cada cambio crea una versión nueva con
+    su vigencia; la vigente es la última con `vigente_desde` <= ahora.
+    """
+
+    class Tipo(models.TextChoices):
+        VENCIMIENTO = 'VENCIMIENTO', 'Vencimiento de compromisos'
+        PLAZO_PROXIMO = 'PLAZO_PROXIMO', 'Plazo próximo'
+        EVIDENCIA_PENDIENTE = 'EVIDENCIA_PENDIENTE', 'Evidencias pendientes'
+        RENDIMIENTO_BAJO = 'RENDIMIENTO_BAJO', 'Rendimiento bajo'
+        INACTIVIDAD = 'INACTIVIDAD', 'Inactividad'
+
+    DESTINATARIOS = (
+        ('FUNCIONARIO', 'Funcionario'),
+        ('DELEGADO', 'Delegado'),
+        ('COORDINADOR', 'Coordinador'),
+        ('ADMINISTRADOR', 'Administrador'),
+    )
+
+    tipo = models.CharField(max_length=30, choices=Tipo.choices, db_index=True)
+    activa = models.BooleanField(default=True)
+    umbral = models.FloatField(null=True, blank=True)
+    destinatarios = models.JSONField(default=list)
+    vigente_desde = models.DateTimeField(default=timezone.now)
+    creada_por = models.ForeignKey(
+        Usuario, on_delete=models.PROTECT, null=True, blank=True, related_name='reglas_alerta',
+    )
+    creada_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['tipo', '-vigente_desde', '-pk']
+        verbose_name = 'Regla de alerta'
+        verbose_name_plural = 'Reglas de alerta'
+
+    def save(self, *args, **kwargs):
+        if self.pk and not self._state.adding:
+            raise ValidationError('Las reglas de alerta no se modifican: registra una nueva versión.')
+        super().save(*args, **kwargs)
+
+
+class AlertaGenerada(models.Model):
+    """Alerta ya generada y la regla con que se generó (CU-07).
+
+    "Un cambio de regla no altera las alertas ya generadas": mientras su condición
+    siga abierta, la alerta se evalúa con la regla guardada aquí y no con la
+    vigente. Las situaciones nuevas usan la regla vigente. No se edita ni se borra.
+    """
+
+    clave = models.CharField(max_length=200, unique=True)
+    tipo = models.CharField(max_length=30, db_index=True)
+    regla = models.ForeignKey(
+        ReglaAlerta, on_delete=models.PROTECT, null=True, blank=True, related_name='alertas_generadas',
+        help_text='Versión de la regla usada; vacía si se usaron los valores por defecto.',
+    )
+    regla_activa = models.BooleanField(default=True)
+    regla_umbral = models.FloatField(null=True, blank=True)
+    regla_destinatarios = models.JSONField(default=list)
+    generada_en = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        verbose_name = 'Alerta generada'
+        verbose_name_plural = 'Alertas generadas'
+
+    def save(self, *args, **kwargs):
+        if self.pk and not self._state.adding:
+            raise ValidationError('Una alerta generada no se modifica.')
+        super().save(*args, **kwargs)
+
+
+class AlertaRevisada(models.Model):
+    """Marca de revisión de una alerta (CU-37). La alerta original no se elimina."""
+
+    clave = models.CharField(max_length=200, unique=True)
+    tipo = models.CharField(max_length=30)
+    revisada_por = models.ForeignKey(Usuario, on_delete=models.PROTECT, related_name='alertas_revisadas')
+    revisada_en = models.DateTimeField(default=timezone.now)
+    comentario = models.CharField(max_length=500, blank=True, default='')
+
+    class Meta:
+        verbose_name = 'Alerta revisada'
+        verbose_name_plural = 'Alertas revisadas'

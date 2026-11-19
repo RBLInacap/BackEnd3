@@ -94,8 +94,8 @@
                     {% if ev.metadatos.nombre_archivo %}· {{ ev.metadatos.nombre_archivo }}{% endif %}
                   </div>
                 {% endif %}
-                {% if ev.archivos_eliminados_en %}
-                  <div class="text-warning-emphasis">Archivo retirado según política de retención el {{ ev.archivos_eliminados_en|date:"d/m/Y" }}.</div>
+                {% if ev.archivos_deshabilitados_en %}
+                  <div class="text-warning-emphasis">Archivo deshabilitado según política de retención el {{ ev.archivos_deshabilitados_en|date:"d/m/Y" }}. Se conserva en el archivo institucional.</div>
                 {% endif %}
                 {% if ev.fotos_adicionales %}
                   <div class="d-flex gap-1 mt-2 align-items-center">

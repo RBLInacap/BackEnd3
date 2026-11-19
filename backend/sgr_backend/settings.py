@@ -95,6 +95,8 @@ MIDDLEWARE = [
     'sgr_app.dos_factores.Exigir2FAMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'sgr_app.middleware.ContentSecurityPolicyMiddleware',
+    'sgr_app.middleware.AuditarAccesoDenegadoMiddleware',
+    'sgr_app.middleware.SoloLecturaConsultaMiddleware',
 ]
 
 ROOT_URLCONF = 'sgr_backend.urls'
@@ -271,6 +273,8 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'sgr_app.permissions.AuthenticatedRolePermission',
     ],
+    # HU-26: los 403 de la API quedan en la auditoría.
+    'EXCEPTION_HANDLER': 'sgr_app.services.auditoria_acceso.exception_handler_api',
     # RNF-016: contrato OpenAPI 3 generado desde el código.
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
@@ -416,6 +420,7 @@ LOGGING = {
     'disable_existing_loggers': False,
     'filters': {
         'excluir_health': {'()': 'sgr_app.logging_filters.ExcluirHealthCheck'},
+        'sin_traceback_4xx': {'()': 'sgr_app.logging_filters.SinTracebackEnErroresCliente'},
     },
     'formatters': {
         'detallado': {
@@ -455,6 +460,7 @@ LOGGING = {
                 *(['correo_admins'] if ALERTAS_EMAIL else []),
             ],
             'level': 'WARNING',
+            'filters': ['sin_traceback_4xx'],
             'propagate': False,
         },
         'django.security': {

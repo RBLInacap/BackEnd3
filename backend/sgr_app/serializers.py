@@ -135,13 +135,21 @@ class EvidenciaSerializer(serializers.ModelSerializer):
             'url_foto_simulada', 'url_foto_simulada_2', 'url_foto_simulada_3',
             'hash_sha256', 'estado', 'verificador', 'verificador_nombre',
             'fecha_validacion', 'observacion', 'fecha_subida', 'metadatos',
-            'subido_por', 'subido_por_nombre', 'archivos_eliminados_en',
+            'subido_por', 'subido_por_nombre', 'archivos_deshabilitados_en',
         ]
         read_only_fields = [
             'id', 'codigo_verificador', 'hash_sha256', 'fecha_subida',
             'estado', 'verificador', 'fecha_validacion',
-            'metadatos', 'subido_por', 'subido_por_nombre', 'archivos_eliminados_en',
+            'metadatos', 'subido_por', 'subido_por_nombre', 'archivos_deshabilitados_en',
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.archivos_deshabilitados_en:
+            # Retención vencida: el archivo se conserva, pero ya no se entrega su enlace.
+            for campo in ('archivo_foto', 'archivo_foto_2', 'archivo_foto_3'):
+                data[campo] = None
+        return data
 
     def validate(self, attrs):
         actividad = attrs.get('actividad')

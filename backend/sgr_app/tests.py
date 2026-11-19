@@ -64,7 +64,7 @@ class MatrizSGRTestSuite(TestCase):
     def test_user_roles_are_limited_and_delegate_is_a_supervisor_profile(self):
         self.assertEqual(
             set(Usuario.Rol.values),
-            {'ADMINISTRADOR', 'SUPERVISOR', 'ADMINISTRATIVO'},
+            {'ADMINISTRADOR', 'SUPERVISOR', 'ADMINISTRATIVO', 'CONSULTA'},  # CU-38
         )
         self.assertEqual(self.verificador.rol, Usuario.Rol.SUPERVISOR)
         self.assertTrue(self.verificador.es_delegado)
@@ -894,6 +894,10 @@ class MatrizSGRTestSuite(TestCase):
         self.assertTrue(usuario.check_password('NewSecurePassword456!'))
         self.assertFalse(usuario.check_password('OldPassword123!'))
         self.assertFalse(PasswordResetCode.objects.filter(user=usuario).exists())
+        # Normativa: el código usado no se borra, queda invalidado como historial.
+        historial = PasswordResetCode.todos.get(pk=reset_code.pk)
+        self.assertIsNotNone(historial.invalidado_en)
+        self.assertEqual(historial.motivo_invalidacion, 'USADO')
 
         final_response = client.get('/password-reset/complete/')
         self.assertEqual(final_response.status_code, 200)
@@ -964,8 +968,10 @@ class MatrizSGRTestSuite(TestCase):
         self.assertContains(list_response, self.delegacion.nombre)
         self.assertEqual(list_response.context['object_list'].count(), 1)
 
+        # CU-01: la delegación tiene funcionarios activos, por lo que se confirma el aviso.
         delete_response = client.post(
             f'/mantenedores/delegaciones/{self.delegacion.pk}/desactivar/',
+            {'confirmar_dependencias': '1'},
         )
         self.assertRedirects(delete_response, '/mantenedores/delegaciones/')
         self.delegacion.refresh_from_db()
@@ -1041,6 +1047,7 @@ class MatrizSGRTestSuite(TestCase):
             with self.assertRaises(IntegrityError):
                 client.post(
                     f'/mantenedores/delegaciones/{self.delegacion.pk}/desactivar/',
+                    {'confirmar_dependencias': '1'},
                 )
 
         self.delegacion.refresh_from_db()

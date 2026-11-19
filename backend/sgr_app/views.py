@@ -27,7 +27,11 @@ from sgr_app.models import (
     ItemMedicion, CompromisoAgenda, Actividad, Evidencia,
     CasoSocial, AtencionSocial, RegistroAuditoria
 )
-from sgr_app.web_views import es_codigo_2fa_valido
+from sgr_app.web_views import (
+    _puede_gestionar_compromiso,
+    es_codigo_2fa_valido,
+    puede_anular_actividades,
+)
 from sgr_app.services import seguridad_acceso
 from sgr_app.serializers import (
     UsuarioSerializer, DelegacionSerializer, CargoSerializer,
@@ -194,17 +198,26 @@ class Verificar2FAView(APIView):
             return Response({'error': 'Código 2FA incorrecto o inválido'}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class DelegacionViewSet(viewsets.ModelViewSet):
+class SinBorradoFisicoMixin:
+    """Por normativa ningún registro se elimina: la API no expone DELETE.
+
+    Los registros se desactivan o se anulan con motivo (baja lógica).
+    """
+
+    http_method_names = ['get', 'post', 'put', 'patch', 'head', 'options']
+
+
+class DelegacionViewSet(SinBorradoFisicoMixin, viewsets.ModelViewSet):
     queryset = Delegacion.objects.all()
     serializer_class = DelegacionSerializer
 
 
-class CargoViewSet(viewsets.ModelViewSet):
+class CargoViewSet(SinBorradoFisicoMixin, viewsets.ModelViewSet):
     queryset = Cargo.objects.all()
     serializer_class = CargoSerializer
 
 
-class UsuarioViewSet(viewsets.ModelViewSet):
+class UsuarioViewSet(SinBorradoFisicoMixin, viewsets.ModelViewSet):
     queryset = Usuario.objects.all()
     serializer_class = UsuarioSerializer
 
@@ -223,17 +236,17 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         return qs
 
 
-class PeriodoMedicionViewSet(viewsets.ModelViewSet):
+class PeriodoMedicionViewSet(SinBorradoFisicoMixin, viewsets.ModelViewSet):
     queryset = PeriodoMedicion.objects.all()
     serializer_class = PeriodoMedicionSerializer
 
 
-class CatalogoServicioViewSet(viewsets.ModelViewSet):
+class CatalogoServicioViewSet(SinBorradoFisicoMixin, viewsets.ModelViewSet):
     queryset = CatalogoServicio.objects.filter(activo=True)
     serializer_class = CatalogoServicioSerializer
 
 
-class ItemMedicionViewSet(viewsets.ModelViewSet):
+class ItemMedicionViewSet(SinBorradoFisicoMixin, viewsets.ModelViewSet):
     queryset = ItemMedicion.objects.all()
     serializer_class = ItemMedicionSerializer
 
@@ -248,7 +261,7 @@ class ItemMedicionViewSet(viewsets.ModelViewSet):
         return qs
 
 
-class CompromisoAgendaViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
+class CompromisoAgendaViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewsets.ModelViewSet):
     """
     Tubo de Trabajo / Agenda Colectiva.
     Permite transiciones controladas de estado y auditoría.
@@ -389,8 +402,44 @@ class CompromisoAgendaViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
 
         return Response(CompromisoAgendaSerializer(compromiso).data)
 
+    @action(detail=True, methods=['post'], url_path='anular')
+    def anular(self, request, pk=None):
+        """Baja lógica del compromiso: por normativa no se elimina, se anula con motivo."""
+        motivo = (request.data.get('motivo') or '').strip()
+        if not motivo:
+            raise DRFValidationError({'motivo': 'Indica el motivo de la anulación.'})
 
-class ActividadViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
+        with transaction.atomic():
+            try:
+                compromiso = self.get_queryset().select_for_update().get(pk=pk)
+            except CompromisoAgenda.DoesNotExist as exc:
+                raise NotFound() from exc
+            self.check_object_permissions(request, compromiso)
+            if not _puede_gestionar_compromiso(request.user, compromiso):
+                raise DRFPermissionDenied('No puedes anular este compromiso.')
+            try:
+                compromiso.anular(request.user, motivo)
+            except DjangoValidationError as exc:
+                raise DRFValidationError(exc.message_dict) from exc
+            RegistroAuditoria.objects.create(
+                usuario=request.user,
+                funcionario=request.user,
+                accion='ANULAR_COMPROMISO',
+                evento='MODIFICACION',
+                entidad='CompromisoAgenda',
+                identificador=str(compromiso.pk),
+                identificador_registro=str(compromiso.pk),
+                valor_anterior={'anulado': False, 'estado': compromiso.estado},
+                valor_nuevo={
+                    'anulado': True,
+                    'motivo_anulacion': compromiso.motivo_anulacion,
+                    'solicitante': compromiso.solicitante,
+                },
+                ip_origen=obtener_ip_cliente(request) or None,
+            )
+        return Response(CompromisoAgendaSerializer(compromiso).data)
+
+class ActividadViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewsets.ModelViewSet):
     """
     CRUD del registro de actividades diarias de los funcionarios.
     """
@@ -573,31 +622,11 @@ class ActividadViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
                 },
             )
 
-    def perform_destroy(self, instance):
-        with transaction.atomic():
-            registrar_evento_auditoria(
-                self.request,
-                self.request.user,
-                'ELIMINAR',
-                'Actividad',
-                instance.pk,
-                {
-                    'codigo_registro': instance.codigo_registro,
-                    'actividad_solicitud': instance.actividad_solicitud,
-                },
-                None,
-            )
-            super().perform_destroy(instance)
-
     @action(detail=True, methods=['post'], url_path='anular')
     def anular(self, request, pk=None):
-        if not (
-            request.user.is_superuser
-            or request.user.es_admin()
-            or request.user.es_supervisor
-        ):
+        if not puede_anular_actividades(request.user):
             raise DRFPermissionDenied(
-                'Solo supervisores y administradores pueden anular actividades.'
+                'Solo el Delegado, el Coordinador o el Administrador pueden anular actividades.'
             )
         motivo = (request.data.get('motivo') or '').strip()
         if not motivo:
@@ -637,7 +666,7 @@ class ActividadViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
         return Response(ActividadSerializer(actividad).data)
 
 
-class EvidenciaViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
+class EvidenciaViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewsets.ModelViewSet):
     """
     Gestión de Evidencias y módulo de validación ("Check" del Delegado/Verificador).
     """
@@ -698,23 +727,6 @@ class EvidenciaViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
                     'observacion': evidencia.observacion,
                 },
             )
-
-    def perform_destroy(self, instance):
-        with transaction.atomic():
-            registrar_evento_auditoria(
-                self.request,
-                self.request.user,
-                'ELIMINAR_EVIDENCIA',
-                'Evidencia',
-                instance.pk,
-                {
-                    'actividad_id': instance.actividad_id,
-                    'codigo_verificador': instance.codigo_verificador,
-                    'estado': instance.estado,
-                },
-                None,
-            )
-            super().perform_destroy(instance)
 
     def get_queryset(self):
         qs = Evidencia.objects.all()
@@ -894,7 +906,7 @@ class MetricasAPIView(APIView):
         return Response({'error': 'Tipo no reconocido'}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class CasoSocialViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
+class CasoSocialViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewsets.ModelViewSet):
     queryset = CasoSocial.objects.all().prefetch_related('atenciones')
     serializer_class = CasoSocialSerializer
 
@@ -907,7 +919,7 @@ class CasoSocialViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
         return qs
 
 
-class AtencionSocialViewSet(ConcurrenciaAPIMixin, viewsets.ModelViewSet):
+class AtencionSocialViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewsets.ModelViewSet):
     queryset = AtencionSocial.objects.all()
     serializer_class = AtencionSocialSerializer
 

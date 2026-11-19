@@ -310,6 +310,18 @@ class CompromisoAgendaForm(forms.ModelForm):
                 'fecha_comprometida',
                 'La fecha comprometida no puede ser anterior a la fecha de la actividad.',
             )
+        if (
+            self.instance.pk
+            and responsible
+            and responsible.pk != self.instance.responsable_id
+        ):
+            # CU-25 (HU-15): la reasignación exige un motivo, que queda en el historial.
+            observacion = (cleaned_data.get('observacion') or '').strip()
+            if not observacion or observacion == (self.instance.observacion or '').strip():
+                self.add_error(
+                    'observacion',
+                    'Indica en la observación el motivo de la reasignación.',
+                )
         return cleaned_data
 
     def save(self, commit=True):
@@ -356,6 +368,8 @@ class CompromisoEstadoForm(forms.Form):
             )
         if estado == CompromisoAgenda.Estado.REALIZADO:
             actividad = self.compromiso.actividad
+            if not actividad:
+                raise ValidationError('El compromiso no tiene una actividad asociada. Edítalo para asociarle una actividad y adjunta la evidencia; podrá marcarse como realizado cuando el Delegado la apruebe.')
             evidencias = actividad.evidencias.all() if actividad else Evidencia.objects.none()
             if not evidencias.exists() or evidencias.exclude(
                 estado=Evidencia.Estado.APROBADA
@@ -489,7 +503,7 @@ class CasoSocialForm(forms.ModelForm):
         if not self.instance.pk and not self.is_bound:
             self.initial.setdefault('fecha_apertura', timezone.localdate())
         self.fields['delegacion'].queryset = Delegacion.objects.filter(activo=True)
-        if user.esta_limitado_a_delegacion:
+        if user.esta_limitado_a_delegacion or user.es_administrativo:
             self.fields['delegacion'].queryset = self.fields['delegacion'].queryset.filter(
                 pk=user.delegacion_id,
             )
@@ -897,9 +911,20 @@ class MantenedorPeriodoForm(MantenedorModelForm):
             'estado': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
 
-    def __init__(self, *args, **kwargs):
+    motivo_reapertura = forms.CharField(
+        label='Motivo de reapertura',
+        required=False,
+        max_length=1000,
+        widget=forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
+        help_text='Obligatorio solo al reabrir un período cerrado (solo Administrador).',
+    )
+
+    def __init__(self, *args, user=None, **kwargs):
+        self.user = user
         super().__init__(*args, **kwargs)
         self.fields['version_de_parametro'].disabled = True
+        if not (self.instance.pk and self.instance.cerrado):
+            del self.fields['motivo_reapertura']
         today = timezone.localdate()
         try:
             maximum_date = today.replace(year=today.year + 1)
@@ -927,6 +952,17 @@ class MantenedorPeriodoForm(MantenedorModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
+        if (
+            self.instance.pk
+            and self.instance.cerrado
+            and 'cerrado' in cleaned_data
+            and not cleaned_data['cerrado']
+        ):
+            # CU-08 / RN-013: solo el Administrador reabre, y debe indicar el motivo.
+            if self.user is not None and not self.user.es_admin():
+                self.add_error('cerrado', 'Solo el Administrador puede reabrir un período cerrado.')
+            elif not (cleaned_data.get('motivo_reapertura') or '').strip():
+                self.add_error('motivo_reapertura', 'Indica el motivo de la reapertura.')
         if self.instance.pk and self.instance.cerrado:
             campos_parametro = (
                 'nombre',
@@ -1062,12 +1098,14 @@ class FuncionarioForm(MantenedorModelForm):
         ('COORDINADOR', 'Coordinador'),
         ('DELEGADO', 'Delegado'),
         ('FUNCIONARIO', 'Funcionario'),
+        ('CONSULTA', 'Usuario de consulta (solo lectura)'),
     )
     ROL_A_MODELO = {
         'ADMINISTRADOR': (Usuario.Rol.ADMINISTRADOR, False),
         'COORDINADOR': (Usuario.Rol.SUPERVISOR, False),
         'DELEGADO': (Usuario.Rol.SUPERVISOR, True),
         'FUNCIONARIO': (Usuario.Rol.ADMINISTRATIVO, False),
+        'CONSULTA': (Usuario.Rol.CONSULTA, False),
     }
 
     run = forms.CharField(label='RUN', max_length=20, required=True)
@@ -1140,6 +1178,8 @@ class FuncionarioForm(MantenedorModelForm):
                     if self.instance.rol == Usuario.Rol.SUPERVISOR
                     else 'ADMINISTRADOR'
                     if self.instance.rol == Usuario.Rol.ADMINISTRADOR
+                    else 'CONSULTA'
+                    if self.instance.rol == Usuario.Rol.CONSULTA
                     else 'FUNCIONARIO'
                 ),
             })
@@ -1477,7 +1517,14 @@ class ActividadFotosField(forms.ImageField):
         if not data:
             return []
         files = data if isinstance(data, (list, tuple)) else [data]
-        from sgr_app.services.evidencias import validar_archivo_evidencia
+        from sgr_app.services.evidencias import (
+            MAX_FOTOS_POR_REGISTRO,
+            MENSAJE_MAX_FOTOS,
+            validar_archivo_evidencia,
+        )
+
+        if len(files) > MAX_FOTOS_POR_REGISTRO:
+            raise ValidationError(MENSAJE_MAX_FOTOS)
 
         for uploaded_file in files:
             validar_archivo_evidencia(uploaded_file)

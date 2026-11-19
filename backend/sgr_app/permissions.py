@@ -27,7 +27,6 @@ class AuthenticatedRolePermission(BasePermission):
                 'create',
                 'update',
                 'partial_update',
-                'destroy',
             }
         ):
             return False
@@ -43,6 +42,8 @@ class AuthenticatedRolePermission(BasePermission):
                     and user.tiene_permiso('APROBAR_EVIDENCIA')
                 )
             if view.__class__.__name__ == 'ActividadViewSet':
+                if action == 'anular':
+                    return True  # CU-26: el ámbito se limita en get_queryset.
                 return (
                     action == 'create'
                     and user.tiene_permiso('REGISTRAR_ACTIVIDAD')
@@ -52,7 +53,7 @@ class AuthenticatedRolePermission(BasePermission):
                     'create',
                     'update',
                     'partial_update',
-                    'destroy',
+                    'anular',
                     'cambiar_estado',
                 } and user.es_coordinador_o_delegado()
         if (
@@ -82,8 +83,9 @@ class AuthenticatedRolePermission(BasePermission):
                 return False
             if hasattr(obj, 'delegacion_id'):
                 return obj.delegacion_id == delegation_id
-            if hasattr(obj, 'actividad'):
-                return obj.actividad.delegacion_id == delegation_id
+            actividad = getattr(obj, 'actividad', None)
+            if actividad is not None:
+                return actividad.delegacion_id == delegation_id
             return False
         if (
             view.__class__.__name__ == 'EvidenciaViewSet'
@@ -94,8 +96,16 @@ class AuthenticatedRolePermission(BasePermission):
         if role == 'ADMINISTRATIVO' or user.tiene_permiso('REGISTRAR_ACTIVIDAD'):
             if hasattr(obj, 'funcionario_id'):
                 return obj.funcionario_id == user.pk
-            if hasattr(obj, 'actividad'):
-                return obj.actividad.funcionario_id == user.pk
+            # Compromisos: mismo criterio que el listado (responsable o creador),
+            # aunque no tengan una actividad de origen.
+            if hasattr(obj, 'responsable_id') and user.pk in (
+                obj.responsable_id,
+                getattr(obj, 'creado_por_id', None),
+            ):
+                return True
+            actividad = getattr(obj, 'actividad', None)
+            if actividad is not None:
+                return actividad.funcionario_id == user.pk
         return False
 
 

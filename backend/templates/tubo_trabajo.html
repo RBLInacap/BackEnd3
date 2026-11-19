@@ -40,7 +40,47 @@
         {% endfor %}
       </select>
     </div>
+    <div>
+      <label class="form-label fw-semibold mb-1" for="filtro-responsable">Responsable</label>
+      <select class="form-select" id="filtro-responsable" name="responsable">
+        <option value="">Todos</option>
+        {% for r in responsables_filtro %}
+          <option value="{{ r.pk }}" {% if filtro_responsable == r.pk|stringformat:"s" %}selected{% endif %}>{{ r.get_full_name|default:r.username }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="form-label fw-semibold mb-1" for="filtro-estado">Estado</label>
+      <select class="form-select" id="filtro-estado" name="estado">
+        <option value="">Todos</option>
+        {% for valor, etiqueta in estados_filtro %}
+          <option value="{{ valor }}" {% if filtro_estado == valor %}selected{% endif %}>{{ etiqueta }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="form-label fw-semibold mb-1" for="filtro-territorio">Territorio</label>
+      <select class="form-select" id="filtro-territorio" name="territorio">
+        <option value="">Todos</option>
+        {% for t in territorios_filtro %}
+          <option value="{{ t }}" {% if filtro_territorio == t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="form-label fw-semibold mb-1" for="filtro-desde">Fecha desde</label>
+      <input type="date" class="form-control" id="filtro-desde" name="fecha_desde" value="{{ filtro_desde|date:'Y-m-d' }}">
+    </div>
+    <div>
+      <label class="form-label fw-semibold mb-1" for="filtro-hasta">Fecha hasta</label>
+      <input type="date" class="form-control" id="filtro-hasta" name="fecha_hasta" value="{{ filtro_hasta|date:'Y-m-d' }}">
+    </div>
+    {% if filtro_area %}
+      <input type="hidden" name="area" value="{{ filtro_area }}">
+      <span class="badge text-bg-light border align-self-center">Unidad de apoyo: {{ filtro_area }}</span>
+    {% endif %}
     <button type="submit" class="btn btn-outline-danger">Aplicar filtro</button>
+    <a href="{% url 'web_tubo' %}" class="btn btn-link text-secondary">Limpiar</a>
     {% if periodo_seleccionado %}
       <span class="small text-secondary">
         El detalle, vencidos y resumen corresponden al mismo período.
@@ -66,6 +106,13 @@
           <i class="bi bi-bar-chart-steps me-1"></i> Resumen Colectivo Semanal
         </button>
       </li>
+      {% if puede_reactivar_compromisos %}
+      <li class="nav-item" role="presentation">
+        <button class="nav-link fw-bold text-uppercase py-2 px-3 small" id="anulados-tab" data-bs-toggle="pill" data-bs-target="#tab-anulados" type="button" role="tab">
+          <i class="bi bi-archive me-1"></i> Anulados ({{ compromisos_anulados|length }})
+        </button>
+      </li>
+      {% endif %}
     </ul>
   </div>
 
@@ -157,7 +204,7 @@
                     <span class="badge {% if c.estado_tablero == 'COMPLETADO' or c.estado_tablero == 'REALIZADO' %}bg-success{% elif c.estado_tablero == 'VENCIDO' %}bg-danger{% elif c.estado_tablero == 'REPROGRAMADO' %}bg-info text-dark{% elif c.estado_tablero == 'PENDIENTE' %}bg-warning text-dark{% else %}bg-primary{% endif %}">
                       {% if c.estado_tablero == 'COMPLETADO' or c.estado_tablero == 'REALIZADO' %}Completado{% elif c.estado_tablero == 'VENCIDO' %}Vencido{% elif c.estado_tablero == 'REPROGRAMADO' %}Reprogramado{% elif c.estado_tablero == 'EN_PROCESO' %}En proceso{% else %}{{ c.get_estado_display }}{% endif %}
                     </span>
-                    {% if c.estado_tablero != 'COMPLETADO' and c.estado_tablero != 'REALIZADO' %}
+                    {% if c.puede_gestionar and c.estado_tablero != 'COMPLETADO' and c.estado_tablero != 'REALIZADO' %}
                       <form method="POST" action="{% url 'web_cambiar_estado_compromiso' c.id %}" class="mt-1">
                         {% csrf_token %}
                         <select name="estado" class="form-select form-select-sm mb-1" aria-label="Cambiar etapa del compromiso" required>
@@ -176,17 +223,46 @@
                     1
                   </td>
                   <td class="text-end pe-3 text-nowrap">
+                    {% if c.puede_gestionar %}
                     <a href="{% url 'web_editar_compromiso' c.id %}" class="btn btn-sm btn-outline-secondary py-0 px-2" title="Editar Requerimiento">
                       <i class="bi bi-pencil"></i>
                     </a>
-                    <form method="POST" action="{% url 'web_eliminar_compromiso' c.id %}" class="d-inline" onsubmit="return confirm('¿Seguro que desea eliminar este compromiso #{{ c.id }}?');">
-                      {% csrf_token %}
-                      <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2 ms-1" title="Eliminar Requerimiento">
-                        <i class="bi bi-trash"></i>
-                      </button>
-                    </form>
+                    {% else %}
+                    <span class="small text-secondary">Solo lectura</span>
+                    {% endif %}
+                    {% if c.puede_anular %}
+                    <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 ms-1" data-bs-toggle="modal" data-bs-target="#modalAnularFila{{ c.id }}" title="Anular compromiso">
+                      Anular
+                    </button>
+                    {% endif %}
                   </td>
                 </tr>
+
+                {% if c.puede_anular %}
+                <!-- Modal Anular Compromiso para cada fila -->
+                <div class="modal fade" id="modalAnularFila{{ c.id }}" tabindex="-1" aria-labelledby="lblAnularFila{{ c.id }}" aria-hidden="true">
+                  <div class="modal-dialog modal-dialog-centered text-start">
+                    <div class="modal-content">
+                      <form method="POST" action="{% url 'web_anular_compromiso' c.id %}">
+                        {% csrf_token %}
+                        <div class="modal-header">
+                          <h5 class="modal-title" id="lblAnularFila{{ c.id }}">Anular compromiso #{{ c.id }}</h5>
+                          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                        </div>
+                        <div class="modal-body">
+                          <label for="motivoAnularFila{{ c.id }}" class="form-label">Motivo</label>
+                          <textarea id="motivoAnularFila{{ c.id }}" name="motivo" class="form-control" rows="3" maxlength="2000" required data-autofocus></textarea>
+                          <small class="text-secondary">{{ c.solicitante }} · El compromiso se conservará en el historial, pero dejará de mostrarse y de sumar al avance.</small>
+                        </div>
+                        <div class="modal-footer">
+                          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                          <button type="submit" class="btn btn-danger">Confirmar anulación</button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+                {% endif %}
 
                 <!-- Modal Editar Compromiso para cada fila -->
                 <div class="modal fade" id="modalEditarCompromiso{{ c.id }}" tabindex="-1">
@@ -245,7 +321,7 @@
                             <input type="file" name="fotos" accept="image/*" multiple class="form-control">
                             <div class="form-check mt-2">
                               <input class="form-check-input" type="checkbox" name="reemplazar_fotos" id="reemplazarFotosTabla{{ c.id }}">
-                              <label class="form-check-label" for="reemplazarFotosTabla{{ c.id }}">Reemplazar la foto principal</label>
+                              <label class="form-check-label" for="reemplazarFotosTabla{{ c.id }}">Reemplazar las fotografías actuales (se conservan en el historial)</label>
                             </div>
                           </div>
                         </div>
@@ -479,6 +555,67 @@
         </div>
       </div>
     </div>
+
+    {% if puede_reactivar_compromisos %}
+    <!-- PESTAÑA 4: COMPROMISOS ANULADOS (solo Administrador) -->
+    <div class="tab-pane fade" id="tab-anulados" role="tabpanel">
+      <div class="card p-4 shadow-sm border-0">
+        <h5 class="fw-bold mb-1 text-dark">Compromisos anulados</h5>
+        <small class="text-secondary mb-3 d-block">Se conservan en el historial. Solo el Administrador puede reactivarlos.</small>
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0 small">
+            <thead>
+              <tr>
+                <th>#</th><th>Solicitante</th><th>Delegación</th><th>Responsable</th>
+                <th>Anulado</th><th>Motivo</th><th class="text-end">Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for a in compromisos_anulados %}
+              <tr>
+                <td class="font-monospace">{{ a.id }}</td>
+                <td>{{ a.solicitante }}</td>
+                <td>{{ a.delegacion.codigo }}</td>
+                <td>{{ a.responsable.get_full_name|default:a.responsable.username }}</td>
+                <td class="text-nowrap">{{ a.anulado_en|date:"d/m/Y H:i" }}<br><span class="text-secondary">{{ a.anulado_por.get_full_name|default:a.anulado_por.username }}</span></td>
+                <td>{{ a.motivo_anulacion }}</td>
+                <td class="text-end">
+                  <button type="button" class="btn btn-sm btn-outline-success py-0 px-2" data-bs-toggle="modal" data-bs-target="#modalReactivar{{ a.id }}">
+                    Reactivar
+                  </button>
+                  <div class="modal fade text-start" id="modalReactivar{{ a.id }}" tabindex="-1" aria-labelledby="lblReactivar{{ a.id }}" aria-hidden="true">
+                    <div class="modal-dialog modal-dialog-centered">
+                      <div class="modal-content">
+                        <form method="POST" action="{% url 'web_reactivar_compromiso' a.id %}">
+                          {% csrf_token %}
+                          <div class="modal-header">
+                            <h5 class="modal-title" id="lblReactivar{{ a.id }}">Reactivar compromiso #{{ a.id }}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                          </div>
+                          <div class="modal-body">
+                            <label for="motivoReactivar{{ a.id }}" class="form-label">Motivo</label>
+                            <textarea id="motivoReactivar{{ a.id }}" name="motivo" class="form-control" rows="3" maxlength="2000" required data-autofocus></textarea>
+                            <small class="text-secondary">El compromiso volverá al Tubo de trabajo. La anulación anterior queda registrada en la auditoría.</small>
+                          </div>
+                          <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                            <button type="submit" class="btn btn-success">Confirmar reactivación</button>
+                          </div>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+              {% empty %}
+              <tr><td colspan="7" class="text-center text-secondary py-4">No hay compromisos anulados.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    {% endif %}
   </div>
 
   <!-- Modal Nuevo Compromiso -->

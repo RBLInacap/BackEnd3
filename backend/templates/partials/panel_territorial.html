@@ -10,27 +10,28 @@ Panel Territorial del delegado. Contexto: territorial = services.panel_territori
       <div class="card p-3 h-100 shadow-sm">
         <div class="small text-uppercase text-secondary fw-bold">Solicitudes del período</div>
         <div class="fs-2 fw-bold mt-2">{{ r.solicitudes }}</div>
+        <a class="small" href="{% url 'web_reportes' %}?periodo={{ periodo.pk }}">Ver registros</a>
       </div>
     </div>
     <div class="col-6 col-xl-3">
       <div class="card p-3 h-100 shadow-sm">
         <div class="small text-uppercase text-secondary fw-bold">Compromisos abiertos</div>
-        <div class="fs-2 fw-bold mt-2">{{ r.abiertos }}</div>
-        <div class="small {% if r.vencidos %}text-danger fw-semibold{% else %}text-secondary{% endif %}">{{ r.vencidos }} vencido{{ r.vencidos|pluralize }}</div>
+        <div class="fs-2 fw-bold mt-2"><a class="text-reset" href="{% url 'web_tubo' %}?periodo={{ periodo.pk }}">{{ r.abiertos }}</a></div>
+        <a class="small {% if r.vencidos %}text-danger fw-semibold{% else %}text-secondary{% endif %}" href="{% url 'web_tubo' %}?periodo={{ periodo.pk }}&amp;estado=VENCIDO">{{ r.vencidos }} vencido{{ r.vencidos|pluralize }}</a>
       </div>
     </div>
     <div class="col-6 col-xl-3">
       <div class="card p-3 h-100 shadow-sm">
         <div class="small text-uppercase text-secondary fw-bold">Resueltos en plazo</div>
         <div class="fs-2 fw-bold mt-2">{% if r.pct_en_plazo is not None %}{{ r.pct_en_plazo }} %{% else %}—{% endif %}</div>
-        <div class="small text-secondary">{{ r.en_plazo }} de {{ r.realizados }} realizados</div>
+        <a class="small text-secondary" href="{% url 'web_tubo' %}?periodo={{ periodo.pk }}&amp;estado=REALIZADO">{{ r.en_plazo }} de {{ r.realizados }} realizados</a>
       </div>
     </div>
     <div class="col-6 col-xl-3">
       <div class="card p-3 h-100 shadow-sm">
         <div class="small text-uppercase text-secondary fw-bold">Días promedio de respuesta</div>
         <div class="fs-2 fw-bold mt-2">{% if r.dias_respuesta is not None %}{{ r.dias_respuesta }}{% else %}—{% endif %}</div>
-        <div class="small text-secondary">Del registro a la realización</div>
+        <a class="small text-secondary" href="{% url 'web_tubo' %}?periodo={{ periodo.pk }}&amp;estado=REALIZADO">Del registro a la realización</a>
       </div>
     </div>
   </div>
@@ -57,7 +58,7 @@ Panel Territorial del delegado. Contexto: territorial = services.panel_territori
             <tbody>
               {% for fila in territorial.por_area %}
               <tr>
-                <th scope="row" class="fw-normal">{{ fila.area_apoyo }}</th>
+                <th scope="row" class="fw-normal"><a href="{% url 'web_tubo' %}?periodo={{ periodo.pk }}&amp;area={{ fila.area_apoyo|urlencode }}">{{ fila.area_apoyo }}</a></th>
                 <td class="text-end">{{ fila.total }}</td>
                 <td class="text-end">{{ fila.abiertos }}</td>
                 <td class="text-end">{% if fila.vencidos %}<span class="badge text-bg-danger">{{ fila.vencidos }}</span>{% else %}0{% endif %}</td>
@@ -138,7 +139,7 @@ Panel Territorial del delegado. Contexto: territorial = services.panel_territori
         <ul class="list-group list-group-flush">
           {% for fila in territorial.por_sector %}
           <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span>{{ fila.territorio }}</span>
+            <a href="{% url 'web_tubo' %}?periodo={{ periodo.pk }}&amp;territorio={{ fila.territorio|urlencode }}">{{ fila.territorio }}</a>
             <span>
               {% if fila.vencidos %}<span class="badge text-bg-danger me-1">{{ fila.vencidos }} vencido{{ fila.vencidos|pluralize }}</span>{% endif %}
               <span class="badge text-bg-secondary rounded-pill">{{ fila.total }}</span>

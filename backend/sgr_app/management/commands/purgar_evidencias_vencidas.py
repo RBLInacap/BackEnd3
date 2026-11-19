@@ -10,45 +10,39 @@ from sgr_app.services.operacion import registrar_tarea
 
 
 class Command(BaseCommand):
-    help = 'Elimina archivos de evidencia vencidos y conserva su registro y metadatos.'
+    """Retención de evidencias (RNF-017) sin borrado físico.
+
+    Por normativa nada se elimina: al vencer el plazo de retención, los archivos
+    se deshabilitan (dejan de mostrarse y de entregarse por la aplicación y la
+    API), pero se conservan en el almacenamiento junto con su registro.
+    El nombre del comando se mantiene por compatibilidad con los temporizadores.
+    """
+
+    help = 'Deshabilita (sin borrar) los archivos de evidencia con la retención vencida.'
 
     def handle(self, *args, **options):
         # RNF-018: se registra cada ejecución y se alerta si falla.
         with registrar_tarea('purgar_evidencias_vencidas') as resultado:
-            eliminadas = self._purgar()
-            resultado['detalle'] = f'{eliminadas} evidencia(s) con archivos eliminados'
+            deshabilitadas = self._deshabilitar()
+            resultado['detalle'] = f'{deshabilitadas} evidencia(s) con archivos deshabilitados'
         self.stdout.write(
             self.style.SUCCESS(
-                f'Archivos de {eliminadas} evidencia(s) vencida(s) eliminados; '
-                'los registros y metadatos se conservaron.'
+                f'Archivos de {deshabilitadas} evidencia(s) vencida(s) deshabilitados; '
+                'los archivos, registros y metadatos se conservaron.'
             )
         )
 
-    def _purgar(self):
+    def _deshabilitar(self):
         fecha_limite = timezone.now() - timedelta(
             days=settings.EVIDENCE_RETENTION_DAYS
         )
         evidencias = Evidencia.objects.filter(
             fecha_subida__lt=fecha_limite,
-            archivos_eliminados_en__isnull=True,
+            archivos_deshabilitados_en__isnull=True,
         ).filter(
             Q(archivo__isnull=False)
             | Q(archivo_foto__isnull=False)
             | Q(archivo_foto_2__isnull=False)
             | Q(archivo_foto_3__isnull=False)
         )
-
-        eliminadas = 0
-        for evidencia in evidencias.iterator():
-            campos_actualizados = ['archivos_eliminados_en']
-            for campo in ('archivo', 'archivo_foto', 'archivo_foto_2', 'archivo_foto_3'):
-                archivo = getattr(evidencia, campo)
-                if archivo and archivo.name:
-                    archivo.storage.delete(archivo.name)
-                    setattr(evidencia, campo, None)
-                    campos_actualizados.append(campo)
-
-            evidencia.archivos_eliminados_en = timezone.now()
-            evidencia.save(update_fields=campos_actualizados)
-            eliminadas += 1
-        return eliminadas
+        return evidencias.update(archivos_deshabilitados_en=timezone.now())
