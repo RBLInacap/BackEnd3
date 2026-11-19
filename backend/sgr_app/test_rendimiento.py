@@ -49,7 +49,7 @@ class RendimientoTests(TestCase):
         ])
         funcionarios = Usuario.objects.bulk_create([
             Usuario(
-                username=f'carga.{n:03d}', rol=Usuario.Rol.ADMINISTRATIVO, cargo=self.cargo,
+                username=f'carga.{n:03d}', rol=Usuario.Rol.FUNCIONARIO, cargo=self.cargo,
                 delegacion=delegaciones[n % DELEGACIONES], password='!',
             )
             for n in range(FUNCIONARIOS)
@@ -90,13 +90,13 @@ class RendimientoTests(TestCase):
         supervisor = Client()
         supervisor.force_login(self.supervisor)
         coordinador = Usuario.objects.create_user(
-            username='coordinador.carga', password='!', rol=Usuario.Rol.SUPERVISOR,
+            username='coordinador.carga', password='!', rol=Usuario.Rol.COORDINADOR,
         )
         comunal = Client()
         comunal.force_login(coordinador)
         delegado = Usuario.objects.create_user(
-            username='delegado.carga', password='!', rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True, delegacion=self.delegacion,
+            username='delegado.carga', password='!', rol=Usuario.Rol.DELEGADO,
+            delegacion=self.delegacion,
         )
         territorial = Client()
         territorial.force_login(delegado)

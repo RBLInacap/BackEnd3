@@ -51,14 +51,14 @@ from sgr_app.models import (
 
 
 class AdministradorRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
-    allow_supervisor = False
-    supervisor_can_manage = False
+    allow_coordinador = False
+    coordinador_can_manage = False
 
     def test_func(self):
         user = self.request.user
         return user.is_authenticated and (
             user.es_admin()
-            or (self.allow_supervisor and user.es_supervisor)
+            or (self.allow_coordinador and user.es_coordinador)
         )
 
 
@@ -184,7 +184,6 @@ def _auditoria_valor(instance):
                 'nombre_rol',
                 flat=True,
             )),
-            'es_delegado': instance.es_delegado,
             'area_id': instance.area_entidad_id,
             'cargo_id': instance.cargo_id,
             'delegacion_id': instance.delegacion_id,
@@ -346,9 +345,9 @@ class ActivoListView(AdministradorRequiredMixin, ListView):
             'can_manage': (
                 self.request.user.es_admin()
                 or (
-                    self.allow_supervisor
-                    and self.supervisor_can_manage
-                    and self.request.user.es_supervisor
+                    self.allow_coordinador
+                    and self.coordinador_can_manage
+                    and self.request.user.es_coordinador
                 )
             ),
         })
@@ -447,9 +446,9 @@ class ActivoBooleanListView(AdministradorRequiredMixin, ListView):
             'can_manage': (
                 self.request.user.es_admin()
                 or (
-                    self.allow_supervisor
-                    and self.supervisor_can_manage
-                    and self.request.user.es_supervisor
+                    self.allow_coordinador
+                    and self.coordinador_can_manage
+                    and self.request.user.es_coordinador
                 )
             ),
         })
@@ -550,8 +549,8 @@ class ReactivateRecordView(AdministradorRequiredMixin, View):
             self.model,
             self.active_field,
             self.list_url_name,
-            self.allow_supervisor,
-            self.supervisor_can_manage,
+            self.allow_coordinador,
+            self.coordinador_can_manage,
         ) = record_config
         return super().dispatch(request, *args, **kwargs)
 
@@ -590,7 +589,7 @@ class ReactivateRecordView(AdministradorRequiredMixin, View):
 
 
 class DelegacionListView(ActivoListView):
-    allow_supervisor = True
+    allow_coordinador = True
     supports_reactivation = True
     reactivation_entity = 'delegaciones'
     supports_reactivation = True
@@ -698,7 +697,7 @@ class DelegacionReactivateView(AdministradorRequiredMixin, View):
 
 
 class CargoListView(ActivoListView):
-    allow_supervisor = True
+    allow_coordinador = True
     supports_reactivation = True
     reactivation_entity = 'cargos'
     model = Cargo
@@ -776,8 +775,8 @@ class CargoDeleteView(SoftDeleteView):
 
 
 class ItemListView(ActivoBooleanListView):
-    allow_supervisor = True
-    supervisor_can_manage_catalog = True
+    allow_coordinador = True
+    coordinador_can_manage_catalog = True
     model = ItemMedicion
     queryset = ItemMedicion.objects.select_related('cargo', 'periodo')
     template_name = 'mantenedores/items_list.html'
@@ -804,12 +803,12 @@ class ItemListView(ActivoBooleanListView):
                 'Modificar servicio' if catalogo_form.instance.pk else 'Agregar servicio'
             ),
             'can_manage_items': (
-                user.es_admin() or user.es_supervisor
+                user.es_admin() or user.es_coordinador
             ),
             'ponderaciones_url': reverse_lazy('mantenedor_ponderaciones_config'),
             'can_manage_catalog': (
                 user.es_admin()
-                or (self.supervisor_can_manage_catalog and user.es_supervisor)
+                or (self.coordinador_can_manage_catalog and user.es_coordinador)
             ),
         })
         return context
@@ -899,7 +898,7 @@ class ItemListView(ActivoBooleanListView):
 
 class ConfigurarPonderacionesView(AdministradorRequiredMixin, View):
     # CU-10/CU-11 (HU-04, HU-05): el Coordinador define metas y funciones por cargo.
-    allow_supervisor = True
+    allow_coordinador = True
     template_name = 'mantenedores/ponderaciones_form.html'
     success_message = 'La configuración del cargo y período suma exactamente 100%.'
 
@@ -1258,7 +1257,7 @@ class ConfigurarPonderacionesView(AdministradorRequiredMixin, View):
 
 
 class ItemConfigurationRedirectView(AdministradorRequiredMixin, View):
-    allow_supervisor = True
+    allow_coordinador = True
     message = ''
 
     def get_redirect_response(self, request, **kwargs):
@@ -1354,8 +1353,8 @@ class ConceptoAjusteDeleteView(AuditedSoftDeleteView):
 
 
 class PeriodoListView(ActivoBooleanListView):
-    allow_supervisor = True
-    supervisor_can_manage = True
+    allow_coordinador = True
+    coordinador_can_manage = True
     model = PeriodoMedicion
     template_name = 'mantenedores/periodos_list.html'
     activo_field = 'estado'
@@ -1369,7 +1368,7 @@ class PeriodoListView(ActivoBooleanListView):
 
 
 class PeriodoCreateView(AdministradorRequiredMixin, AuditedSaveMixin, CreateView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = PeriodoMedicion
     form_class = MantenedorPeriodoForm
     template_name = 'mantenedores/form.html'
@@ -1383,7 +1382,7 @@ class PeriodoCreateView(AdministradorRequiredMixin, AuditedSaveMixin, CreateView
 
 
 class PeriodoUpdateView(AdministradorRequiredMixin, AuditedSaveMixin, UpdateView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = PeriodoMedicion
     form_class = MantenedorPeriodoForm
     template_name = 'mantenedores/form.html'
@@ -1451,7 +1450,7 @@ class PeriodoUpdateView(AdministradorRequiredMixin, AuditedSaveMixin, UpdateView
 
 
 class PeriodoDeleteView(AuditedSoftDeleteView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = PeriodoMedicion
     template_name = 'mantenedores/confirm_delete.html'
     activo_field = 'estado'
@@ -1461,8 +1460,8 @@ class PeriodoDeleteView(AuditedSoftDeleteView):
 
 
 class SolicitanteListView(ActivoBooleanListView):
-    allow_supervisor = True
-    supervisor_can_manage = True
+    allow_coordinador = True
+    coordinador_can_manage = True
     model = Solicitante
     template_name = 'mantenedores/solicitantes_list.html'
     activo_field = 'estado'
@@ -1486,7 +1485,7 @@ class SolicitanteCreateView(
     AuditedSaveMixin,
     CreateView,
 ):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Solicitante
     form_class = MantenedorSolicitanteForm
     template_name = 'mantenedores/form.html'
@@ -1504,7 +1503,7 @@ class SolicitanteUpdateView(
     AuditedSaveMixin,
     UpdateView,
 ):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Solicitante
     form_class = MantenedorSolicitanteForm
     template_name = 'mantenedores/form.html'
@@ -1521,7 +1520,7 @@ class SolicitanteUpdateView(
 
 
 class SolicitanteDeleteView(AuditedSoftDeleteView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Solicitante
     template_name = 'mantenedores/confirm_delete.html'
     activo_field = 'estado'
@@ -1531,7 +1530,7 @@ class SolicitanteDeleteView(AuditedSoftDeleteView):
 
 
 class FuncionarioListView(ActivoBooleanListView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Usuario
     template_name = 'mantenedores/funcionarios_list.html'
     activo_field = 'is_active'
@@ -1656,7 +1655,7 @@ class FuncionarioDeleteView(AuditedSoftDeleteView):
 
 
 class RolListView(ActivoBooleanListView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Rol
     template_name = 'mantenedores/roles_list.html'
     activo_field = 'estado'
@@ -1708,7 +1707,7 @@ class RolDeleteView(AuditedSoftDeleteView):
 
 
 class AreaListView(ActivoBooleanListView):
-    allow_supervisor = True
+    allow_coordinador = True
     model = Area
     template_name = 'mantenedores/areas_list.html'
     activo_field = 'estado'
@@ -1760,7 +1759,7 @@ class AreaDeleteView(AuditedSoftDeleteView):
 
 
 class CatalogoAreaListView(ActivoBooleanListView):
-    allow_supervisor = True
+    allow_coordinador = True
     template_name = 'mantenedores/catalogos_area_list.html'
     activo_field = 'activo'
     supports_reactivation = True

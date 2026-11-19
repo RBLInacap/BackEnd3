@@ -452,10 +452,10 @@
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_dashboard' %}active{% endif %}" href="{% url 'web_dashboard' %}">
               <i class="bi bi-speedometer2 me-1"></i>
-              {% if request.user.es_administrativo %}Panel Administrativo{% elif request.user.esta_limitado_a_delegacion %}Panel Delegado{% elif request.user.es_supervisor %}Panel Supervisor{% else %}Panel Administrador{% endif %}
+              {% if request.user.es_funcionario %}Panel Funcionario{% elif request.user.esta_limitado_a_delegacion %}Panel Delegado{% elif request.user.es_coordinador %}Panel Coordinador{% else %}Panel Administrador{% endif %}
             </a>
           </li>
-          {% if request.user.es_admin or request.user.es_supervisor %}
+          {% if request.user.es_admin or request.user.es_coordinador %}
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle {% if 'mantenedor_' in request.resolver_match.url_name %}active{% endif %}"
                href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -503,14 +503,14 @@
             </a>
           </li>
           {% endif %}
-          {% if request.user.es_admin or request.user.es_supervisor or request.user.puede_aprobar_evidencias %}
+          {% if request.user.es_admin or request.user.es_coordinador or request.user.puede_aprobar_evidencias %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_verificacion' %}active{% endif %}" href="{% url 'web_verificacion' %}">
               <i class="bi bi-check2-circle me-1"></i> Validar Evidencias
             </a>
           </li>
           {% endif %}
-          {% if request.user.es_admin or request.user.es_supervisor %}
+          {% if request.user.es_admin or request.user.es_coordinador %}
           <li class="nav-item">
             <a class="nav-link {% if 'ajuste_incentivo' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'web_ajustes_incentivo' %}">
               <i class="bi bi-award me-1"></i> Incentivos y Penalizaciones
@@ -527,14 +527,14 @@
               <i class="bi bi-bell me-1"></i> Alertas operativas
             </a>
           </li>
-          {% if request.user.es_admin or request.user.es_supervisor or request.user.esta_limitado_a_delegacion or request.user.es_consulta %}
+          {% if request.user.es_admin or request.user.es_coordinador or request.user.esta_limitado_a_delegacion or request.user.es_consulta %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_reportes' %}active{% endif %}" href="{% url 'web_reportes' %}">
               <i class="bi bi-file-earmark-bar-graph me-1"></i> Informes
             </a>
           </li>
           {% endif %}
-          {% if not request.user.es_administrativo %}
+          {% if not request.user.es_funcionario %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_semaforo' %}active{% endif %}" href="{% url 'web_semaforo' %}">
               <svg class="me-1 align-text-bottom" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
@@ -559,7 +559,7 @@
             </a>
           </li>
           {% endif %}
-          {% if request.user.es_admin or request.user.es_supervisor %}
+          {% if request.user.es_admin or request.user.es_coordinador %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'web_auditoria' %}active{% endif %}" href="{% url 'web_auditoria' %}">
               <i class="bi bi-shield-check me-1"></i> Auditoría

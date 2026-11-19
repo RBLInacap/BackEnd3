@@ -53,7 +53,7 @@ def requiere_2fa_obligatorio(usuario):
         return True
     if 'ADMINISTRADOR' in roles and usuario.es_admin():
         return True
-    return 'SUPERVISOR' in roles and usuario.es_supervisor
+    return 'COORDINADOR' in roles and usuario.es_coordinador
 
 
 def _auditar(request, accion):

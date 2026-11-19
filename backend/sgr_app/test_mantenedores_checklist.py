@@ -494,7 +494,7 @@ class MantenedoresChecklistTests(TestCase):
         self.assertEqual(response.status_code, 302)
 
         funcionario = Usuario.objects.get(email='delegada.prueba@example.com')
-        self.assertEqual(funcionario.rol, Usuario.Rol.SUPERVISOR)
+        self.assertEqual(funcionario.rol, Usuario.Rol.DELEGADO)
         self.assertTrue(funcionario.es_delegado)
 
     def test_functionary_can_receive_multiple_roles_with_effective_permissions(self):
@@ -577,7 +577,7 @@ class MantenedoresChecklistTests(TestCase):
         aprobador = Usuario.objects.create_user(
             username='aprobador.sin_delegacion',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
         )
         aprobador.roles.add(rol_aprobador)
         request.user = aprobador
@@ -598,7 +598,7 @@ class MantenedoresChecklistTests(TestCase):
         territorial_user = Usuario.objects.create_user(
             username='solo.gestion.territorial',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         territorial_user.roles.add(rol_territorial)
@@ -781,7 +781,7 @@ class MantenedoresChecklistTests(TestCase):
             username='funcionario.inactivo',
             password='TestPassword123!',
             email='funcionario.inactivo@example.com',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             is_active=False,
         )
         rol = Rol.objects.create(nombre_rol='Rol inactivo', estado=False)
@@ -937,7 +937,7 @@ class MantenedoresChecklistTests(TestCase):
         supervisor = Usuario.objects.create_user(
             username='supervisor.checklist',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
             delegacion=self.delegacion,
         )
         client = self.client

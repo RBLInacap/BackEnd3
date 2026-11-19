@@ -303,12 +303,12 @@ def get_periodo_activo():
 def _puede_gestionar_compromiso(user, compromiso=None):
     if user.es_consulta:
         return False
-    if user.es_admin() or user.es_supervisor:
+    if user.es_admin() or user.es_coordinador:
         return True
     if user.esta_limitado_a_delegacion:
         return bool(user.delegacion_id and compromiso and compromiso.delegacion_id == user.delegacion_id)
     return bool(
-        user.es_administrativo
+        user.es_funcionario
         and compromiso
         and compromiso.creado_por_id == user.pk
         and compromiso.responsable_id == user.pk
@@ -398,7 +398,7 @@ def _puede_gestionar_ajustes(user):
         and (
             user.is_superuser
             or user.es_admin()
-            or user.es_supervisor
+            or user.es_coordinador
         )
     )
 
@@ -448,8 +448,7 @@ def web_ajustes_incentivo(request):
             messages.error(request, 'El período seleccionado no existe.')
 
     funcionarios = Usuario.objects.filter(
-        rol=Usuario.Rol.ADMINISTRATIVO,
-        es_delegado=False,
+        rol=Usuario.Rol.FUNCIONARIO,
         is_active=True,
     ).select_related('delegacion', 'cargo').order_by('last_name', 'first_name', 'username')
     conceptos = ConceptoAjuste.objects.filter(activo=True).order_by('nombre')
@@ -807,13 +806,13 @@ def web_logout(request):
 
 @never_cache
 def web_dashboard(request):
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         actividades = Actividad.objects.filter(funcionario=request.user)
         evidencias_pendientes = Evidencia.objects.filter(
             actividad__funcionario=request.user,
             estado=Evidencia.Estado.PENDIENTE,
         ).count()
-        return render(request, 'dashboard_administrativo.html', {
+        return render(request, 'dashboard_funcionario.html', {
             'periodo': get_periodo_activo(),
             'actividades_count': actividades.count(),
             'evidencias_pendientes': evidencias_pendientes,
@@ -896,7 +895,7 @@ def web_dashboard(request):
         if periodo and request.user.delegacion_id:
             context['territorial'] = panel_territorial(periodo, request.user.delegacion)
     else:
-        template = 'dashboard_admin.html' if request.user.es_admin() else 'dashboard_supervisor.html'
+        template = 'dashboard_admin.html' if request.user.es_admin() else 'dashboard_coordinador.html'
         if periodo:
             context['comparacion_territorial'] = comparacion_territorial(
                 periodo, list(Delegacion.objects.filter(activo=True).order_by('nombre')),
@@ -904,8 +903,8 @@ def web_dashboard(request):
     return render(request, template, context)
 
 def web_semaforo(request):
-    if request.user.es_administrativo:
-        messages.warning(request, 'El semáforo territorial está disponible para supervisores y administradores.')
+    if request.user.es_funcionario:
+        messages.warning(request, 'El semáforo territorial está disponible para coordinadores y administradores.')
         return redirect('web_dashboard')
 
     periodo, periodo_configurado = get_periodo_trimestre_actual()
@@ -1041,7 +1040,7 @@ def web_alertas_operativas(request):
             'CANCELADO',
         )
     )
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         compromisos = compromisos.filter(responsable=request.user)
     else:
         compromisos = _filtrar_por_delegacion(compromisos, request.user)
@@ -1090,7 +1089,7 @@ def web_alertas_operativas(request):
         estado=Evidencia.Estado.PENDIENTE,
         actividad__anulada=False,
     ).select_related('actividad', 'actividad__funcionario', 'actividad__delegacion')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         evidencias_pendientes = evidencias_pendientes.filter(
             actividad__funcionario=request.user,
         )
@@ -1141,10 +1140,9 @@ def web_alertas_operativas(request):
 
     funcionarios = Usuario.objects.filter(
         is_active=True,
-        rol=Usuario.Rol.ADMINISTRATIVO,
-        es_delegado=False,
+        rol=Usuario.Rol.FUNCIONARIO,
     ).select_related('cargo', 'delegacion')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         funcionarios = funcionarios.filter(pk=request.user.pk)
     else:
         funcionarios = _filtrar_por_delegacion(funcionarios, request.user)
@@ -1287,7 +1285,7 @@ def web_reportes(request):
     if not (
         request.user.is_superuser
         or request.user.es_admin()
-        or request.user.es_supervisor
+        or request.user.es_coordinador
         or request.user.es_consulta
         or (request.user.esta_limitado_a_delegacion and request.user.delegacion_id)
     ):
@@ -1306,8 +1304,7 @@ def web_reportes(request):
     )
     funcionarios = Usuario.objects.filter(
         is_active=True,
-        rol=Usuario.Rol.ADMINISTRATIVO,
-        es_delegado=False,
+        rol=Usuario.Rol.FUNCIONARIO,
     )
     funcionarios = _filtrar_por_delegacion(funcionarios, request.user)
     actividades = Actividad.objects.select_related(
@@ -1484,7 +1481,7 @@ def web_personal(request):
             periodo_seleccionado = str(periodo_actual.pk) if periodo_actual.pk else 'actual'
 
     todos_funcionarios = Usuario.objects.filter(
-        rol=Usuario.Rol.ADMINISTRATIVO, es_delegado=False, is_active=True
+        rol=Usuario.Rol.FUNCIONARIO, is_active=True
     ).select_related('delegacion', 'cargo')
     todos_funcionarios = _filtrar_por_delegacion(
         todos_funcionarios,
@@ -1492,7 +1489,7 @@ def web_personal(request):
     )
     
     # Si el usuario logueado es Funcionario, solo puede ver su propia ficha personal
-    if request.user.is_authenticated and request.user.es_administrativo:
+    if request.user.is_authenticated and request.user.es_funcionario:
         funcionario = request.user
     else:
         id_param = (request.GET.get('id') or '').strip()
@@ -1595,7 +1592,7 @@ def web_personal(request):
         'periodo_configurado': periodo_configurado,
         'puede_comentar_actividades': (
             request.user.es_admin()
-            or request.user.es_supervisor
+            or request.user.es_coordinador
             or bool(funcionario and funcionario.pk == request.user.pk)
         ),
         'nombre_periodo_panel': (
@@ -1694,8 +1691,7 @@ def _recalcular_metas_evidencia(evidencia):
 
 def _funcionarios_disponibles_actividad(user):
     funcionarios = Usuario.objects.filter(
-        rol=Usuario.Rol.ADMINISTRATIVO,
-        es_delegado=False,
+        rol=Usuario.Rol.FUNCIONARIO,
         is_active=True,
     )
     return _filtrar_por_delegacion(funcionarios, user)
@@ -1739,7 +1735,7 @@ def web_items_medicion_funcionario(request):
         )
 
     funcionario_id = request.GET.get('funcionario_id', '')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         if funcionario_id and funcionario_id != str(request.user.pk):
             return JsonResponse(
                 {'error': 'Solo puedes consultar tus propios ítems.'},
@@ -1873,7 +1869,7 @@ def web_registrar_actividad_personal(request):
         })
 
     funcionario_id = request.POST.get('funcionario_id', '') if request.method == 'POST' else request.GET.get('funcionario_id', '')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         funcionario = request.user
     elif str(funcionario_id).isdigit():
         funcionario = funcionarios_disponibles.filter(pk=int(funcionario_id)).first()
@@ -1914,7 +1910,7 @@ def web_registrar_actividad_personal(request):
         catalogo_queryset=_servicios_funcionario(funcionario),
         periodo=periodo,
     )
-    form.fields['funcionario_id'].required = not request.user.es_administrativo
+    form.fields['funcionario_id'].required = not request.user.es_funcionario
     if not form.is_valid():
         if funcionario:
             invalid_fields = set(form.errors.keys())
@@ -1964,8 +1960,8 @@ def web_registrar_actividad_personal(request):
         return redirect('web_registrar_actividad_diaria')
 
     data = form.cleaned_data
-    funcionario = request.user if request.user.es_administrativo else data['funcionario_id']
-    if request.user.es_administrativo and data['funcionario_id'] != request.user:
+    funcionario = request.user if request.user.es_funcionario else data['funcionario_id']
+    if request.user.es_funcionario and data['funcionario_id'] != request.user:
         raise PermissionDenied
 
     delegacion = funcionario.delegacion or Delegacion.objects.first()
@@ -2082,7 +2078,7 @@ def puede_anular_actividades(user):
     return bool(
         user.is_superuser
         or user.es_admin()
-        or user.es_supervisor
+        or user.es_coordinador
         or (user.esta_limitado_a_delegacion and user.delegacion_id)
     )
 
@@ -2156,7 +2152,7 @@ def web_agregar_evidencia(request, actividad_id):
     actividad = get_object_or_404(
         Actividad.objects.select_related('funcionario', 'delegacion'), id=actividad_id
     )
-    if request.user.es_administrativo and actividad.funcionario_id != request.user.id:
+    if request.user.es_funcionario and actividad.funcionario_id != request.user.id:
         messages.error(request, 'Solo puedes agregar evidencias a tus propias actividades.')
         return redirect('web_personal')
     if request.user.esta_limitado_a_delegacion and actividad.delegacion_id != request.user.delegacion_id:
@@ -2208,13 +2204,13 @@ def web_comentar_actividad(request, actividad_id):
     )
     puede_comentar = (
         request.user.es_admin()
-        or request.user.es_supervisor
+        or request.user.es_coordinador
         or (
             request.user.esta_limitado_a_delegacion
             and actividad.delegacion_id == request.user.delegacion_id
         )
         or (
-            request.user.es_administrativo
+            request.user.es_funcionario
             and actividad.funcionario_id == request.user.pk
         )
     )
@@ -2491,14 +2487,14 @@ def web_tubo(request):
         periodo_seleccionado = periodo_activo if periodo_activo and periodo_activo.pk else None
 
     delegaciones = Delegacion.objects.filter(activo=True)
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         delegaciones = delegaciones.filter(pk=request.user.delegacion_id) if request.user.delegacion_id else delegaciones.none()
     else:
         delegaciones = _filtrar_por_delegacion(delegaciones, request.user, campo='pk')
     usuarios_terreno = Usuario.objects.filter(
         is_active=True,
     ).select_related('delegacion')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         usuarios_terreno = usuarios_terreno.filter(pk=request.user.pk)
     else:
         usuarios_terreno = _filtrar_por_delegacion(
@@ -2508,7 +2504,7 @@ def web_tubo(request):
     hoy = timezone.now().date()
 
     compromisos_queryset = CompromisoAgenda.objects.all()
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         # CU-33 (HU-12): agenda compartida; el Funcionario ve los compromisos de su
         # delegación, aunque solo gestiona los propios.
         ambito = Q(responsable=request.user) | Q(creado_por=request.user)
@@ -2574,7 +2570,7 @@ def web_tubo(request):
     actividades_queryset = Actividad.objects.select_related(
         'funcionario', 'delegacion'
     ).filter(anulada=False)
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         actividades_queryset = actividades_queryset.filter(funcionario=request.user)
     else:
         actividades_queryset = _filtrar_por_delegacion(
@@ -2814,19 +2810,20 @@ def web_crear_compromiso(request):
         origen = request.POST.get('origen') or 'INT'
         territorio = (request.POST.get('territorio') or '').strip() or 'La Serena'
         delegacion_id = request.POST.get('delegacion_id') or request.user.delegacion_id
-        if not request.user.es_admin() and not request.user.es_supervisor and (
+        if not request.user.es_admin() and not request.user.es_coordinador and (
             not request.user.delegacion_id or str(delegacion_id) != str(request.user.delegacion_id)
         ):
             raise PermissionDenied
         responsable_id = request.POST.get('responsable_id') or request.user.id
-        if request.user.es_administrativo:
+        if request.user.es_funcionario:
             responsable_id = request.user.id
         elif request.user.esta_limitado_a_delegacion:
             responsable = get_object_or_404(Usuario, id=responsable_id)
             if responsable.delegacion_id != request.user.delegacion_id:
                 raise PermissionDenied
         if request.user.rol not in (
-            Usuario.Rol.ADMINISTRADOR, Usuario.Rol.SUPERVISOR, Usuario.Rol.ADMINISTRATIVO
+            Usuario.Rol.ADMINISTRADOR, Usuario.Rol.COORDINADOR,
+            Usuario.Rol.DELEGADO, Usuario.Rol.FUNCIONARIO,
         ) and not request.user.is_superuser:
             raise PermissionDenied
         periodo = get_periodo_activo()
@@ -2905,8 +2902,9 @@ class CompromisoCreateView(LoginRequiredMixin, CreateView):
             request.user.is_superuser
             or request.user.rol in (
                 Usuario.Rol.ADMINISTRADOR,
-                Usuario.Rol.SUPERVISOR,
-                Usuario.Rol.ADMINISTRATIVO,
+                Usuario.Rol.COORDINADOR,
+                Usuario.Rol.DELEGADO,
+                Usuario.Rol.FUNCIONARIO,
             )
         ):
             raise PermissionDenied
@@ -2930,7 +2928,7 @@ class CompromisoCreateView(LoginRequiredMixin, CreateView):
         actividad_id = self.request.GET.get('actividad_id', '')
         if actividad_id.isdecimal():
             actividades = Actividad.objects.filter(pk=int(actividad_id))
-            if user.es_administrativo:
+            if user.es_funcionario:
                 actividades = actividades.filter(funcionario=user)
             elif user.esta_limitado_a_delegacion:
                 actividades = actividades.filter(delegacion_id=user.delegacion_id)
@@ -3243,7 +3241,7 @@ def web_terreno(request):
     actividades = Actividad.objects.select_related(
         'delegacion', 'funcionario', 'item', 'item_medicion'
     ).order_by('-fecha_actividad')
-    if request.user.es_administrativo:
+    if request.user.es_funcionario:
         actividades = actividades.filter(funcionario=request.user)
     elif request.user.esta_limitado_a_delegacion:
         actividades = _filtrar_por_delegacion(actividades, request.user)
@@ -3392,13 +3390,15 @@ def web_casos_sociales(request):
     user = request.user
     if not (
         user.is_superuser
-        or user.rol in (Usuario.Rol.ADMINISTRADOR, Usuario.Rol.SUPERVISOR)
+        or user.rol in (
+            Usuario.Rol.ADMINISTRADOR, Usuario.Rol.COORDINADOR, Usuario.Rol.DELEGADO,
+        )
         or user.es_funcionario_social
     ):
         raise PermissionDenied
 
     casos = CasoSocial.objects.all()
-    if user.esta_limitado_a_delegacion or user.es_administrativo:
+    if user.esta_limitado_a_delegacion or user.es_funcionario:
         # CU-28: el Funcionario social trabaja con los casos de su delegación.
         casos = casos.filter(delegacion_id=user.delegacion_id) if user.delegacion_id else casos.none()
 
@@ -3522,7 +3522,7 @@ def web_casos_sociales(request):
 
 def web_auditoria(request):
     if not request.user.is_authenticated or not (
-        request.user.es_admin() or request.user.es_supervisor
+        request.user.es_admin() or request.user.es_coordinador
     ):
         messages.warning(request, "Acceso restringido: El registro inmutable de auditoría está reservado para la Coordinación Comunal y Administradores (Seguridad RNF-008).")
         return redirect('web_dashboard')
@@ -3724,7 +3724,7 @@ def web_brechas_historicas(request):
     Cada período se calcula con su propia configuración congelada al cierre
     (RF-038). El informe es descriptivo: no toma decisiones de recursos humanos.
     """
-    if not (request.user.es_admin() or request.user.es_supervisor):
+    if not (request.user.es_admin() or request.user.es_coordinador):
         raise PermissionDenied
     cerrados = PeriodoMedicion.objects.filter(cerrado=True).order_by('-fecha_termino', '-pk')
     seleccion = [p for p in request.GET.getlist('periodos') if p.isdecimal()]
@@ -3734,7 +3734,7 @@ def web_brechas_historicas(request):
     periodos.sort(key=lambda periodo: periodo.fecha_inicio)
     funcionarios = Usuario.objects.filter(
         is_active=True,
-        rol=Usuario.Rol.ADMINISTRATIVO,
+        rol=Usuario.Rol.FUNCIONARIO,
         cargo__isnull=False,
     ).select_related('cargo')
     delegacion_id = request.GET.get('delegacion', '')

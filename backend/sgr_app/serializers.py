@@ -39,6 +39,7 @@ class UsuarioSerializer(serializers.ModelSerializer):
     delegacion_nombre = serializers.ReadOnlyField(source='delegacion.nombre')
     delegacion_codigo = serializers.ReadOnlyField(source='delegacion.codigo')
     roles = serializers.StringRelatedField(many=True, read_only=True)
+    es_delegado = serializers.ReadOnlyField()
 
     class Meta:
         model = Usuario
@@ -52,21 +53,13 @@ class UsuarioSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         role = attrs.get('rol', getattr(self.instance, 'rol', None))
-        is_delegate = attrs.get(
-            'es_delegado',
-            getattr(self.instance, 'es_delegado', False),
-        )
         delegation = attrs.get(
             'delegacion',
             getattr(self.instance, 'delegacion', None),
         )
-        if is_delegate and role != Usuario.Rol.SUPERVISOR:
+        if role == Usuario.Rol.DELEGADO and not delegation:
             raise serializers.ValidationError({
-                'es_delegado': 'El perfil Delegado requiere el rol Supervisor.',
-            })
-        if is_delegate and not delegation:
-            raise serializers.ValidationError({
-                'delegacion': 'El perfil Delegado requiere una delegación asignada.',
+                'delegacion': 'El rol Delegado requiere una delegación asignada.',
             })
         return attrs
 

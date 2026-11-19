@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Panel Administrativo | Matriz SGR La Serena{% endblock %}
+{% block title %}Panel Funcionario | Matriz SGR La Serena{% endblock %}
 
 {% block content %}
 <div class="d-flex flex-column gap-4">
   <section class="card sgr-page-header sgr-image-header p-4 shadow-sm border-0">
-    <span class="badge bg-white text-danger text-uppercase align-self-start">Panel Administrativo</span>
+    <span class="badge bg-white text-danger text-uppercase align-self-start">Panel Funcionario</span>
     <h1 class="h3 fw-bold text-white mt-2 mb-1">
       Hola, {{ request.user.get_full_name|default:request.user.username }}
     </h1>

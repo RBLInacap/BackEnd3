@@ -29,7 +29,7 @@ class MatrizSGRTestSuite(TestCase):
         self.usuario = Usuario.objects.create_user(
             username="carlos.test",
             password="Password123!",
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=self.cargo,
             delegacion=self.delegacion,
             first_name="Carlos",
@@ -38,8 +38,7 @@ class MatrizSGRTestSuite(TestCase):
         self.verificador = Usuario.objects.create_user(
             username="pablo.cuadra",
             password="Password123!",
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             cargo=self.cargo,
             delegacion=self.delegacion,
             first_name="Pablo",
@@ -61,15 +60,24 @@ class MatrizSGRTestSuite(TestCase):
             nombre_item="Atención Solicitudes", meta_cuantitativa=5.0, ponderador=40.0
         )
 
-    def test_user_roles_are_limited_and_delegate_is_a_supervisor_profile(self):
+    def test_roles_son_los_actores_de_los_casos_de_uso(self):
         self.assertEqual(
             set(Usuario.Rol.values),
-            {'ADMINISTRADOR', 'SUPERVISOR', 'ADMINISTRATIVO', 'CONSULTA'},  # CU-38
+            {'ADMINISTRADOR', 'COORDINADOR', 'DELEGADO', 'FUNCIONARIO', 'CONSULTA'},
         )
-        self.assertEqual(self.verificador.rol, Usuario.Rol.SUPERVISOR)
+        self.assertEqual(self.verificador.rol, Usuario.Rol.DELEGADO)
         self.assertTrue(self.verificador.es_delegado)
-        self.assertFalse(self.verificador.es_supervisor)
+        self.assertTrue(self.verificador.esta_limitado_a_delegacion)
+        self.assertFalse(self.verificador.es_coordinador)
         self.assertTrue(self.verificador.es_coordinador_o_delegado())
+
+    def test_rol_delegado_exige_delegacion(self):
+        with self.assertRaises(ValidationError):
+            Usuario.objects.create_user(
+                username="delegado.sin.delegacion",
+                password="Password123!",
+                rol=Usuario.Rol.DELEGADO,
+            )
 
     # 1. Reglas de Cálculo del Semáforo y Días Computables (RN-007, RN-008)
     def test_dias_computables_y_meta_esperada(self):
@@ -485,7 +493,7 @@ class MatrizSGRTestSuite(TestCase):
         )
 
         # 1. Rol y permisos
-        rol_coord = Rol.objects.create(nombre="SUPERVISOR", descripcion="Supervisor Comunal")
+        rol_coord = Rol.objects.create(nombre="COORDINADOR", descripcion="Coordinador Comunal")
         self.assertTrue(rol_coord.tienePermiso("GESTIONAR_COORDINACION"))
         self.assertFalse(rol_coord.tienePermiso("PERMISO_INEXISTENTE"))
 
@@ -697,7 +705,7 @@ class MatrizSGRTestSuite(TestCase):
         client.force_login(self.verificador)
         supervisor_response = client.get('/dashboard/')
         self.assertEqual(supervisor_response.status_code, 200)
-        self.assertTemplateUsed(supervisor_response, 'dashboard_supervisor.html')
+        self.assertTemplateUsed(supervisor_response, 'dashboard_coordinador.html')
 
         administrador = Usuario.objects.create_user(
             username='admin.dashboard',
@@ -715,7 +723,7 @@ class MatrizSGRTestSuite(TestCase):
         client.force_login(self.usuario)
         administrativo_response = client.get('/dashboard/')
         self.assertEqual(administrativo_response.status_code, 200)
-        self.assertTemplateUsed(administrativo_response, 'dashboard_administrativo.html')
+        self.assertTemplateUsed(administrativo_response, 'dashboard_funcionario.html')
 
     def test_delegado_solo_consulta_datos_de_su_territorio(self):
         otra_delegacion = Delegacion.objects.create(
@@ -725,7 +733,7 @@ class MatrizSGRTestSuite(TestCase):
         otro_funcionario = Usuario.objects.create_user(
             username='funcionario.otra.delegacion',
             password='Password123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=self.cargo,
             delegacion=otra_delegacion,
         )

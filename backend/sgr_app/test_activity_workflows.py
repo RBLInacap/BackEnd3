@@ -86,14 +86,14 @@ class ActivityWorkflowTests(TestCase):
         self.funcionario = Usuario.objects.create_user(
             username='funcionario.workflow',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=self.cargo,
             delegacion=self.delegacion,
         )
         self.supervisor = Usuario.objects.create_user(
             username='supervisor.workflow',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
             delegacion=self.delegacion,
         )
         self.periodo = PeriodoMedicion.objects.create(
@@ -348,7 +348,7 @@ class ActivityWorkflowTests(TestCase):
         other = Usuario.objects.create_user(
             username='otro.funcionario',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         compromiso = CompromisoAgenda.objects.create(
@@ -396,7 +396,7 @@ class ActivityWorkflowTests(TestCase):
         coordinator = Usuario.objects.create_user(
             username='coordinador.dashboard.periodo',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(coordinator)
 
@@ -418,7 +418,7 @@ class ActivityWorkflowTests(TestCase):
         colega = Usuario.objects.create_user(
             username='funcionario.cargo.companero',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=self.cargo,
             delegacion=self.delegacion,
         )
@@ -430,7 +430,7 @@ class ActivityWorkflowTests(TestCase):
         funcionario_otra_delegacion = Usuario.objects.create_user(
             username='funcionario.cargo.otra.delegacion',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=otro_cargo,
             delegacion=otra_delegacion,
         )
@@ -450,8 +450,7 @@ class ActivityWorkflowTests(TestCase):
         delegado = Usuario.objects.create_user(
             username='delegado.cargo.dashboard',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             delegacion=self.delegacion,
         )
         self.client.force_login(delegado)
@@ -898,7 +897,7 @@ class ActivityWorkflowTests(TestCase):
         forbidden = Usuario.objects.create_user(
             username='funcionario.sin.permiso.ajustes',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         regular_client = Client()
@@ -1391,7 +1390,7 @@ class ActivityWorkflowTests(TestCase):
         another_functionary = Usuario.objects.create_user(
             username='otro.funcionario.items',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=otro_cargo,
             delegacion=self.delegacion,
         )
@@ -1414,7 +1413,7 @@ class ActivityWorkflowTests(TestCase):
         funcionario_sin_cargo = Usuario.objects.create_user(
             username='funcionario.sin.cargo',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         items_response = self.client.get(
@@ -1818,7 +1817,7 @@ class ActivityWorkflowTests(TestCase):
 
         self.assertRedirects(response, '/mantenedores/funcionarios/')
         delegado = Usuario.objects.get(username='patricia.delegada@example.com')
-        self.assertEqual(delegado.rol, Usuario.Rol.SUPERVISOR)
+        self.assertEqual(delegado.rol, Usuario.Rol.DELEGADO)
         self.assertTrue(delegado.es_delegado)
         self.assertEqual(delegado.delegacion_id, self.delegacion.pk)
         auditoria = RegistroAuditoria.objects.get(
@@ -1826,8 +1825,7 @@ class ActivityWorkflowTests(TestCase):
             identificador_registro=str(delegado.pk),
             evento='CREACION',
         )
-        self.assertEqual(auditoria.valor_nuevo['rol'], Usuario.Rol.SUPERVISOR)
-        self.assertTrue(auditoria.valor_nuevo['es_delegado'])
+        self.assertEqual(auditoria.valor_nuevo['rol'], Usuario.Rol.DELEGADO)
         self.assertEqual(auditoria.valor_nuevo['delegacion_id'], self.delegacion.pk)
 
     def test_delegado_form_rejects_missing_delegation_or_wrong_role(self):
@@ -1860,7 +1858,7 @@ class ActivityWorkflowTests(TestCase):
             'apellidoPaterno': 'Gestora',
             'apellidoMaterno': 'Delegada',
             'correo': 'patricia.delegada@example.com',
-            'rol': Usuario.Rol.ADMINISTRATIVO,
+            'rol': 'SUPERVISOR',  # código de rol antiguo: ya no es válido
             'area_entidad': str(self.area.pk),
             'estado': 'on',
         })
@@ -1945,7 +1943,7 @@ class ActivityWorkflowTests(TestCase):
         coordinator = Usuario.objects.create_user(
             username='coordinador.workflow',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(coordinator)
 
@@ -2127,7 +2125,7 @@ class ActivityWorkflowTests(TestCase):
         coordinator = Usuario.objects.create_user(
             username='coordinador.compromiso.editar',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(coordinator)
         actividad = Actividad.objects.create(
@@ -2231,7 +2229,7 @@ class ActivityWorkflowTests(TestCase):
         another_functionary = Usuario.objects.create_user(
             username='otro.funcionario.compromiso',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             cargo=self.cargo,
             delegacion=self.delegacion,
         )
@@ -2433,7 +2431,7 @@ class ActivityWorkflowTests(TestCase):
         supervisor = Usuario.objects.create_user(
             username='supervisor.validacion.success',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(supervisor)
 
@@ -2488,7 +2486,7 @@ class ActivityWorkflowTests(TestCase):
         supervisor = Usuario.objects.create_user(
             username='supervisor.validacion.meta',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(supervisor)
 
@@ -2550,7 +2548,7 @@ class ActivityWorkflowTests(TestCase):
         supervisor = Usuario.objects.create_user(
             username='supervisor.validacion.motivo',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(supervisor)
 
@@ -2585,8 +2583,7 @@ class ActivityWorkflowTests(TestCase):
         delegado = Usuario.objects.create_user(
             username='delegado.validacion.correccion',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             delegacion=self.delegacion,
         )
         self.client.force_login(delegado)
@@ -2643,7 +2640,7 @@ class ActivityWorkflowTests(TestCase):
         supervisor = Usuario.objects.create_user(
             username='supervisor.validacion.atomic',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(supervisor)
 
@@ -2782,7 +2779,7 @@ class ActivityWorkflowTests(TestCase):
         colega = Usuario.objects.create_user(
             username='funcionario.agenda.colega',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         delegacion_ajena = Delegacion.objects.create(
@@ -2810,8 +2807,7 @@ class ActivityWorkflowTests(TestCase):
         delegado = Usuario.objects.create_user(
             username='delegado.agenda.compartida',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             delegacion=self.delegacion,
         )
         self.client.force_login(delegado)
@@ -2843,8 +2839,7 @@ class ActivityWorkflowTests(TestCase):
         delegado = Usuario.objects.create_user(
             username='delegado.alertas.operativas',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             delegacion=self.delegacion,
         )
         self.client.force_login(delegado)
@@ -2940,7 +2935,7 @@ class ActivityWorkflowTests(TestCase):
         funcionario_ajeno = Usuario.objects.create_user(
             username='funcionario.informe.ajeno',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=otra_delegacion,
         )
         Actividad.objects.create(
@@ -3008,7 +3003,7 @@ class ActivityWorkflowTests(TestCase):
         otro_funcionario = Usuario.objects.create_user(
             username='funcionario.filtro.informe',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         otra_delegacion = Delegacion.objects.create(
@@ -3018,7 +3013,7 @@ class ActivityWorkflowTests(TestCase):
         funcionario_otra_delegacion = Usuario.objects.create_user(
             username='funcionario.otra.delegacion.informe',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=otra_delegacion,
         )
         actividad_objetivo = Actividad.objects.create(
@@ -3620,7 +3615,7 @@ class ActivityWorkflowTests(TestCase):
         reemplazo = Usuario.objects.create_user(
             username='funcionario.reasignado',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         delegacion_coordinadora = Delegacion.objects.create(
@@ -3630,7 +3625,7 @@ class ActivityWorkflowTests(TestCase):
         coordinador = Usuario.objects.create_user(
             username='supervisor.interdelegacional',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
             delegacion=delegacion_coordinadora,
         )
         self.client.force_login(coordinador)
@@ -3696,7 +3691,7 @@ class ActivityWorkflowTests(TestCase):
         reemplazo = Usuario.objects.create_user(
             username='funcionario.reasignado.rollback',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         self.client.force_login(self.supervisor)
@@ -3836,7 +3831,7 @@ class ActivityWorkflowTests(TestCase):
         coordinator = Usuario.objects.create_user(
             username='coordinador.compromiso.anular',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(coordinator)
         actividad = Actividad.objects.create(
@@ -4152,7 +4147,7 @@ class RequisitosPendientesTests(TestCase):
         coordinador = Usuario.objects.create_user(
             username='coordinador.rf031',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
+            rol=Usuario.Rol.COORDINADOR,
         )
         self.client.force_login(coordinador)
 
@@ -4244,8 +4239,7 @@ class CorreccionesRevisionCodigoTests(TestCase):
         delegado = Usuario.objects.create_user(
             username='delegado.metricas',
             password='TestPassword123!',
-            rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True,
+            rol=Usuario.Rol.DELEGADO,
             delegacion=self.delegacion,
         )
         for usuario in (self.funcionario, delegado):
@@ -4285,7 +4279,7 @@ class CorreccionesRevisionCodigoTests(TestCase):
         usuario = Usuario.objects.create_user(
             username='funcionario.clave.inicial',
             password='ClaveInicial123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
             must_change_password=True,
             initial_login_expires_at=timezone.now() + timedelta(minutes=10),
@@ -4361,7 +4355,7 @@ class CorreccionesRevisionCodigoTests(TestCase):
         otro = Usuario.objects.create_user(
             username='suplantado.compromiso',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=self.delegacion,
         )
         cliente = Client()
@@ -4425,7 +4419,7 @@ class ConcurrentActivityPersistenceTests(TransactionTestCase):
             Usuario.objects.create_user(
                 username=f'funcionario.concurrente.{index}',
                 password='TestPassword123!',
-                rol=Usuario.Rol.ADMINISTRATIVO,
+                rol=Usuario.Rol.FUNCIONARIO,
                 delegacion=self.delegacion,
             )
             for index in range(2)
@@ -4471,7 +4465,7 @@ class ConcurrentActivityPersistenceTests(TransactionTestCase):
         funcionario_norte = Usuario.objects.create_user(
             username='funcionario.concurrente.norte',
             password='TestPassword123!',
-            rol=Usuario.Rol.ADMINISTRATIVO,
+            rol=Usuario.Rol.FUNCIONARIO,
             delegacion=otra_delegacion,
         )
         participantes = [

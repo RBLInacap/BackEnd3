@@ -63,22 +63,22 @@ class CasosDeUsoTests(TestCase):
         )
         crear = Usuario.objects.create_user
         cls.admin = crear(username='cu.admin', password=PASSWORD, rol=Usuario.Rol.ADMINISTRADOR)
-        cls.coord = crear(username='cu.coord', password=PASSWORD, rol=Usuario.Rol.SUPERVISOR)
+        cls.coord = crear(username='cu.coord', password=PASSWORD, rol=Usuario.Rol.COORDINADOR)
         cls.delegado = crear(
-            username='cu.delegado', password=PASSWORD, rol=Usuario.Rol.SUPERVISOR,
-            es_delegado=True, delegacion=cls.del_a,
+            username='cu.delegado', password=PASSWORD, rol=Usuario.Rol.DELEGADO,
+            delegacion=cls.del_a,
         )
         cls.func = crear(
-            username='cu.func', password=PASSWORD, rol=Usuario.Rol.ADMINISTRATIVO,
+            username='cu.func', password=PASSWORD, rol=Usuario.Rol.FUNCIONARIO,
             delegacion=cls.del_a, cargo=cls.cargo, area_entidad=cls.area_otra,
             first_name='Ana', last_name='Funcionaria',
         )
         cls.func2 = crear(
-            username='cu.func2', password=PASSWORD, rol=Usuario.Rol.ADMINISTRATIVO,
+            username='cu.func2', password=PASSWORD, rol=Usuario.Rol.FUNCIONARIO,
             delegacion=cls.del_a, cargo=cls.cargo, first_name='Beto', last_name='Colega',
         )
         cls.func_social = crear(
-            username='cu.social', password=PASSWORD, rol=Usuario.Rol.ADMINISTRATIVO,
+            username='cu.social', password=PASSWORD, rol=Usuario.Rol.FUNCIONARIO,
             delegacion=cls.del_a, area_entidad=cls.area_social,
         )
         cls.consulta = crear(username='cu.consulta', password=PASSWORD, rol=Usuario.Rol.CONSULTA)

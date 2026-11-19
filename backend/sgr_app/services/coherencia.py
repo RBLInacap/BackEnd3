@@ -112,7 +112,7 @@ def _chequeos_negocio():
          'Fusionar o desactivar la cuenta duplicada.'),
         ('usuario.delegado_sin_delegacion', ADVERTENCIA,
          'Delegados sin delegación asignada (no ven datos y no pueden validar)',
-         Usuario.objects.filter(es_delegado=True, delegacion__isnull=True, is_active=True),
+         Usuario.objects.filter(rol=Usuario.Rol.DELEGADO, delegacion__isnull=True, is_active=True),
          'Asignar la delegación en el mantenedor de funcionarios.'),
         ('usuario.rol_distinto_a_roles', INFO,
          'Usuarios cuyo rol principal no figura entre sus roles adicionales asignados',

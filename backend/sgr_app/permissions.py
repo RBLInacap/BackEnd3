@@ -32,7 +32,7 @@ class AuthenticatedRolePermission(BasePermission):
             return False
 
         role = getattr(user, 'rol', None)
-        if user.es_admin() or user.es_supervisor:
+        if user.es_admin() or user.es_coordinador:
             return True
         action = getattr(view, 'action', None)
         if user.esta_limitado_a_delegacion:
@@ -67,7 +67,7 @@ class AuthenticatedRolePermission(BasePermission):
         ):
             return action == 'create'
         return (
-            role == 'ADMINISTRATIVO'
+            role == 'FUNCIONARIO'
             and view.__class__.__name__ == 'ActividadViewSet'
             and getattr(view, 'action', None) == 'create'
         )
@@ -75,7 +75,7 @@ class AuthenticatedRolePermission(BasePermission):
     def has_object_permission(self, request, view, obj):
         user = request.user
         role = getattr(user, 'rol', None)
-        if user.es_admin() or user.es_supervisor:
+        if user.es_admin() or user.es_coordinador:
             return True
         if user.esta_limitado_a_delegacion:
             delegation_id = user.delegacion_id
@@ -93,7 +93,7 @@ class AuthenticatedRolePermission(BasePermission):
             and user.tiene_permiso('APROBAR_EVIDENCIA')
         ):
             return True
-        if role == 'ADMINISTRATIVO' or user.tiene_permiso('REGISTRAR_ACTIVIDAD'):
+        if role == 'FUNCIONARIO' or user.tiene_permiso('REGISTRAR_ACTIVIDAD'):
             if hasattr(obj, 'funcionario_id'):
                 return obj.funcionario_id == user.pk
             # Compromisos: mismo criterio que el listado (responsable o creador),
@@ -120,6 +120,6 @@ class AuditAccessPermission(BasePermission):
             and (
                 user.is_superuser
                 or user.es_admin()
-                or user.es_supervisor
+                or user.es_coordinador
             )
         )

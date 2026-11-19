@@ -179,7 +179,7 @@ class CompromisoAgendaForm(forms.ModelForm):
         actividades = Actividad.objects.select_related(
             'funcionario', 'delegacion'
         ).filter(anulada=False)
-        if user.es_administrativo:
+        if user.es_funcionario:
             if self.instance.pk:
                 actividades = actividades.filter(
                     Q(funcionario=user) | Q(pk=self.instance.actividad_id)
@@ -234,7 +234,7 @@ class CompromisoAgendaForm(forms.ModelForm):
                     | Usuario.objects.filter(pk=self.instance.responsable_id)
                 ).distinct()
 
-        if user.es_administrativo:
+        if user.es_funcionario:
             self.fields['delegacion'].queryset = Delegacion.objects.filter(
                 pk=user.delegacion_id,
                 activo=True,
@@ -275,7 +275,7 @@ class CompromisoAgendaForm(forms.ModelForm):
             )
         if self.user.esta_limitado_a_delegacion and delegation and delegation.pk != self.user.delegacion_id:
             self.add_error('delegacion', 'Solo puedes gestionar compromisos de tu delegación.')
-        if self.user.es_administrativo and responsible and responsible.pk != self.user.pk:
+        if self.user.es_funcionario and responsible and responsible.pk != self.user.pk:
             self.add_error('responsable', 'Solo puedes asignarte compromisos a ti mismo.')
         if actividad and delegation and actividad.delegacion_id != delegation.pk:
             self.add_error(
@@ -503,7 +503,7 @@ class CasoSocialForm(forms.ModelForm):
         if not self.instance.pk and not self.is_bound:
             self.initial.setdefault('fecha_apertura', timezone.localdate())
         self.fields['delegacion'].queryset = Delegacion.objects.filter(activo=True)
-        if user.esta_limitado_a_delegacion or user.es_administrativo:
+        if user.esta_limitado_a_delegacion or user.es_funcionario:
             self.fields['delegacion'].queryset = self.fields['delegacion'].queryset.filter(
                 pk=user.delegacion_id,
             )
@@ -1093,20 +1093,10 @@ class MantenedorSolicitanteForm(MantenedorModelForm):
 
 
 class FuncionarioForm(MantenedorModelForm):
-    ROL_CHOICES = (
-        ('ADMINISTRADOR', 'Administrador'),
-        ('COORDINADOR', 'Coordinador'),
-        ('DELEGADO', 'Delegado'),
-        ('FUNCIONARIO', 'Funcionario'),
-        ('CONSULTA', 'Usuario de consulta (solo lectura)'),
+    ROL_CHOICES = tuple(
+        (valor, f'{etiqueta} (solo lectura)' if valor == Usuario.Rol.CONSULTA else etiqueta)
+        for valor, etiqueta in Usuario.Rol.choices
     )
-    ROL_A_MODELO = {
-        'ADMINISTRADOR': (Usuario.Rol.ADMINISTRADOR, False),
-        'COORDINADOR': (Usuario.Rol.SUPERVISOR, False),
-        'DELEGADO': (Usuario.Rol.SUPERVISOR, True),
-        'FUNCIONARIO': (Usuario.Rol.ADMINISTRATIVO, False),
-        'CONSULTA': (Usuario.Rol.CONSULTA, False),
-    }
 
     run = forms.CharField(label='RUN', max_length=20, required=True)
     nombre = forms.CharField(label='Nombre', max_length=150, required=True)
@@ -1121,7 +1111,7 @@ class FuncionarioForm(MantenedorModelForm):
         required=True,
     )
     correo = forms.EmailField(label='Correo', max_length=254, required=True)
-    rol = forms.ChoiceField(choices=ROL_CHOICES, initial='FUNCIONARIO')
+    rol = forms.ChoiceField(choices=ROL_CHOICES, initial=Usuario.Rol.FUNCIONARIO)
     area_entidad = forms.ModelChoiceField(
         queryset=Area.objects.filter(estado=True).order_by('nombre'),
         required=True,
@@ -1171,17 +1161,7 @@ class FuncionarioForm(MantenedorModelForm):
                 'correo': self.instance.email,
                 'estado': self.instance.is_active,
                 'roles': roles_actuales,
-                'rol': (
-                    'DELEGADO'
-                    if self.instance.es_delegado
-                    else 'COORDINADOR'
-                    if self.instance.rol == Usuario.Rol.SUPERVISOR
-                    else 'ADMINISTRADOR'
-                    if self.instance.rol == Usuario.Rol.ADMINISTRADOR
-                    else 'CONSULTA'
-                    if self.instance.rol == Usuario.Rol.CONSULTA
-                    else 'FUNCIONARIO'
-                ),
+                'rol': self.instance.rol,
             })
         else:
             self.fields['estado'].initial = True
@@ -1214,7 +1194,7 @@ class FuncionarioForm(MantenedorModelForm):
         delegacion = cleaned_data.get('delegacion')
         roles = cleaned_data.get('roles', ())
         requiere_delegacion = (
-            rol == 'DELEGADO'
+            rol == Usuario.Rol.DELEGADO
             or any(role.tienePermiso('GESTIONAR_DELEGACION') for role in roles)
         )
         if requiere_delegacion and not delegacion:
@@ -1235,9 +1215,7 @@ class FuncionarioForm(MantenedorModelForm):
             self.cleaned_data['apellidoMaterno'].strip(),
         )))
         funcionario.email = self.cleaned_data['correo']
-        funcionario.rol, funcionario.es_delegado = self.ROL_A_MODELO[
-            self.cleaned_data['rol']
-        ]
+        funcionario.rol = self.cleaned_data['rol']
         funcionario.area_entidad = self.cleaned_data['area_entidad']
         funcionario.cargo = self.cleaned_data['cargo']
         funcionario.delegacion = self.cleaned_data['delegacion']

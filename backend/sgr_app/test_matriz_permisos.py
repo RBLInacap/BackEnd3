@@ -27,19 +27,19 @@ class MatrizPermisosTests(TestCase):
                 rol=Usuario.Rol.ADMINISTRADOR,
             ),
             'supervisor': Usuario.objects.create_user(
-                username='m.supervisor', password=PASSWORD, rol=Usuario.Rol.SUPERVISOR,
+                username='m.supervisor', password=PASSWORD, rol=Usuario.Rol.COORDINADOR,
             ),
             'delegado': Usuario.objects.create_user(
-                username='m.delegado', password=PASSWORD, rol=Usuario.Rol.SUPERVISOR,
-                es_delegado=True, delegacion=cls.del_a,
+                username='m.delegado', password=PASSWORD, rol=Usuario.Rol.DELEGADO,
+                delegacion=cls.del_a,
             ),
             'funcionario': Usuario.objects.create_user(
-                username='m.funcionario', password=PASSWORD, rol=Usuario.Rol.ADMINISTRATIVO,
+                username='m.funcionario', password=PASSWORD, rol=Usuario.Rol.FUNCIONARIO,
                 delegacion=cls.del_a, cargo=cargo,
             ),
         }
         otro = Usuario.objects.create_user(
-            username='m.otro', password=PASSWORD, rol=Usuario.Rol.ADMINISTRATIVO,
+            username='m.otro', password=PASSWORD, rol=Usuario.Rol.FUNCIONARIO,
             delegacion=cls.del_b, cargo=cargo,
         )
         hoy = timezone.localdate()

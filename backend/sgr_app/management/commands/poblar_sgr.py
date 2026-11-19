@@ -56,7 +56,7 @@ class Command(BaseCommand):
         )
         coord_u, _ = Usuario.objects.get_or_create(
             username="coordinador",
-            defaults={"first_name": "Coordinador", "last_name": "Comunal", "email": "coordinacion@laserena.cl", "rol": Usuario.Rol.SUPERVISOR, "cargo": cargos["Coordinador Comunal"]}
+            defaults={"first_name": "Coordinador", "last_name": "Comunal", "email": "coordinacion@laserena.cl", "rol": Usuario.Rol.COORDINADOR, "cargo": cargos["Coordinador Comunal"]}
         )
         del_centro, _ = Usuario.objects.get_or_create(
             username="delegado_centro",
@@ -64,8 +64,7 @@ class Command(BaseCommand):
                 "first_name": "Delegado",
                 "last_name": "Centro",
                 "email": "delegado.centro@laserena.cl",
-                "rol": Usuario.Rol.SUPERVISOR,
-                "es_delegado": True,
+                "rol": Usuario.Rol.DELEGADO,
                 "cargo": cargos["Delegado Municipal"],
                 "delegacion": dels["CEN"]
             }
@@ -76,7 +75,7 @@ class Command(BaseCommand):
                 "first_name": "Funcionario",
                 "last_name": "Centro",
                 "email": "funcionario.centro@laserena.cl",
-                "rol": Usuario.Rol.ADMINISTRATIVO,
+                "rol": Usuario.Rol.FUNCIONARIO,
                 "cargo": cargos["Gestor Territorial"],
                 "delegacion": dels["CEN"]
             }

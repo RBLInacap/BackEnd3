@@ -63,13 +63,20 @@ PERMISOS_ROL = (
 )
 
 PERMISOS_PREDETERMINADOS_POR_ROL = {
-    'SUPERVISOR': (
+    # Actores de la especificación de casos de uso (CU-01 a CU-38).
+    'COORDINADOR': (
         'CREAR_META',
         'APROBAR_EVIDENCIA',
         'VER_DASHBOARD',
         'GESTIONAR_COORDINACION',
     ),
-    'ADMINISTRATIVO': ('REGISTRAR_ACTIVIDAD', 'VER_DASHBOARD'),
+    'DELEGADO': (
+        'CREAR_META',
+        'APROBAR_EVIDENCIA',
+        'VER_DASHBOARD',
+        'GESTIONAR_DELEGACION',
+    ),
+    'FUNCIONARIO': ('REGISTRAR_ACTIVIDAD', 'VER_DASHBOARD'),
     # CU-38: perfil de solo lectura de tableros e informes de su ámbito.
     'CONSULTA': ('VER_DASHBOARD',),
 }
@@ -357,21 +364,18 @@ class UsuarioManager(UserManager):
 class Usuario(AbstractUser):
     """
     Usuario institucional municipal con control de roles (RBAC) y soporte 2FA (RF-001, RF-002, RNF-008).
-    Roles: Administrador, Supervisor y Administrativo. Delegado es un perfil territorial
-    aplicado a usuarios con rol Supervisor.
+    Roles = actores humanos de la especificación de casos de uso:
+    Administrador (CU-01..09), Coordinador (CU-10..20), Delegado (CU-21..27),
+    Funcionario (CU-28..37) y Usuario de consulta (CU-38).
     """
     class Rol(models.TextChoices):
         ADMINISTRADOR = 'ADMINISTRADOR', 'Administrador'
-        SUPERVISOR = 'SUPERVISOR', 'Supervisor'
-        ADMINISTRATIVO = 'ADMINISTRATIVO', 'Administrativo'
+        COORDINADOR = 'COORDINADOR', 'Coordinador'
+        DELEGADO = 'DELEGADO', 'Delegado'
+        FUNCIONARIO = 'FUNCIONARIO', 'Funcionario'
         CONSULTA = 'CONSULTA', 'Usuario de consulta'
 
-    rol = models.CharField(max_length=20, choices=Rol.choices, default=Rol.ADMINISTRATIVO)
-    es_delegado = models.BooleanField(
-        default=False,
-        verbose_name="Perfil Delegado",
-        help_text="Limita el acceso del Supervisor a los datos de su delegación.",
-    )
+    rol = models.CharField(max_length=20, choices=Rol.choices, default=Rol.FUNCIONARIO)
     roles = models.ManyToManyField(
         'Rol',
         blank=True,
@@ -397,15 +401,12 @@ class Usuario(AbstractUser):
             models.CheckConstraint(
                 condition=models.Q(rol__in=[
                     'ADMINISTRADOR',
-                    'SUPERVISOR',
-                    'ADMINISTRATIVO',
+                    'COORDINADOR',
+                    'DELEGADO',
+                    'FUNCIONARIO',
                     'CONSULTA',
                 ]),
                 name='usuario_rol_valido',
-            ),
-            models.CheckConstraint(
-                condition=models.Q(es_delegado=False) | models.Q(rol='SUPERVISOR'),
-                name='delegado_debe_ser_supervisor',
             ),
         ]
 
@@ -475,7 +476,13 @@ class Usuario(AbstractUser):
         return self.tiene_permiso('ACCESO_ADMINISTRADOR')
 
     @property
-    def es_supervisor(self) -> bool:
+    def es_delegado(self) -> bool:
+        """Actor Delegado (CU-21 a CU-27): gestión limitada a su delegación."""
+        return self.rol == self.Rol.DELEGADO
+
+    @property
+    def es_coordinador(self) -> bool:
+        """Actor Coordinador (CU-10 a CU-20): gestión de toda la comuna."""
         return (
             self.tiene_permiso('GESTIONAR_COORDINACION')
             and not self.es_delegado
@@ -490,7 +497,7 @@ class Usuario(AbstractUser):
     def es_funcionario_social(self) -> bool:
         """CU-28 (HU-03): Funcionario de un área con tipos de atención social activos."""
         return bool(
-            self.es_administrativo
+            self.es_funcionario
             and self.area_entidad_id
             and TipoAtencionSocial.objects.filter(
                 area_id=self.area_entidad_id,
@@ -499,11 +506,12 @@ class Usuario(AbstractUser):
         )
 
     @property
-    def es_administrativo(self) -> bool:
+    def es_funcionario(self) -> bool:
+        """Actor Funcionario (CU-28 a CU-37): solo sus propios registros."""
         return (
-            self.rol == self.Rol.ADMINISTRATIVO
+            self.rol == self.Rol.FUNCIONARIO
             and not self.es_admin()
-            and not self.es_supervisor
+            and not self.es_coordinador
             and not self.esta_limitado_a_delegacion
         )
 
@@ -531,7 +539,7 @@ class Usuario(AbstractUser):
 
     def puede_aprobar_ajustes(self) -> bool:
         """Consulta si el rol asociado al funcionario permite aprobar ajustes de incentivo."""
-        return self.es_admin() or self.es_supervisor
+        return self.es_admin() or self.es_coordinador
 
     def validarRun(self) -> bool:
         if not self.rut_anonimizado:
@@ -545,11 +553,9 @@ class Usuario(AbstractUser):
     def save(self, *args, **kwargs):
         if self.rol not in self.Rol.values:
             raise ValidationError({'rol': 'Selecciona un rol institucional válido.'})
-        if self.es_delegado and (
-            self.rol != self.Rol.SUPERVISOR or not self.delegacion_id
-        ):
+        if self.rol == self.Rol.DELEGADO and not self.delegacion_id:
             raise ValidationError({
-                'es_delegado': 'El perfil Delegado requiere el rol Supervisor y una delegación asignada.',
+                'delegacion': 'El rol Delegado requiere una delegación asignada.',
             })
         if self.rut_anonimizado:
             validate_chilean_rut(self.rut_anonimizado)
@@ -599,11 +605,7 @@ class Usuario(AbstractUser):
         """Asigna un nuevo rol de sistema al usuario."""
         if nuevo_rol in Usuario.Rol.values:
             self.rol = nuevo_rol
-            if nuevo_rol != Usuario.Rol.SUPERVISOR:
-                self.es_delegado = False
-                self.save(update_fields=['rol', 'es_delegado'])
-            else:
-                self.save(update_fields=['rol'])
+            self.save(update_fields=['rol'])
             return True
         return False
 

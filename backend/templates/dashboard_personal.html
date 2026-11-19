@@ -12,7 +12,7 @@
       <span class="text-secondary small ms-2">Evaluación por período y desglose de avance por ítem</span>
     </div>
     <form method="GET" action="{% url 'web_personal' %}" class="d-flex flex-wrap align-items-center gap-2">
-      {% if request.user.es_admin or request.user.es_supervisor %}
+      {% if request.user.es_admin or request.user.es_coordinador %}
       <label for="funcionarioPeriodo" class="small fw-bold text-secondary text-uppercase mb-0 text-nowrap">Funcionario:</label>
       <select id="funcionarioPeriodo" name="id" class="form-select form-select-sm border fw-semibold" style="min-width: 200px;">
         {% for f in todos_funcionarios %}

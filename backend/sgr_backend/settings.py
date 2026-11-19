@@ -326,7 +326,7 @@ TRUSTED_PROXY_COUNT = env('TRUSTED_PROXY_COUNT', default=0, cast=int)
 LOGIN_MAX_FAILED_ATTEMPTS = env('LOGIN_MAX_FAILED_ATTEMPTS', default=5, cast=int)
 LOGIN_MAX_FAILED_ATTEMPTS_PER_IP = env('LOGIN_MAX_FAILED_ATTEMPTS_PER_IP', default=30, cast=int)
 # Roles que deben activar verificación en dos pasos (RNF-004), p. ej.
-# "ADMINISTRADOR,SUPERVISOR". Vacío = opcional para todos.
+# "ADMINISTRADOR,COORDINADOR,DELEGADO". Vacío = opcional para todos.
 TWO_FACTOR_REQUIRED_ROLES = env('TWO_FACTOR_REQUIRED_ROLES', default='', cast=Csv())
 TWO_FACTOR_MAX_FAILED_ATTEMPTS = env('TWO_FACTOR_MAX_FAILED_ATTEMPTS', default=5, cast=int)
 LOGIN_LOCKOUT_MINUTES = env('LOGIN_LOCKOUT_MINUTES', default=15, cast=int)

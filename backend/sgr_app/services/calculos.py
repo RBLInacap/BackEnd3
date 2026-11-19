@@ -390,8 +390,7 @@ def calcular_resumen_delegacion(delegacion: Delegacion, periodo: PeriodoMedicion
     info_tiempo = calcular_dias_periodo(periodo, fecha_corte)
     funcionarios = Usuario.objects.filter(
         delegacion=delegacion,
-        rol=Usuario.Rol.ADMINISTRATIVO,
-        es_delegado=False,
+        rol=Usuario.Rol.FUNCIONARIO,
         is_active=True,
     )
 
@@ -465,8 +464,7 @@ def calcular_resumen_delegacion(delegacion: Delegacion, periodo: PeriodoMedicion
     # Datos del Delegado y estadísticas de ingreso en terreno
     delegado = Usuario.objects.filter(
         delegacion=delegacion,
-        rol=Usuario.Rol.SUPERVISOR,
-        es_delegado=True,
+        rol=Usuario.Rol.DELEGADO,
         is_active=True,
     ).first()
     nombre_responsable = delegado.get_full_name() if (delegado and delegado.get_full_name()) else (delegado.username if delegado else f"Delegado(a) {delegacion.nombre}")

@@ -63,7 +63,7 @@ def perfil_destinatario(user):
         return 'ADMINISTRADOR'
     if user.esta_limitado_a_delegacion:
         return 'DELEGADO'
-    if user.es_supervisor:
+    if user.es_coordinador:
         return 'COORDINADOR'
     return 'FUNCIONARIO'
 

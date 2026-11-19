@@ -223,7 +223,7 @@ class UsuarioViewSet(SinBorradoFisicoMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = Usuario.objects.all()
-        if self.request.user.es_administrativo:
+        if self.request.user.es_funcionario:
             qs = qs.filter(pk=self.request.user.pk)
         elif self.request.user.esta_limitado_a_delegacion:
             qs = qs.filter(delegacion_id=self.request.user.delegacion_id)
@@ -273,7 +273,7 @@ class CompromisoAgendaViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, views
         qs = CompromisoAgenda.objects.all()
         if self.request.user.esta_limitado_a_delegacion:
             qs = qs.filter(delegacion_id=self.request.user.delegacion_id)
-        elif self.request.user.es_administrativo:
+        elif self.request.user.es_funcionario:
             from django.db.models import Q
             qs = qs.filter(Q(responsable=self.request.user) | Q(creado_por=self.request.user))
         delegacion_id = self.request.query_params.get('delegacion')
@@ -450,7 +450,7 @@ class ActividadViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewsets.Mod
         qs = Actividad.objects.all().select_related('funcionario', 'delegacion', 'item_medicion', 'compromiso_agenda').prefetch_related(
             Prefetch('evidencias', queryset=Evidencia.objects.select_related('verificador', 'subido_por'))
         )
-        if self.request.user.es_administrativo:
+        if self.request.user.es_funcionario:
             qs = qs.filter(funcionario=self.request.user)
         elif self.request.user.esta_limitado_a_delegacion:
             qs = qs.filter(delegacion_id=self.request.user.delegacion_id)
@@ -485,7 +485,7 @@ class ActividadViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewsets.Mod
     def create(self, request, *args, **kwargs):
         # Permite registrar actividad y evidencia en una sola operación optimizada para móvil (<= 3 clics)
         data = request.data.copy()
-        if request.user.es_administrativo:
+        if request.user.es_funcionario:
             if data.get('funcionario') not in (None, '', str(request.user.pk), request.user.pk):
                 return Response({'error': 'Solo puedes registrar actividades propias.'}, status=status.HTTP_403_FORBIDDEN)
             if data.get('delegacion') not in (None, '', str(request.user.delegacion_id), request.user.delegacion_id):
@@ -730,7 +730,7 @@ class EvidenciaViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewsets.Mod
 
     def get_queryset(self):
         qs = Evidencia.objects.all()
-        if self.request.user.es_administrativo:
+        if self.request.user.es_funcionario:
             qs = qs.filter(actividad__funcionario=self.request.user)
         elif self.request.user.esta_limitado_a_delegacion:
             qs = qs.filter(actividad__delegacion_id=self.request.user.delegacion_id)
@@ -750,11 +750,11 @@ class EvidenciaViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewsets.Mod
         if not (
             request.user.is_superuser
             or request.user.es_admin()
-            or request.user.es_supervisor
+            or request.user.es_coordinador
             or request.user.esta_limitado_a_delegacion
         ):
             raise DRFPermissionDenied(
-                'Solo supervisores, delegados y administradores pueden validar evidencias.'
+                'Solo coordinadores, delegados y administradores pueden validar evidencias.'
             )
 
         decision = request.data.get('decision')
@@ -864,7 +864,7 @@ class MetricasAPIView(APIView):
             return Response({'error': 'No hay períodos de medición registrados.'}, status=status.HTTP_404_NOT_FOUND)
 
         if tipo == 'comunal':
-            if not (request.user.is_superuser or request.user.es_admin() or request.user.es_supervisor):
+            if not (request.user.is_superuser or request.user.es_admin() or request.user.es_coordinador):
                 return Response(
                     {'error': 'El resumen comunal está reservado a administración y coordinación. '
                               'Consulta tipo=delegacion o tipo=funcionario.'},
@@ -883,7 +883,7 @@ class MetricasAPIView(APIView):
                 return Response({'error': 'Delegación no encontrada'}, status=status.HTTP_404_NOT_FOUND)
             if request.user.esta_limitado_a_delegacion and delegacion.pk != request.user.delegacion_id:
                 return Response({'error': 'Acceso restringido a tu delegación.'}, status=status.HTTP_403_FORBIDDEN)
-            if request.user.es_administrativo:
+            if request.user.es_funcionario:
                 return Response({'error': 'No tienes permiso para consultar métricas de delegación.'}, status=status.HTTP_403_FORBIDDEN)
             data = calcular_resumen_delegacion(delegacion, periodo)
             return Response(data)
@@ -896,7 +896,7 @@ class MetricasAPIView(APIView):
                 funcionario = Usuario.objects.get(id=funcionario_id)
             except Usuario.DoesNotExist:
                 return Response({'error': 'Funcionario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
-            if request.user.es_administrativo and funcionario.pk != request.user.pk:
+            if request.user.es_funcionario and funcionario.pk != request.user.pk:
                 return Response({'error': 'Solo puedes consultar tus propias métricas.'}, status=status.HTTP_403_FORBIDDEN)
             if request.user.esta_limitado_a_delegacion and funcionario.delegacion_id != request.user.delegacion_id:
                 return Response({'error': 'Acceso restringido a funcionarios de tu delegación.'}, status=status.HTTP_403_FORBIDDEN)
@@ -912,7 +912,7 @@ class CasoSocialViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewsets.Mo
 
     def get_queryset(self):
         qs = CasoSocial.objects.all().prefetch_related('atenciones')
-        if self.request.user.es_administrativo:
+        if self.request.user.es_funcionario:
             return qs.none()
         if self.request.user.esta_limitado_a_delegacion:
             return qs.filter(delegacion_id=self.request.user.delegacion_id)
@@ -925,7 +925,7 @@ class AtencionSocialViewSet(SinBorradoFisicoMixin, ConcurrenciaAPIMixin, viewset
 
     def get_queryset(self):
         qs = AtencionSocial.objects.all()
-        if self.request.user.es_administrativo:
+        if self.request.user.es_funcionario:
             return qs.none()
         if self.request.user.esta_limitado_a_delegacion:
             return qs.filter(caso__delegacion_id=self.request.user.delegacion_id)

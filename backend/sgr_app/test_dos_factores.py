@@ -78,7 +78,7 @@ class ActivacionDosFactoresTests(TestCase):
         self.assertIsNone(self.user.totp_secret)
 
 
-@override_settings(TWO_FACTOR_REQUIRED_ROLES=['ADMINISTRADOR', 'SUPERVISOR'])
+@override_settings(TWO_FACTOR_REQUIRED_ROLES=['ADMINISTRADOR', 'COORDINADOR'])
 class ObligatoriedadDosFactoresTests(TestCase):
     def setUp(self):
         self.admin = Usuario.objects.create_superuser(
@@ -86,7 +86,7 @@ class ObligatoriedadDosFactoresTests(TestCase):
             rol=Usuario.Rol.ADMINISTRADOR,
         )
         self.funcionario = Usuario.objects.create_user(
-            username='func.dosf', password=PASSWORD, rol=Usuario.Rol.ADMINISTRATIVO,
+            username='func.dosf', password=PASSWORD, rol=Usuario.Rol.FUNCIONARIO,
         )
 
     def test_rol_obligado_es_redirigido_a_activar(self):

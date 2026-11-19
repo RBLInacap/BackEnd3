@@ -51,7 +51,7 @@ class ReactivarCompromisoTests(TestCase):
             username='r.admin', password=PASSWORD, rol=Usuario.Rol.ADMINISTRADOR,
         )
         cls.coordinador = Usuario.objects.create_user(
-            username='r.coord', password=PASSWORD, rol=Usuario.Rol.SUPERVISOR,
+            username='r.coord', password=PASSWORD, rol=Usuario.Rol.COORDINADOR,
         )
 
     def setUp(self):
